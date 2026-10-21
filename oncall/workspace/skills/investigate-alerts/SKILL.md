@@ -136,7 +136,7 @@ Brevity changes delivery, not investigation depth. For one alert, aim for three
 short bullets or 60–100 words, expanded only for material evidence or blockers:
 
 1. **Finding/evidence:** the new finding, decisive observation, and a verified
-   source identifier or verified source URL. Distinguish observed mechanism from confirmed or
+   Cloud Logging/source link. Distinguish observed mechanism from confirmed or
    suspected cause.
 2. **Impact/status:** supported affected scope, active/recovered/unknown, and
    important coverage or freshness limits. Log counts are not automatically
@@ -144,8 +144,17 @@ short bullets or 60–100 words, expanded only for material evidence or blockers
 3. **Next step:** one concrete diagnostic or recommended action, with an owner
    only when supported. A recommendation is not an action taken.
 
-Cite actual evidence identifiers and already verified source URLs. Never invent
-a URL or issue a production query only to obtain a citation.
+Use 2–3 useful inline Markdown links, `[short relevant phrase](URL)`, when the
+evidence supports them. Use the tool's `logsExplorerUrl` verbatim on a phrase
+such as “stream-disconnect logs” or the observed time window. Link the alert or
+source only with an already verified Slack/source URL. A query link covers its
+filter/window; do not label it as one exact record unless the filter selects it.
+Keep links next to the claim they support, without a raw-URL or insert-ID footer.
+Do not issue another log query just to obtain a link, or construct an unverified
+URL. If `logsExplorerUrl` is absent, keep exact identifiers in native history
+and include only a compact identifier needed to verify the finding in Slack.
+Logs Explorer reruns the query when opened; it is not an immutable snapshot or
+proof of current health.
 Keep full query detail, secondary hypotheses, and provenance in native history
 or a full report only when requested. Never imply a saved report exists. A
 blocked/partial summary must name the exact failure and its consequence.

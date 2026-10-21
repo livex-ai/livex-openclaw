@@ -121,7 +121,8 @@ supported hypotheses, and unknowns. Do not restate the alert as the result.
 
 Include the finding, decisive supporting evidence, observed impact/current or
 historical status, and one concrete next action. Follow the `investigate-alerts`
-Report rules. Cite actual source identifiers and verified Slack/source URLs.
+Report rules for 2–3 concise inline evidence links, using tool-returned
+`logsExplorerUrl` and verified Slack/source URLs on relevant phrases.
 Never invent a link, query result, recovery state, elapsed time, token count, or
 cost. Keep detailed source IDs, filters, and windows in native history.
 
