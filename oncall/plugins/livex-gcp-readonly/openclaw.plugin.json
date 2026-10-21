@@ -1,0 +1,59 @@
+{
+  "id": "livex-gcp-readonly",
+  "name": "LiveX investigation evidence",
+  "description": "Read-only investigation evidence for an authorized Slack caller in configured channels.",
+  "version": "0.1.0",
+  "contracts": {
+    "tools": [
+      "livex_gcp_logs_read"
+    ]
+  },
+  "toolMetadata": {
+    "livex_gcp_logs_read": {
+      "optional": true,
+      "sideEffecting": false,
+      "replaySafe": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "gcloudPath",
+      "cloudSdkConfig",
+      "gcloudAccount",
+      "project",
+      "allowedChannelId",
+      "allowedSenderId"
+    ],
+    "properties": {
+      "gcloudPath": {
+        "type": "string",
+        "minLength": 1
+      },
+      "cloudSdkConfig": {
+        "type": "string",
+        "minLength": 1
+      },
+      "gcloudAccount": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 254,
+        "pattern": "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$"
+      },
+      "project": {
+        "type": "string",
+        "minLength": 1
+      },
+      "allowedChannelId": {
+        "type": "string",
+        "pattern": "^(?:\\*|[CG][A-Z0-9]+)$",
+        "description": "Slack channel ID or * for all accessible public/private channels. Keep Slack group DMs disabled."
+      },
+      "allowedSenderId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
