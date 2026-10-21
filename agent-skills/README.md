@@ -100,10 +100,11 @@ python3 -B -m unittest discover -s agent-skills/tests -p 'test_*.py'
 python3 -B -m unittest discover -s oncall/scripts -p 'test_*.py'
 ```
 
-This initial migration preserves every skill and supporting-file byte from the
-existing oncall package. It moves ownership and changes discovery paths. It
-does not change investigation methods, solve log-filter limitations, enable
-native execution, or claim Desktop feature parity.
+The initial centralization at `bdfee0ba` preserved the existing oncall skill
+files. Later instruction changes are recorded in `sources.json`. The oncall
+Report template now requires consistent bold labels and a separate material
+blocker field. This is an instruction contract; it is not a deterministic
+formatter or proof of live Slack rendering.
 
 ## Licenses
 

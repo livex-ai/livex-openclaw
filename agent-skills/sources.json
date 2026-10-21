@@ -3,12 +3,12 @@
     {
       "name": "investigate-alerts",
       "path": "skills/investigate-alerts/SKILL.md",
-      "sha256": "015a424fbe83f13237a004853388026a34471c08906fd4ddbac13d8b8e6bbd91",
+      "sha256": "6edacfb40890933bd8fbbd87953be059b1094834019485d31922312a8eabe5f7",
       "importedSha256": "ffb6785ff06017b4ada8e90ba3a4259af64cd90db878f7067af027ac0b0cfcd0",
       "adaptation": {
         "scope": "shared-source",
         "updatedOn": "2026-10-21",
-        "purpose": "Full-window log discovery, pagination, evidence reuse, and pinned repository reads under the configured caller and project rules."
+        "purpose": "Full-window log discovery, pagination, evidence reuse, pinned repository reads, and a required labeled report under the configured caller and project rules."
       },
       "source": "Repository-owned adaptation of the local investigation workflow",
       "files": [
@@ -22,7 +22,7 @@
         },
         {
           "path": "skills/investigate-alerts/references/oncall-kit-attribution.md",
-          "sha256": "728f46bc7549748281e1f3e0449eae3d45b5681d2ff536a72dd7f57a9a4a8477"
+          "sha256": "8c266573f7e688a99d7d76ae3bae54052f26149785f6ce00120cf4a24ecaecfd"
         }
       ]
     },
