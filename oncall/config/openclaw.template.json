@@ -133,7 +133,9 @@
   },
   "skills": {
     "load": {
-      "extraDirs": []
+      "extraDirs": [
+        "${SHARED_SKILLS_ROOT}"
+      ]
     }
   },
   "channels": {

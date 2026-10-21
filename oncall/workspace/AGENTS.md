@@ -128,10 +128,11 @@ cost. Keep detailed source IDs, filters, and windows in native history.
 
 For several findings, the optional table is:
 Area | Channel | Slack thread link | Findings | Escalation needed | Next step.
-For one finding, concise prose or three short bullets is sufficient. Follow-ups
+For each final single-alert report, including partial, blocked, and follow-up
+reports, use the exact bold labels and paragraph order in the `investigate-alerts`
+Report template. Keep a material blocker in its separate final field. Follow-ups
 report changes in understanding and evidence freshness rather than repeat the
-previous answer. A precise blocker must state the action/target, failure, effect
-on the conclusion, and smallest remedy; investigate available evidence first.
+previous answer. Investigate available evidence before reporting a blocker.
 
 ## History and permissions
 
