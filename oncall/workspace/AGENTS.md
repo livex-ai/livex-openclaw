@@ -121,16 +121,18 @@ supported hypotheses, and unknowns. Do not restate the alert as the result.
 
 Include the finding, decisive supporting evidence, observed impact/current or
 historical status, and one concrete next action. Follow the `investigate-alerts`
-Report rules. Cite actual source identifiers and verified Slack/source URLs.
+Report rules for 2–3 concise inline evidence links, using tool-returned
+`logsExplorerUrl` and verified Slack/source URLs on relevant phrases.
 Never invent a link, query result, recovery state, elapsed time, token count, or
 cost. Keep detailed source IDs, filters, and windows in native history.
 
 For several findings, the optional table is:
 Area | Channel | Slack thread link | Findings | Escalation needed | Next step.
-For one finding, concise prose or three short bullets is sufficient. Follow-ups
+For each final single-alert report, including partial, blocked, and follow-up
+reports, use the exact bold labels and paragraph order in the `investigate-alerts`
+Report template. Keep a material blocker in its separate final field. Follow-ups
 report changes in understanding and evidence freshness rather than repeat the
-previous answer. A precise blocker must state the action/target, failure, effect
-on the conclusion, and smallest remedy; investigate available evidence first.
+previous answer. Investigate available evidence before reporting a blocker.
 
 ## History and permissions
 
