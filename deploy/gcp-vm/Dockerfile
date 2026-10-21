@@ -1,4 +1,6 @@
-# Both arguments must be operator-reviewed name@sha256:digest references.
+# Release builds require reviewed name@sha256:digest references for both images.
+# A local build check may supply FORK_IMAGE as a same-graph Bake target context.
+# SDK_IMAGE remains digest pinned. See README.md.
 ARG SDK_IMAGE
 ARG FORK_IMAGE
 FROM ${SDK_IMAGE} AS sdk

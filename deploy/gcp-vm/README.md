@@ -75,16 +75,21 @@ cd "$PRIVATE_ROOT/build"
 python3 agent-skills/scripts/library.py validate
 # Build the base from this same archive, if it has not been built yet.
 # Use a local tag first; publish only through your approved registry workflow.
-docker build --build-arg GIT_COMMIT="$SOURCE_SHA" -t '<fork-base-tag>' .
+docker build --build-arg GIT_COMMIT="$SOURCE_SHA" \
+  --build-arg OPENCLAW_EXTENSIONS="codex,slack" -t '<fork-base-tag>' .
 # Resolve the approved base's registry digest and set FORK_IMAGE to that digest.
 docker build -f deploy/gcp-vm/Dockerfile --build-arg FORK_IMAGE \
   --build-arg SDK_IMAGE --build-arg SOURCE_SHA -t "$BUILD_TAG" .
 ```
 
+Select `codex,slack` when building the base. These opt-in plugins and their
+runtime dependencies are otherwise pruned from the image. Include any additional
+opt-in plugins required by the reviewed configuration.
+
 Never build from the working tree or include `.env`, private settings, generated
 runtime files, or local credentials in the context. Review the archive's tracked
-contents first. Both base images must be digest pinned and architecture-compatible
-Debian images; the resulting image is released by immutable digest too. Debian
+contents first. For release builds, both base images must be digest pinned and
+architecture-compatible Debian images; the resulting image is released by immutable digest too. Debian
 apt packages can change between builds: digest-pin the **result**, retain it for
 rollback, and record source/base/SDK digests in your private release record.
 Publishing is a separately authorized operator action; no push is implied here.
@@ -98,6 +103,16 @@ plus its referenced shared dependencies. `/opt/oncall-skills/skills-lock.json`
 and `/opt/skills.sha256` record its bytes. Compare the previous release's selected
 skill bytes and manifest with this image **before** approving path mapping to
 image skills. A source revision change is not an automatic skill upgrade approval.
+
+**Optional local build check:** A private Docker Bake file can pass the base
+build result to the wrapper through `contexts = { forkbase = "target:base" }`
+and `FORK_IMAGE = "forkbase"`. Keep `SDK_IMAGE` digest pinned and select
+`codex,slack` in the base target. This builds both reviewed Dockerfiles in one
+graph without publishing an intermediate image. Record the source archive hash,
+SDK digest, build metadata, base/runtime image IDs, and smoke-test results.
+These local images are build evidence, not published releases. Do not pass a local
+image ID to `prepare.py`; installation requires the reviewed runtime
+`name@sha256:digest` reference. See [Docker Bake target contexts](https://docs.docker.com/build/bake/contexts/).
 
 ## Prepare and install (Gateway stays stopped)
 
