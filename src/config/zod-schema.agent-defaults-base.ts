@@ -207,6 +207,7 @@ export const AgentDefaultsBaseSchema = z.strictObject({
     })
     .optional(),
   embeddedAgent: EmbeddedAgentConfigSchema.optional(),
+  permissionModeDefault: z.literal("read-only").optional(),
   thinkingDefault: AgentThinkingLevelSchema.optional(),
   fastModeDefault: z.union([z.boolean(), z.literal("auto"), z.literal("ultrafast")]).optional(),
   verboseDefault: z.union([z.literal("off"), z.literal("on"), z.literal("full")]).optional(),
