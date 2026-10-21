@@ -1,0 +1,32 @@
+{
+  "id": "02-original-operation-recovery",
+  "version": 1,
+  "request": "Summarize whether the original failed operation recovered.",
+  "as_of": "2026-10-20T11:30:00Z",
+  "investigation_state": "Completed investigation and outcome verification. No remaining material blocker. No remediation or contact occurred.",
+  "evidence": [
+    {
+      "id": "failure",
+      "event_time": "2026-10-20T11:00:00Z",
+      "available_at": "2026-10-20T11:00:04Z",
+      "retrieved_at": "2026-10-20T11:30:00Z",
+      "facts": "Attempt SYN-ATT-201 for operation SYN-OP-201, ticket SYN-TKT-201, failed with transient connection_reset. Upstream cause not confirmed.",
+      "logsExplorerUrl": "https://example.test/logs/SYN-OP-201?from=1100&to=1102"
+    },
+    {
+      "id": "outcome",
+      "event_time": "2026-10-20T11:06:00Z",
+      "available_at": "2026-10-20T11:06:05Z",
+      "retrieved_at": "2026-10-20T11:30:00Z",
+      "facts": "Automatic retry SYN-ATT-202 explicitly names original operation SYN-OP-201 and completed it. A matching durable result confirms delivery for the same operation and ticket.",
+      "verified_url": "https://example.test/results/SYN-OP-201"
+    },
+    {
+      "id": "coverage",
+      "event_time": "2026-10-20T11:30:00Z",
+      "available_at": "2026-10-20T11:30:00Z",
+      "retrieved_at": "2026-10-20T11:30:00Z",
+      "facts": "Complete uncapped failure/retry/result coverage through 11:30 UTC. Original operation recovered at 11:06 UTC. Scope is one operation; wider service health was not investigated. No manual replay is needed. Owner unknown."
+    }
+  ]
+}

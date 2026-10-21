@@ -22,6 +22,31 @@ function expectSchemaFailurePath(result: SchemaParseResult, prefix: string): voi
 }
 
 describe("agent defaults schema", () => {
+  it("preserves read-only permission defaults at global and per-agent scopes", () => {
+    const result = validateConfigObject({
+      agents: {
+        defaults: { permissionModeDefault: "read-only" },
+        entries: { worker: { permissionModeDefault: "read-only" } },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(JSON.stringify(result.issues));
+    }
+    expect(result.config.agents?.defaults?.permissionModeDefault).toBe("read-only");
+    expect(result.config.agents?.entries?.worker?.permissionModeDefault).toBe("read-only");
+    expect(result.config.agents?.list?.[0]?.permissionModeDefault).toBe("read-only");
+  });
+
+  it("only permits read-only as a configured permission default", () => {
+    for (const permissionModeDefault of ["full", "guarded", "workspace", "unknown", null, true]) {
+      expect(AgentDefaultsSchema.safeParse({ permissionModeDefault }).success).toBe(false);
+      expect(AgentEntrySchema.safeParse({ id: "ops", permissionModeDefault }).success).toBe(false);
+    }
+    expect(AgentDefaultsSchema.parse({})).not.toHaveProperty("permissionModeDefault");
+    expect(AgentEntrySchema.parse({ id: "ops" })).not.toHaveProperty("permissionModeDefault");
+  });
+
   it("accepts bounded explicit picker runtimes only on exact model refs", () => {
     const models = {
       "openai/gpt-5.6-sol": { agentRuntime: { id: "openclaw" }, pickerRuntimes: ["codex"] },
