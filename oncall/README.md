@@ -1,3 +1,15 @@
+# Shared skill source
+
+The four oncall skills and their supporting files are maintained in
+[agent-skills/](../agent-skills/README.md). The oncall template loads that source
+through `skills.load.extraDirs`; the existing oncall skill list stays the same.
+Configuration rendering verifies the central manifest before publication.
+
+For an existing deployment, use the central library migration instructions.
+Do not apply the full template just to change a skill path. Preserve and compare
+old workspace copies before removing precedence conflicts. No running Gateway
+or personal Desktop skill is changed by this source migration.
+
 # Oncall agent configuration
 
 This package configures one native OpenClaw agent named `oncall`. OpenClaw routes

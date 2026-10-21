@@ -17,14 +17,18 @@ class ConfigurationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name).resolve()
+        self.root = Path(self.tmp.name).resolve() / "oncall"
+        self.root.mkdir()
+        self.library = self.root.parent / "agent-skills"
+        (self.library / "skills").mkdir(parents=True)
+        (self.library / "profiles.json").write_text('{}')
         for name in ("config", "skills", "prompts"):
             (self.root / name).mkdir()
         self.write("config/openclaw.template.json", {
-            "skills": {"load": {"extraDirs": ["${PACKAGE_ROOT}/skills/debug"]}},
+            "skills": {"load": {"extraDirs": ["${SHARED_SKILLS_ROOT}"]}},
             "testPath": "${GCLOUD_PATH}", "account": "${GCLOUD_ACCOUNT}",
             "prompt": "${INVESTIGATOR_PROMPT}"})
-        self.write("skills/sources.json", {"skills": []})
+        self.write("../agent-skills/sources.json", {"skills": [], "sharedFiles": []})
         (self.root / "prompts/investigator.md").write_text('Quoted "text"\nsecond line\n')
         self.local = self.root / "config/local.json"
         self.settings = {"gcloudPath": '/tmp/a path/"gcloud"',
@@ -41,7 +45,7 @@ class ConfigurationTests(unittest.TestCase):
         rendered, settings = config.render(self.root, self.local)
         self.assertEqual(json.loads(json.dumps(rendered))["testPath"], self.settings["gcloudPath"])
         self.assertEqual(rendered["prompt"], 'Quoted "text"\nsecond line')
-        self.assertEqual(rendered["skills"]["load"]["extraDirs"], [str(self.root / "skills/debug")])
+        self.assertEqual(rendered["skills"]["load"]["extraDirs"], [str(self.library / "skills")])
 
     def test_render_substitutes_explicit_gcloud_account(self):
         for account in ("oncall-reader@example.com", "reader@project.iam.gserviceaccount.com",
@@ -105,30 +109,38 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Local settings"):
             config.render(self.root, self.local)
 
-    def test_installed_adaptation_hash_is_used_instead_of_upstream_hash(self):
-        skill = self.root / "skills/SKILL.md"
-        skill.write_text("adapted")
-        self.write("skills/sources.json", {"skills": [{
-            "path": "skills/SKILL.md", "sha256": "0" * 64,
-            "importedSha256": hashlib.sha256(skill.read_bytes()).hexdigest(), "files": []}]})
+    def test_current_shared_skill_hash_is_used_instead_of_import_provenance(self):
+        skill = self.library / "skills/debug/SKILL.md"
+        skill.parent.mkdir()
+        skill.write_text("---\nname: debug\ndescription: Use when debugging.\n---\nInspect evidence.\n")
+        self.write("../agent-skills/sources.json", {"skills": [{
+            "name": "debug", "path": "skills/debug/SKILL.md",
+            "sha256": hashlib.sha256(skill.read_bytes()).hexdigest(),
+            "importedSha256": "0" * 64, "files": []}]})
         config.render(self.root, self.local)
 
     def test_modified_skill_or_support_file_is_rejected(self):
-        for relative in ("skills/SKILL.md", "skills/support.md"):
+        for relative in ("SKILL.md", "support.md"):
             with self.subTest(relative=relative):
-                for name in ("SKILL.md", "support.md"):
-                    (self.root / "skills" / name).write_text("reviewed")
-                digest = hashlib.sha256(b"reviewed").hexdigest()
-                self.write("skills/sources.json", {"skills": [{
-                    "path": "skills/SKILL.md", "sha256": digest,
-                    "files": [{"path": "skills/support.md", "sha256": digest}]}]})
-                (self.root / relative).write_text("changed")
-                with self.assertRaisesRegex(ValueError, "Skill checksum mismatch"):
+                directory = self.library / "skills/debug"
+                directory.mkdir(exist_ok=True)
+                main = directory / "SKILL.md"
+                main.write_text("---\nname: debug\ndescription: Use when debugging.\n---\nInspect evidence.\n")
+                support = directory / "support.md"
+                support.write_text("reviewed")
+                self.write("../agent-skills/sources.json", {"skills": [{
+                    "name": "debug", "path": "skills/debug/SKILL.md",
+                    "sha256": hashlib.sha256(main.read_bytes()).hexdigest(),
+                    "files": [{"path": "skills/debug/support.md",
+                               "sha256": hashlib.sha256(support.read_bytes()).hexdigest()}]}]})
+                (directory / relative).write_text("changed")
+                with self.assertRaises(ValueError):
                     config.render(self.root, self.local)
 
-    def test_skill_manifest_cannot_read_outside_package(self):
-        self.write("skills/sources.json", {"skills": [{"path": "../external", "sha256": "0" * 64}]})
-        with self.assertRaisesRegex(ValueError, "within the package"):
+    def test_skill_manifest_cannot_read_outside_library(self):
+        self.write("../agent-skills/sources.json", {"skills": [{
+            "name": "debug", "path": "../external", "sha256": "0" * 64}]})
+        with self.assertRaises(ValueError):
             config.render(self.root, self.local)
 
     @patch.object(config.subprocess, "run")

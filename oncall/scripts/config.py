@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the non-secret pilot patch and use OpenClaw's supported publisher."""
 import argparse
-import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -10,6 +10,10 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+LIBRARY_SPEC = importlib.util.spec_from_file_location(
+    "livex_skill_library", ROOT.parent / "agent-skills/scripts/library.py")
+LIBRARY = importlib.util.module_from_spec(LIBRARY_SPEC)
+LIBRARY_SPEC.loader.exec_module(LIBRARY)
 PLACEHOLDER = re.compile(r"\$\{([A-Z_]+)\}")
 LOCAL_PATH_KEYS = {"gcloudPath", "cloudSdkConfig", "openclawCommand", "pythonPath", "gcloudSdkRoot"}
 LOCAL_KEYS = LOCAL_PATH_KEYS | {"gcloudAccount", "project", "slackSenderId"}
@@ -21,14 +25,7 @@ def read_json(path):
 
 
 def verify_skills(root):
-    for skill in read_json(root / "skills/sources.json")["skills"]:
-        main = {"path": skill["path"], "sha256": skill.get("importedSha256", skill["sha256"])}
-        for entry in [main, *skill.get("files", [])]:
-            path = (root / entry["path"]).resolve()
-            if root.resolve() not in path.parents:
-                raise ValueError("Skill path must stay within the package")
-            if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
-                raise ValueError("Skill checksum mismatch: " + entry["path"])
+    LIBRARY.validate(root.parent / "agent-skills")
 
 
 def render(root, local_path):
@@ -50,6 +47,7 @@ def render(root, local_path):
     verify_skills(root)
     values = {
         "PACKAGE_ROOT": str(root.resolve()),
+        "SHARED_SKILLS_ROOT": str((root.parent / "agent-skills/skills").resolve()),
         "GCLOUD_PATH": settings["gcloudPath"],
         "CLOUDSDK_CONFIG": settings["cloudSdkConfig"],
         "GCLOUD_ACCOUNT": account,
