@@ -5,11 +5,17 @@
   "version": "0.1.0",
   "contracts": {
     "tools": [
-      "livex_gcp_logs_read"
+      "livex_gcp_logs_read",
+      "livex_repository_read"
     ]
   },
   "toolMetadata": {
     "livex_gcp_logs_read": {
+      "optional": true,
+      "sideEffecting": false,
+      "replaySafe": true
+    },
+    "livex_repository_read": {
       "optional": true,
       "sideEffecting": false,
       "replaySafe": true
@@ -53,6 +59,80 @@
       "allowedSenderId": {
         "type": "string",
         "minLength": 1
+      },
+      "paging": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable durable, conversation-scoped continuation for bounded log pages. Omit or disable to use the existing gcloud reader."
+          },
+          "pythonPath": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^/[^\\u0000-\\u001f]*$",
+            "description": "Absolute path to the local Python interpreter for the read-only paging helper."
+          },
+          "sdkRoot": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^/[^\\u0000-\\u001f]*$",
+            "description": "Absolute path to the installed Google Cloud SDK root. Uses the existing configured account and Cloud SDK state."
+          }
+        },
+        "if": {
+          "properties": {
+            "enabled": {
+              "const": true
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        },
+        "then": {
+          "required": [
+            "pythonPath",
+            "sdkRoot"
+          ]
+        }
+      },
+      "repositories": {
+        "type": "array",
+        "default": [],
+        "maxItems": 64,
+        "description": "Operator-approved local repository snapshots. Empty by default; commits are not automatically refreshed or assumed deployed.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "path",
+            "commit"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^/[^\\u0000-\\u001f]*$",
+              "description": "Canonical absolute checkout path; never supplied by the model."
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$",
+              "description": "Operator-pinned immutable commit SHA."
+            }
+          }
+        }
       }
     }
   }

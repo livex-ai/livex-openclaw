@@ -1,0 +1,35 @@
+{
+  "id": "05-concise-material-blocker",
+  "version": 1,
+  "request": "Very short please: cause and next step?",
+  "as_of": "2026-10-20T16:30:00Z",
+  "investigation_state": "Readable logs and pinned source inspected; production revision mapping remains unavailable after an attempted read. No other independent evidence available. No remediation or contact occurred.",
+  "evidence": [
+    {
+      "id": "logs",
+      "event_time": "2026-10-20T16:10:00Z",
+      "available_at": "2026-10-20T16:10:04Z",
+      "retrieved_at": "2026-10-20T16:30:00Z",
+      "facts": "One observed stream SYN-STREAM-501 disconnected with remote_peer_closed. No verified cause, terminal outcome, or broader affected scope.",
+      "logsExplorerUrl": "https://example.test/logs/SYN-STREAM-501?from=1600&to=1630"
+    },
+    {
+      "id": "source",
+      "event_time": "2026-10-20T15:00:00Z",
+      "available_at": "2026-10-20T15:01:00Z",
+      "retrieved_at": "2026-10-20T16:29:00Z",
+      "facts": "Pinned checkout SYN-REV-501 includes a timeout change, but no evidence shows that revision was deployed or caused this disconnect. Owner unknown.",
+      "verified_url": "https://example.test/source/SYN-REV-501/stream"
+    },
+    {
+      "id": "deployment-read",
+      "event_time": "2026-10-20T16:30:00Z",
+      "available_at": "2026-10-20T16:30:00Z",
+      "retrieved_at": "2026-10-20T16:30:00Z",
+      "action": "Read deployment manifest for stream service active at 16:10 UTC",
+      "failure": "Manifest artifact SYN-DEP-501 was not found in the available source store.",
+      "effect": "Cannot match the pinned change to the deployed revision or attribute cause.",
+      "smallest_remedy": "Obtain the 16:10 UTC deployment manifest and compare its revision."
+    }
+  ]
+}

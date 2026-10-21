@@ -1,0 +1,29 @@
+{
+  "secrets": {
+    "providers": {
+      "slack-oncall": null
+    }
+  },
+  "channels": {
+    "slack": {
+      "defaultAccount": null,
+      "accounts": {
+        "default": null,
+        "oncall": null
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "oncall",
+      "match": {
+        "channel": "slack",
+        "accountId": "default",
+        "peer": {
+          "kind": "channel",
+          "id": "*"
+        }
+      }
+    }
+  ]
+}
