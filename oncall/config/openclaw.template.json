@@ -83,7 +83,12 @@
         "name": "LiveX Oncall",
         "description": "Mention-triggered production investigations with reviewed local execution and evidence-backed next actions.",
         "workspace": "${PACKAGE_ROOT}/workspace",
-        "skills": [],
+        "skills": [
+          "investigate-alerts",
+          "debug",
+          "systematic-debugging",
+          "verification-before-completion"
+        ],
         "permissionModeDefault": null,
         "tools": {
           "profile": "full",

@@ -1,4 +1,5 @@
 """Offline tests for the configuration publication boundary."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -102,6 +103,32 @@ class ConfigurationTests(unittest.TestCase):
     def test_local_settings_do_not_accept_secrets_or_arbitrary_config(self):
         self.write("config/local.json", {**self.settings, "botToken": "synthetic"})
         with self.assertRaisesRegex(ValueError, "Local settings"):
+            config.render(self.root, self.local)
+
+    def test_installed_adaptation_hash_is_used_instead_of_upstream_hash(self):
+        skill = self.root / "skills/SKILL.md"
+        skill.write_text("adapted")
+        self.write("skills/sources.json", {"skills": [{
+            "path": "skills/SKILL.md", "sha256": "0" * 64,
+            "importedSha256": hashlib.sha256(skill.read_bytes()).hexdigest(), "files": []}]})
+        config.render(self.root, self.local)
+
+    def test_modified_skill_or_support_file_is_rejected(self):
+        for relative in ("skills/SKILL.md", "skills/support.md"):
+            with self.subTest(relative=relative):
+                for name in ("SKILL.md", "support.md"):
+                    (self.root / "skills" / name).write_text("reviewed")
+                digest = hashlib.sha256(b"reviewed").hexdigest()
+                self.write("skills/sources.json", {"skills": [{
+                    "path": "skills/SKILL.md", "sha256": digest,
+                    "files": [{"path": "skills/support.md", "sha256": digest}]}]})
+                (self.root / relative).write_text("changed")
+                with self.assertRaisesRegex(ValueError, "Skill checksum mismatch"):
+                    config.render(self.root, self.local)
+
+    def test_skill_manifest_cannot_read_outside_package(self):
+        self.write("skills/sources.json", {"skills": [{"path": "../external", "sha256": "0" * 64}]})
+        with self.assertRaisesRegex(ValueError, "within the package"):
             config.render(self.root, self.local)
 
     @patch.object(config.subprocess, "run")

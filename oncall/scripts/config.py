@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render the non-secret pilot patch and use OpenClaw's supported publisher."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -19,6 +20,17 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def verify_skills(root):
+    for skill in read_json(root / "skills/sources.json")["skills"]:
+        main = {"path": skill["path"], "sha256": skill.get("importedSha256", skill["sha256"])}
+        for entry in [main, *skill.get("files", [])]:
+            path = (root / entry["path"]).resolve()
+            if root.resolve() not in path.parents:
+                raise ValueError("Skill path must stay within the package")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+                raise ValueError("Skill checksum mismatch: " + entry["path"])
+
+
 def render(root, local_path):
     settings = read_json(local_path)
     if not isinstance(settings, dict) or set(settings) != LOCAL_KEYS:
@@ -35,6 +47,7 @@ def render(root, local_path):
     sender = settings["slackSenderId"]
     if not isinstance(sender, str) or not re.fullmatch(r"[UW][A-Z0-9]{8,}", sender):
         raise ValueError("slackSenderId must be one Slack user ID")
+    verify_skills(root)
     values = {
         "PACKAGE_ROOT": str(root.resolve()),
         "GCLOUD_PATH": settings["gcloudPath"],
