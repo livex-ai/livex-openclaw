@@ -2,6 +2,8 @@ import { isAbsolute } from "node:path";
 
 const MAX_STDOUT = 256 * 1024;
 const MAX_RESULT = 30 * 1024;
+// Local output budget, not a Google Console URL limit.
+const MAX_EVIDENCE_URL = 4096;
 const RESOURCE_TYPE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const LABEL_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const MAX_LABELS = 16;
@@ -341,6 +343,30 @@ function queryEvidenceMetadata(query, state) {
   };
 }
 
+function logsExplorerLink(query, config, metadata = queryEvidenceMetadata(query, {})) {
+  const filter = buildLogFilter(query, config);
+  // Encoding must not bypass the same redaction used for returned selectors.
+  // A changed filter would also make the link misrepresent the executed read.
+  if (buildLogFilter(metadata, config) !== filter)
+    return { logsExplorerLinkUnavailableReason: "query-redacted" };
+  const url = new URL("https://console.cloud.google.com/logs/query");
+  url.searchParams.set("project", config.project);
+  url.searchParams.set("query", filter); // Contains the exact inclusive UTC bounds.
+  const logsExplorerUrl = url.href;
+  return Buffer.byteLength(logsExplorerUrl) <= MAX_EVIDENCE_URL
+    ? { logsExplorerUrl }
+    : { logsExplorerLinkUnavailableReason: "url-too-long" };
+}
+
+export function withEvidenceLink(details, query, config) {
+  if (details.logsExplorerUrl || details.logsExplorerLinkUnavailableReason) return details;
+  // Older cached receipts need no cloud reread or stored-history rewrite.
+  const linked = { ...details, ...logsExplorerLink(query, config) };
+  if (Buffer.byteLength(JSON.stringify(linked)) <= MAX_RESULT) return linked;
+  const omitted = { ...details, logsExplorerLinkUnavailableReason: "result-byte-limit" };
+  return Buffer.byteLength(JSON.stringify(omitted)) <= MAX_RESULT ? omitted : details;
+}
+
 export function evidence(result, query, config, { reserveBytes = 0 } = {}) {
   if (!Number.isInteger(reserveBytes) || reserveBytes < 0 || reserveBytes > MAX_RESULT / 2)
     throw new Error("Invalid evidence metadata reservation");
@@ -385,6 +411,7 @@ export function evidence(result, query, config, { reserveBytes = 0 } = {}) {
   const details = {
     project: config.project,
     ...queryMetadata,
+    ...logsExplorerLink(query, config, queryMetadata),
     entries: [],
     truncated: state.truncated,
     truncationReasons: [],

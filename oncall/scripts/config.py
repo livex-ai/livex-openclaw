@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render the non-secret pilot patch and use OpenClaw's supported publisher."""
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -9,6 +10,10 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+LIBRARY_SPEC = importlib.util.spec_from_file_location(
+    "livex_skill_library", ROOT.parent / "agent-skills/scripts/library.py")
+LIBRARY = importlib.util.module_from_spec(LIBRARY_SPEC)
+LIBRARY_SPEC.loader.exec_module(LIBRARY)
 PLACEHOLDER = re.compile(r"\$\{([A-Z_]+)\}")
 LOCAL_PATH_KEYS = {"gcloudPath", "cloudSdkConfig", "openclawCommand", "pythonPath", "gcloudSdkRoot"}
 LOCAL_KEYS = LOCAL_PATH_KEYS | {"gcloudAccount", "project", "slackSenderId"}
@@ -17,6 +22,10 @@ GCLOUD_ACCOUNT = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+")
 
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def verify_skills(root):
+    LIBRARY.validate(root.parent / "agent-skills")
 
 
 def render(root, local_path):
@@ -35,8 +44,10 @@ def render(root, local_path):
     sender = settings["slackSenderId"]
     if not isinstance(sender, str) or not re.fullmatch(r"[UW][A-Z0-9]{8,}", sender):
         raise ValueError("slackSenderId must be one Slack user ID")
+    verify_skills(root)
     values = {
         "PACKAGE_ROOT": str(root.resolve()),
+        "SHARED_SKILLS_ROOT": str((root.parent / "agent-skills/skills").resolve()),
         "GCLOUD_PATH": settings["gcloudPath"],
         "CLOUDSDK_CONFIG": settings["cloudSdkConfig"],
         "GCLOUD_ACCOUNT": account,

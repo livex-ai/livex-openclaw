@@ -1,0 +1,40 @@
+{
+  "id": "01-distinct-ticket",
+  "version": 1,
+  "request": "Summarize the investigation of the failed ticket operation. Is it recovered?",
+  "as_of": "2026-10-20T09:30:00Z",
+  "investigation_state": "Completed all available authorized investigation for the requested window. No remaining tool failure or access blocker. No remediation or contact occurred.",
+  "evidence": [
+    {
+      "id": "alert-a",
+      "event_time": "2026-10-20T09:02:00Z",
+      "available_at": "2026-10-20T09:02:15Z",
+      "retrieved_at": "2026-10-20T09:30:00Z",
+      "facts": "Alert for attempt SYN-ATT-101 on ticket SYN-TKT-101 for account SYN-ACCT-7.",
+      "verified_url": "https://example.test/alerts/SYN-A101"
+    },
+    {
+      "id": "failure-a",
+      "event_time": "2026-10-20T09:02:01Z",
+      "available_at": "2026-10-20T09:02:03Z",
+      "retrieved_at": "2026-10-20T09:30:00Z",
+      "facts": "Operation SYN-ATT-101 was rejected with account_suspended for SYN-ACCT-7. The reason the account was suspended is not in evidence.",
+      "logsExplorerUrl": "https://example.test/logs/SYN-ATT-101?from=0900&to=0930"
+    },
+    {
+      "id": "later-b",
+      "event_time": "2026-10-20T09:15:00Z",
+      "available_at": "2026-10-20T09:15:03Z",
+      "retrieved_at": "2026-10-20T09:30:00Z",
+      "facts": "Attempt SYN-ATT-102 completed for the same account, but on different ticket SYN-TKT-102. No link or retry relationship to SYN-ATT-101.",
+      "logsExplorerUrl": "https://example.test/logs/SYN-ATT-102?from=0910&to=0920"
+    },
+    {
+      "id": "coverage",
+      "event_time": "2026-10-20T09:30:00Z",
+      "available_at": "2026-10-20T09:30:00Z",
+      "retrieved_at": "2026-10-20T09:30:00Z",
+      "facts": "Complete uncapped evidence for these two attempts through as-of. No terminal success for SYN-ATT-101 was found. Supported scope is one failed original attempt and one later different-ticket success; no fleet/customer total measured. Owner unknown."
+    }
+  ]
+}

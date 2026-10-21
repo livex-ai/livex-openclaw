@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { buildLogFilter, queryArgs } from "./core.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 
 const config = {
@@ -92,6 +93,11 @@ test("empty cloud page with continuation is incomplete and cursor is opaque", as
   assert.equal(last.windowExhausted, true);
   assert.equal(last.entries.length, 1);
   assert.equal(calls, 2);
+  assert.equal(
+    new URL(first.logsExplorerUrl).searchParams.get("query"),
+    buildLogFilter(queryArgs(query, config), config),
+  );
+  assert.equal(last.logsExplorerUrl, first.logsExplorerUrl);
 });
 
 test("byte-limited page retains every undelivered row before advancing cloud cursor", async () => {
@@ -114,6 +120,8 @@ test("byte-limited page retains every undelivered row before advancing cloud cur
   );
   let result = (await tool.execute("p0", query)).details;
   let n = 1;
+  const evidenceUrl = result.logsExplorerUrl;
+  assert.ok(evidenceUrl);
   const firstRetrievedAt = result.retrievedAt;
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 30 * 1024);
   found.push(...result.entries.map((r) => r.insertId));
@@ -122,6 +130,7 @@ test("byte-limited page retains every undelivered row before advancing cloud cur
     result = (await tool.execute(`p${n++}`, { cursor: result.nextCursor })).details;
     assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 30 * 1024);
     assert.equal(result.retrievedAt, firstRetrievedAt);
+    assert.equal(result.logsExplorerUrl, evidenceUrl);
     found.push(...result.entries.map((r) => r.insertId));
   }
   assert.equal(calls, 1);
@@ -151,6 +160,40 @@ test("duplicate request reuses receipt without another cloud read", async () => 
   const replay = (await tool.execute("second", query)).details;
   assert.equal(calls, 1);
   assert.equal(replay.reusedEvidence, true);
+});
+
+test("old cached receipts gain links without a cloud read or stored-history mutation", async () => {
+  const state = ledger();
+  let calls = 0;
+  const tool = createPagedLogsTool(
+    config,
+    context,
+    () => {
+      throw Error("unused");
+    },
+    {
+      ledger: state,
+      readPage: async () => {
+        calls++;
+        return { entries: [row(1)], nextPageToken: "PRIVATE_BACKEND_CURSOR" };
+      },
+    },
+  );
+  await tool.execute("first", query);
+  const stored = state.receipts.get("first").result;
+  delete stored.logsExplorerUrl;
+  const before = JSON.stringify(stored);
+  const replay = (await tool.execute("replay", query)).details;
+  assert.equal(calls, 1);
+  assert.equal(replay.reusedEvidence, true);
+  assert.equal(
+    new URL(replay.logsExplorerUrl).searchParams.get("query"),
+    buildLogFilter(queryArgs(query, config), config),
+  );
+  assert.equal(JSON.stringify(stored), before);
+  assert.equal(replay.nextCursor, stored.nextCursor);
+  assert.deepEqual(replay.entries, stored.entries);
+  assert.ok(!JSON.stringify(replay).includes("PRIVATE_BACKEND_CURSOR"));
 });
 
 test("explicit refresh obtains new evidence while ordinary duplicate requests reuse prior evidence", async () => {
