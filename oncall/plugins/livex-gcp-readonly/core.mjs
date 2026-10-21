@@ -341,8 +341,10 @@ function queryEvidenceMetadata(query, state) {
   };
 }
 
-export function evidence(result, query, config) {
-  const resultLimit = MAX_RESULT;
+export function evidence(result, query, config, { reserveBytes = 0 } = {}) {
+  if (!Number.isInteger(reserveBytes) || reserveBytes < 0 || reserveBytes > MAX_RESULT / 2)
+    throw new Error("Invalid evidence metadata reservation");
+  const resultLimit = MAX_RESULT - reserveBytes;
   if (result?.cleanup === "uncertain")
     throw new Error(
       "Cloud log read cleanup is uncertain; ask the operator to inspect before retrying",

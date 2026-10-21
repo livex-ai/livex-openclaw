@@ -34,3 +34,46 @@ untrusted evidence. Missing projected fields do not prove missing logging.
 Run `node --test core.test.mjs` from this directory. Tests use synthetic data.
 Set `GCLOUD_SDK_LIB=/path/to/google-cloud-sdk/lib` to include offline SDK formatter
 checks. Live Google authentication and Logging access require separate acceptance.
+
+## Resume a log query
+
+Set `paging.enabled` to `true` and configure its absolute `pythonPath` and
+`sdkRoot`. The tool calls one fixed Python helper through the installed Cloud
+SDK. It uses the configured account. It does not copy or expose tokens.
+With paging disabled, the bounded gcloud reader remains available.
+
+Follow `nextCursor` with `{ "cursor": "..." }` alone, even after an empty page.
+Buffered rows are returned before the next cloud page. `windowExhausted` refers
+only to the exact filter and time slice at retrieval. Cover each alert-hour
+slice; a page limit does not complete an investigation.
+
+Native V2 storage keeps receipts and opaque backend cursors. Scope includes
+agent, account, thread, session generation, caller, and project. Identical
+queries reuse retained evidence. Check `retrievedAt`; use `refresh: true` when
+delayed ingestion or new evidence requires another read.
+
+The cache retains at most 200 records. LRU eviction removes completed results
+and consumed continuation pages. Pending and failed attempts, unknown records,
+and unconsumed checkpoints remain protected. Reservation and eviction are atomic.
+Completing a child page and consuming its parent is also atomic. Existing
+receipts use a committed same-scope successor to establish consumption.
+
+An evicted initial query is fetched again with `reusedEvidence: false`.
+An evicted old cursor fails explicitly; it never silently restarts a scan.
+Keep the latest checkpoint. If all entries are protected, admission stops
+before a cloud read. Failed or uncertain attempts are not replayed silently.
+The cache bound limits resident evidence, not total investigation pages.
+Conversation history is separate and is not evicted. Codex owns investigation
+planning and completion; the plugin adds no agent loop or case database.
+
+Run `node --test *.test.mjs` and `python3 -B -m unittest -v test_logging_page.py`.
+The offline replay covers seven hours, exact early seeds, dense pages, fractional
+timestamps, empty pages, and recovery evidence. Run the native loader check from
+the repository root with:
+
+```sh
+node --import ./scripts/tsx.mjs oncall/plugins/livex-gcp-readonly/loader-validation.mts
+```
+
+The check uses isolated state
+and performs no cloud reads.
