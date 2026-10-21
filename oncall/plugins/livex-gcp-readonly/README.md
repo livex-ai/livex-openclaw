@@ -90,3 +90,14 @@ or hooks, read dirty/untracked files, or assume a commit matches production.
 It blocks protected files, symlinks, and submodules. It reports the inspected
 commit and applies best-effort redaction. Caller and invocation checks match
 the log tool. Run `node --test repository.test.mjs` for its offline checks.
+
+## Link to log evidence
+
+Results include `logsExplorerUrl` for the exact project, filter, and inclusive
+UTC bounds. Link meaningful report text to this URL. Do not invent a Console
+link from a guessed service or incomplete filter.
+
+If redaction changes a selector, or the URL exceeds the output budget, the
+result includes `logsExplorerLinkUnavailableReason`. Cached results can gain a
+link without another cloud read or a stored-history rewrite. Rows and cursors
+remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
