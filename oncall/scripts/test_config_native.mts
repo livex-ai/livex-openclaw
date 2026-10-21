@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,60 @@ try {
   assert.deepEqual(config.channels?.slack?.allowFrom, ["U000000001"]);
   assert.equal(config.bindings?.[0]?.agentId, "oncall");
   console.log("Native configuration schema, plugin manifests, and merge preservation passed.");
+  if (process.argv.includes("--slack-cutover")) {
+    const input = path.join(state, "config.json");
+    const output = path.join(state, "cutover");
+    await writeFile(input, JSON.stringify(merged), { mode: 0o600 });
+    execFileSync(
+      "python3",
+      [
+        "-B",
+        path.join(root, "slack/prepare-cutover.py"),
+        "--config",
+        input,
+        "--output-dir",
+        output,
+      ],
+      { encoding: "utf8" },
+    );
+    let candidate = merged;
+    for (const step of ["account-cutover", "rollback-account-cutover"]) {
+      const accountPatch = JSON.parse(
+        await readFile(path.join(output, `${step}.patch.json`), "utf8"),
+      );
+      candidate = applyMergePatch(candidate, accountPatch);
+      const checked = validateConfigObjectWithPlugins(candidate, {
+        env: process.env,
+        loadPluginMetadataSnapshot: (candidateConfig) =>
+          loadPluginMetadataSnapshot({
+            config: candidateConfig,
+            env: process.env,
+            stateDir: state,
+            allowCurrent: false,
+            preferPersisted: false,
+          }),
+      });
+      if (!checked.ok) {
+        throw new Error(JSON.stringify(checked.issues));
+      }
+      const next = checked.config;
+      assert.equal(next.channels?.slack?.botToken, base.channels.slack.botToken);
+      assert.equal(next.channels?.slack?.appToken, base.channels.slack.appToken);
+      assert.deepEqual(next.agents, config.agents);
+      assert.deepEqual(next.plugins, config.plugins);
+      const account = step === "account-cutover" ? "oncall" : "default";
+      assert.equal(next.bindings?.[0]?.match.accountId, account);
+      if (account === "oncall") {
+        assert.equal(next.channels?.slack?.accounts?.default?.enabled, false);
+        assert.deepEqual(next.channels?.slack?.accounts?.oncall?.allowFrom, ["U000000001"]);
+        assert.equal(next.channels?.slack?.accounts?.oncall?.requireMention, true);
+      } else {
+        assert.equal(next.channels?.slack?.accounts?.oncall, undefined);
+        assert.deepEqual(next.bindings, config.bindings);
+      }
+    }
+    console.log("Native Slack cutover and rollback schema and preservation passed.");
+  }
 } finally {
   if (priorState === undefined) {
     delete process.env.OPENCLAW_STATE_DIR;

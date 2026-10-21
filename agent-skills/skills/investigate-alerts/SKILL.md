@@ -132,17 +132,36 @@ summary while native Codex still intends to continue the investigation.
 
 ## Report
 
-Brevity changes delivery, not investigation depth. For one alert, aim for three
-short bullets or 60–100 words, expanded only for material evidence or blockers:
+Brevity changes delivery, not investigation depth. Every final single-alert
+report, including a partial, blocked, or follow-up report, uses the exact bold
+labels below in this order. Start each field on its own paragraph. Aim for
+60–100 words, expanded when material evidence or limits need more space.
+Clarifying questions, progress updates, and control-command replies do not use
+this report template.
 
-1. **Finding/evidence:** the new finding, decisive observation, and a verified
-   Cloud Logging/source link. Distinguish observed mechanism from confirmed or
-   suspected cause.
-2. **Impact/status:** supported affected scope, active/recovered/unknown, and
-   important coverage or freshness limits. Log counts are not automatically
-   failed-request/customer counts.
-3. **Next step:** one concrete diagnostic or recommended action, with an owner
-   only when supported. A recommendation is not an action taken.
+**Finding:** State the new finding and decisive evidence with a verified inline
+link when available. Distinguish the observed mechanism from a confirmed or
+suspected cause. If nothing is verified, say so.
+
+**Impact / status:** State the supported affected scope and active, recovered,
+or unknown status, with the evidence's as-of time and material coverage or
+freshness limits. Log counts are not automatically failed-request or customer
+counts. Use unknown when the evidence cannot establish impact or recovery.
+
+**Next step:** Give one concrete diagnostic or recommended action. Name an owner
+only when supported. If no further action is warranted, say why. A recommendation
+is not an action taken.
+
+**Blocked:** Include this separate final field only when a material blocker
+remains. Name the attempted action and target, exact failure, its effect on the
+conclusion, and the smallest remedy. For an unresolved prior attempt, distinguish
+its unsettled outcome from a new failure. Keep the other three fields even when
+blocked; put the failure detail here instead of burying it in another field.
+
+Before final delivery, check the exact labels, order, separate paragraphs, and
+any material Blocked field. For follow-ups, keep this structure but report only
+new evidence or changed conclusions; use a brief unchanged/unknown status when
+needed. The format must not force invented findings, owners, or recovery.
 
 Use 2–3 useful inline Markdown links, `[short relevant phrase](URL)`, when the
 evidence supports them. Use the tool's `logsExplorerUrl` verbatim on a phrase
