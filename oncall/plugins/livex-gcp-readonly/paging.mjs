@@ -8,6 +8,7 @@ import {
   evidence,
   selectedEntry,
   validateConfig,
+  withEvidenceLink,
 } from "./core.mjs";
 
 const HELPER = fileURLToPath(new URL("./logging-page.py", import.meta.url));
@@ -228,7 +229,9 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
       });
       assertCurrent(signal);
       if (reserved.kind === "cached")
-        return jsonResult({ ...reserved.receipt.result, reusedEvidence: true });
+        return jsonResult(
+          withEvidenceLink({ ...reserved.receipt.result, reusedEvidence: true }, query, config),
+        );
       if (reserved.kind !== "reserved")
         throw Error(
           "This log read has an unresolved prior attempt; inspect its receipt before retrying",

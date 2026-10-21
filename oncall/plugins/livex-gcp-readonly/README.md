@@ -77,3 +77,27 @@ node --import ./scripts/tsx.mjs oncall/plugins/livex-gcp-readonly/loader-validat
 
 The check uses isolated state
 and performs no cloud reads.
+
+## Read approved source
+
+`livex_repository_read` reads operator-approved local repositories at pinned
+commits. Configure `repositories` with IDs, canonical paths, and full commit
+SHAs. The default list is empty. Add the tool to the agent allowlist explicitly.
+Keep the actual repository inventory private.
+
+The tool lists, searches, and reads bounded Git objects. It does not run scripts
+or hooks, read dirty/untracked files, or assume a commit matches production.
+It blocks protected files, symlinks, and submodules. It reports the inspected
+commit and applies best-effort redaction. Caller and invocation checks match
+the log tool. Run `node --test repository.test.mjs` for its offline checks.
+
+## Link to log evidence
+
+Results include `logsExplorerUrl` for the exact project, filter, and inclusive
+UTC bounds. Link meaningful report text to this URL. Do not invent a Console
+link from a guessed service or incomplete filter.
+
+If redaction changes a selector, or the URL exceeds the output budget, the
+result includes `logsExplorerLinkUnavailableReason`. Cached results can gain a
+link without another cloud read or a stored-history rewrite. Rows and cursors
+remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
