@@ -1,4 +1,4 @@
-"""Offline contract tests; no credentials, SDK client, or network are loaded."""
+"""Offline contract tests; SDK boundaries are faked; no credentials or network."""
 import importlib.util
 import json
 from pathlib import Path
@@ -164,6 +164,8 @@ class LoggingPageTests(unittest.TestCase):
         modules = {
             "googlecloudsdk.api_lib.util": SimpleNamespace(apis=SimpleNamespace(
                 GetMessagesModule=lambda *args: FakeMessages, GetClientInstance=rejected_client)),
+            "googlecloudsdk.core.credentials": SimpleNamespace(creds_context_managers=SimpleNamespace(
+                CredentialProvidersManager=contextlib.nullcontext)),
             "googlecloudsdk.core": SimpleNamespace(properties=SimpleNamespace(
                 VALUES=SimpleNamespace(core=SimpleNamespace(account=property_stub, project=property_stub)))),
             "apitools.base.py": SimpleNamespace(encoding=SimpleNamespace(MessageToDict=lambda value: value)),
@@ -181,6 +183,79 @@ class LoggingPageTests(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertNotIn("PRIVATE-SDK-ERROR", stderr.getvalue())
             self.assertEqual(json.loads(stderr.getvalue()), expected)
+
+    def test_main_credential_providers_cover_client_and_request_and_cleanup(self):
+        import sys
+        for failure_at in (None, "client", "request"):
+            with self.subTest(failure_at=failure_at):
+                events = []
+                active = False
+
+                @contextlib.contextmanager
+                def providers():
+                    nonlocal active
+                    active = True
+                    events.append("enter")
+                    try:
+                        yield
+                    finally:
+                        active = False
+                        events.append("exit")
+
+                def check(stage):
+                    self.assertTrue(active, f"credential provider missing during {stage}")
+                    events.append(stage)
+                    if failure_at == stage:
+                        raise RuntimeError("synthetic SDK failure")
+
+                class Client(FakeClient):
+                    def List(client, request, global_params):
+                        check("request")
+                        return super().List(request, global_params)
+
+                def client_factory(*args, **kwargs):
+                    check("client")
+                    return Client({"entries": []})
+
+                properties_set = {}
+                def prop(name):
+                    return SimpleNamespace(Set=lambda value: properties_set.update({name: value}))
+                modules = {
+                    "googlecloudsdk.api_lib.util": SimpleNamespace(apis=SimpleNamespace(
+                        GetMessagesModule=lambda *args: FakeMessages, GetClientInstance=client_factory)),
+                    "googlecloudsdk.core.credentials": SimpleNamespace(creds_context_managers=SimpleNamespace(
+                        CredentialProvidersManager=providers)),
+                    "googlecloudsdk.core": SimpleNamespace(properties=SimpleNamespace(
+                        VALUES=SimpleNamespace(core=SimpleNamespace(account=prop("account"), project=prop("project"))))),
+                    "apitools.base.py": SimpleNamespace(encoding=SimpleNamespace(MessageToDict=lambda value: value)),
+                }
+                with tempfile.TemporaryDirectory() as root:
+                    package = Path(root) / "lib/googlecloudsdk"
+                    package.mkdir(parents=True)
+                    (package / "__init__.py").touch()
+                    argv = ["--sdk-root", root, "--account", "fixture@example.com",
+                            "--project", PROJECT, "--filter", FILTER, "--page-size", "1"]
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with patch.dict(sys.modules, modules), patch.dict(os.environ), patch.object(sys, "path", sys.path.copy()):
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                            code = self.helper.main(argv)
+                            expected_events = ["enter", "client"]
+                            if failure_at != "client":
+                                expected_events.append("request")
+                            expected_events.append("exit")
+                            self.assertEqual(events, expected_events)
+                            self.assertFalse(active)
+                            self.assertEqual(code, 0 if failure_at is None else 1)
+                            self.assertEqual(properties_set, {"account": "fixture@example.com", "project": PROJECT})
+                            if failure_at:
+                                self.assertEqual(stdout.getvalue(), "")
+                            else:
+                                self.assertEqual(json.loads(stdout.getvalue()), {
+                                    "entries": [], "nextPageToken": None, "projectionTruncated": False})
+                            events.clear()
+                            argv[-1] = "0"
+                            self.assertEqual(self.helper.main(argv), 2)
+                            self.assertEqual(events, [], "rejected input must never reach SDK providers or API")
 
     def test_auth_environment_overrides_do_not_change_config_files(self):
         with patch.dict(os.environ, {"CLOUDSDK_CONFIG": "/approved/config", "GOOGLE_APPLICATION_CREDENTIALS": "/wrong/key"}):

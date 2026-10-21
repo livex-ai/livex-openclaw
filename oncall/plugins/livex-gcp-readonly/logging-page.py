@@ -179,15 +179,18 @@ def main(argv=None):
         sys.path[:0] = [str(sdk_root / "lib"), str(sdk_root / "lib/third_party")]
         from googlecloudsdk.api_lib.util import apis
         from googlecloudsdk.core import properties
+        from googlecloudsdk.core.credentials import creds_context_managers
         from apitools.base.py import encoding
         properties.VALUES.core.account.Set(args.account)
         properties.VALUES.core.project.Set(args.project)
-        messages = apis.GetMessagesModule("logging", "v2")
-        client = apis.GetClientInstance("logging", "v2", http_timeout_sec=25,
-                                       skip_activation_prompt=True)
-        result = read_page(client, messages, encoding.MessageToDict,
-                           project=args.project, log_filter=args.filter,
-                           page_size=args.page_size, page_token=args.page_token)
+        # Match gcloud: register attached-VM credential providers for the read.
+        with creds_context_managers.CredentialProvidersManager():
+            messages = apis.GetMessagesModule("logging", "v2")
+            client = apis.GetClientInstance("logging", "v2", http_timeout_sec=25,
+                                           skip_activation_prompt=True)
+            result = read_page(client, messages, encoding.MessageToDict,
+                               project=args.project, log_filter=args.filter,
+                               page_size=args.page_size, page_token=args.page_token)
         # No partial stdout: errors cannot publish a continuation past lost rows.
         sys.stdout.write(encode_json(result) + "\n")
         return 0

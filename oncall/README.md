@@ -95,3 +95,9 @@ OpenClaw backup workflow. Restore that reviewed configuration through OpenClaw's
 supported configuration commands. Restore original bindings and plugin lists
 when they were replaced. Do not delete authentication, sessions, or plugin state.
 Restart only when the operator authorizes it and the CLI requires it.
+
+## GCP VM deployment
+
+Use the [VM deployment package](../deploy/gcp-vm/README.md) for a private container
+runtime, attached Google service account, agent-scoped Codex sign-in, configuration
+checks, and state-aware rollback. Deployment is a separate operator action.
