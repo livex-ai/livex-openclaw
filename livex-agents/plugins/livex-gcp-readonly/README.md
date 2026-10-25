@@ -77,7 +77,7 @@ timestamps, empty pages, and recovery evidence. Run the native loader check from
 the repository root with:
 
 ```sh
-node --import ./scripts/tsx.mjs oncall/plugins/livex-gcp-readonly/loader-validation.mts
+node --import ./scripts/tsx.mjs livex-agents/plugins/livex-gcp-readonly/loader-validation.mts
 ```
 
 The check uses isolated state

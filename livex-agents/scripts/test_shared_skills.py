@@ -17,7 +17,7 @@ class SharedSkillTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
-        self.root = self.repo / "oncall"
+        self.root = self.repo / "livex-agents"
         for name in ("config", "prompts", "skills"):
             (self.root / name).mkdir(parents=True)
         self.library = self.repo / "agent-skills"

@@ -1,1 +1,0 @@
-Runtime investigation instructions are maintained in workspace/AGENTS.md and loaded for the configured oncall agent. This file remains a compatibility input for the unchanged configuration renderer; the template no longer injects a Slack channel system prompt.

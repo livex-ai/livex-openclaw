@@ -58,7 +58,7 @@
       "sha256": "808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787",
       "adaptation": {
         "scope": "shared-source",
-        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in oncall/workspace/AGENTS.md."
+        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in livex-agents/workspaces/oncall/AGENTS.md."
       },
       "files": [
         {
@@ -121,7 +121,7 @@
       "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3",
       "adaptation": {
         "scope": "shared-source",
-        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in oncall/workspace/AGENTS.md."
+        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in livex-agents/workspaces/oncall/AGENTS.md."
       },
       "files": [
         {

@@ -58,7 +58,7 @@ try {
   assert.equal(config.gateway?.auth?.token, base.gateway.auth.token);
   assert.equal(config.logging?.level, base.logging.level);
   assert.equal(config.agents?.entries?.main?.workspace, base.agents.entries.main.workspace);
-  assert.equal(config.agents?.entries?.oncall?.workspace, path.join(root, "workspace"));
+  assert.equal(config.agents?.entries?.oncall?.workspace, path.join(root, "workspaces", "oncall"));
   assert.equal(config.channels?.slack?.requireMention, true);
   assert.deepEqual(config.agents?.entries?.oncall?.tools?.message?.actions?.allow, [
     "read",

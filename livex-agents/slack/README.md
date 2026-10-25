@@ -60,7 +60,7 @@ From the repository root, run:
 ```sh
 export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_STATE_DIR/openclaw.json}"
 CUTOVER_DIR="$OPENCLAW_STATE_DIR/slack-oncall-cutover"
-python3 -B oncall/slack/prepare-cutover.py \
+python3 -B livex-agents/slack/prepare-cutover.py \
   --config "$OPENCLAW_CONFIG_PATH" --output-dir "$CUTOVER_DIR"
 ```
 
@@ -76,7 +76,7 @@ Apply the reviewed cutover:
 "$OPENCLAW_COMMAND" config patch --file "$CUTOVER_DIR/account-cutover.patch.json"
 "$OPENCLAW_COMMAND" config validate --json
 # Continue only when validation reports valid: true.
-./oncall/scripts/local-gcloud-startup/start-gateway.sh
+./livex-agents/scripts/local-gcloud-startup/start-gateway.sh
 ```
 
 Verify an authorized mention and a follow-up in a joined channel. Check that both select agent `oncall` and account `oncall`.
@@ -101,7 +101,7 @@ If bindings changed after cutover, reconcile them first. The rollback contains t
 "$OPENCLAW_COMMAND" config patch --file "$CUTOVER_DIR/rollback-account-cutover.patch.json"
 "$OPENCLAW_COMMAND" config validate --json
 # Continue only when validation reports valid: true.
-./oncall/scripts/local-gcloud-startup/start-gateway.sh
+./livex-agents/scripts/local-gcloud-startup/start-gateway.sh
 ```
 
 Rollback restores the default-account binding and removes the new account settings and secret provider.
@@ -118,8 +118,8 @@ Account separation does not isolate the Gateway process or its filesystem creden
 Run the offline preparation tests:
 
 ```sh
-python3 -B -m unittest discover -s oncall/slack -p 'test_*.py'
-node --import ./scripts/tsx.mjs oncall/scripts/test_config_native.mts --slack-cutover
+python3 -B -m unittest discover -s livex-agents/slack -p 'test_*.py'
+node --import ./scripts/tsx.mjs livex-agents/scripts/test_config_native.mts --slack-cutover
 ```
 
 The tests check binding preservation, rollback, caller restrictions, token references, and private output permissions.

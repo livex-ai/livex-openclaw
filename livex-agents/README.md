@@ -1,3 +1,55 @@
+# LiveX agent layout
+
+This package keeps agent role instructions in separate workspaces:
+
+```text
+livex-agents/
+├── workspaces/oncall/       Existing configured investigation role
+├── workspaces/debugger/     Inactive diagnosis-role instructions
+├── workspaces/qa/           Inactive verification-role instructions
+├── plugins/                Shared evidence-tool implementations
+├── config/                 Source configuration templates
+├── scripts/                Configuration and startup helpers
+└── tests/role-replays.md    Offline specialist-role packets
+```
+
+The template registers only `oncall` and selects `workspaces/oncall`. The
+[debugger](workspaces/debugger/AGENTS.md) and [QA](workspaces/qa/AGENTS.md)
+instructions are inactive sources: they add no registrations, tools, callers,
+schedules, automatic handoffs or runner access. Their [offline replay
+packets](tests/role-replays.md) do not establish live activation or execution.
+This repository relocation does not reconfigure or restart any deployment.
+
+
+## Existing deployment source-path cutover
+
+Keep the previous checkout available until a separately authorized deployment
+switch is verified. Updating an existing checkout in place can remove `oncall/`
+while a running Gateway still holds those source paths.
+
+1. Record the current workspace, plugin load paths, startup/helper paths and local
+   settings. Preserve the configured agent/account IDs, bindings, credentials,
+   selected skill release and state directory. Ignored `oncall/config/local.json`
+   is local operator work; do not discard it with the old source directory.
+2. Prepare a narrow patch pointing the oncall workspace at the new checkout's
+   `livex-agents/workspaces/oncall` and replacing only the corresponding plugin
+   path with `livex-agents/plugins/livex-gcp-readonly`. Preserve every unrelated
+   entry in `plugins.load.paths`; that array is replaced as a whole by a patch.
+   Update operator launchers and helper references to the new checkout. Recreate
+   local settings under `livex-agents/config/local.json` with the same approved
+   values and reviewed path changes; no new credentials are required.
+3. Validate the narrow patch with the existing configured CLI's dry-run and
+   configuration validation. Do not apply the full profile to perform this
+   relocation: it also replaces bindings, tool settings and other arrays.
+4. During a separately authorized stopped-Gateway switch, apply the reviewed
+   paths and use the existing startup procedure. Verify the intended agent,
+   skills and evidence-tool source before retiring the previous checkout.
+
+For rollback, stop the Gateway through its owning operator workflow, restore the
+recorded workspace/plugin/launcher/local-setting paths and start from the retained
+previous checkout. Keep credentials, skill selection, bindings and state unchanged.
+These are manual operator steps; this source relocation executes none of them.
+
 # Shared skill source
 
 The four oncall skills and their supporting files are maintained in
@@ -43,9 +95,9 @@ security boundary.
 Run from the checkout root:
 
 ```sh
-python3 -B oncall/scripts/config.py render --output oncall/generated/openclaw.patch.json
-oncall/scripts/validate-config.sh
-oncall/scripts/apply-config.sh
+python3 -B livex-agents/scripts/config.py render --output livex-agents/generated/openclaw.patch.json
+livex-agents/scripts/validate-config.sh
+livex-agents/scripts/apply-config.sh
 ```
 
 The two shell scripts render the template again. They do not apply edits made to
@@ -54,8 +106,8 @@ wrapper directly instead of those scripts:
 
 ```sh
 OPENCLAW_COMMAND='/absolute/path/to/configured-openclaw-wrapper'
-"$OPENCLAW_COMMAND" config patch --file oncall/generated/openclaw.patch.json --dry-run --json
-"$OPENCLAW_COMMAND" config patch --file oncall/generated/openclaw.patch.json
+"$OPENCLAW_COMMAND" config patch --file livex-agents/generated/openclaw.patch.json --dry-run --json
+"$OPENCLAW_COMMAND" config patch --file livex-agents/generated/openclaw.patch.json
 ```
 
 Use the same executable as `openclawCommand` in local settings. Review the
@@ -83,8 +135,8 @@ incident closure require their separate evidence.
 ## Verification
 
 ```sh
-python3 -B -m unittest discover -s oncall/scripts -p test_config.py
-node --import ./scripts/tsx.mjs oncall/scripts/test_config_native.mts
+python3 -B -m unittest discover -s livex-agents/scripts -p test_config.py
+node --import ./scripts/tsx.mjs livex-agents/scripts/test_config_native.mts
 ```
 
 These tests cover rendering, fixed identity inputs, credential-free publication,
