@@ -18,6 +18,8 @@
         "chat:write",
         "groups:history",
         "groups:read",
+        "reactions:read",
+        "reactions:write",
         "users:read"
       ]
     }

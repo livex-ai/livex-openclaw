@@ -60,6 +60,14 @@ try {
   assert.equal(config.agents?.entries?.main?.workspace, base.agents.entries.main.workspace);
   assert.equal(config.agents?.entries?.oncall?.workspace, path.join(root, "workspace"));
   assert.equal(config.channels?.slack?.requireMention, true);
+  assert.deepEqual(config.agents?.entries?.oncall?.tools?.message?.actions?.allow, [
+    "read",
+    "react",
+    "reactions",
+  ]);
+  assert.equal(config.channels?.slack?.actions?.reactions, true);
+  assert.equal(config.channels?.slack?.streaming?.progress?.style, "compact");
+  assert.equal(config.channels?.slack?.streaming?.progress?.nativeTaskCards, false);
   assert.deepEqual(config.channels?.slack?.allowFrom, ["U000000001"]);
   assert.equal(config.bindings?.[0]?.agentId, "oncall");
   console.log("Native configuration schema, plugin manifests, and merge preservation passed.");
@@ -110,6 +118,7 @@ try {
         assert.equal(next.channels?.slack?.accounts?.default?.enabled, false);
         assert.deepEqual(next.channels?.slack?.accounts?.oncall?.allowFrom, ["U000000001"]);
         assert.equal(next.channels?.slack?.accounts?.oncall?.requireMention, true);
+        assert.equal(next.channels?.slack?.accounts?.oncall?.actions?.reactions, true);
       } else {
         assert.equal(next.channels?.slack?.accounts?.oncall, undefined);
         assert.deepEqual(next.bindings, config.bindings);

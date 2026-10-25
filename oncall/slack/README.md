@@ -10,8 +10,10 @@ They do not create an app, install credentials, apply configuration, or restart 
 3. Install the app to obtain its Bot User OAuth Token.
 4. Invite the bot to each channel it must serve.
 
-The manifest requests mentions, public and private channel history, channel information, user information, and message replies.
-It does not request DMs, slash commands, reactions, or user-token access.
+The manifest requests mentions, public and private channel history, channel information,
+user information, message replies, and reaction reads/writes for bot review markers.
+It does not request DMs, slash commands, or user-token access. Existing installations
+need Slack reauthorization when these reaction scopes have not already been granted.
 A wildcard policy covers channels available to this app. It does not join channels or grant access to other private channels.
 
 Change both manifest display names to rename the bot. Change the account name in the cutover template if needed.
@@ -81,7 +83,10 @@ Verify an authorized mention and a follow-up in a joined channel. Check that bot
 Keep the old app installed until verification is complete.
 
 The new account requires explicit mentions and the existing authorized caller.
-DMs, implicit mentions, bot callers, introductions, and reactions remain disabled.
+DMs, implicit mentions, bot callers and introductions remain disabled. The account
+permits qualified bot review reactions under the shared investigation skill. Verify
+the bot identity, target capability and prior workflow-write provenance before
+reconciling markers; invocation opt-outs disable all reaction writes, including cleanup.
 The patch disables the old default account. It preserves the old root credentials and conversation history.
 It does not change the GCP project, caller checks, repository access, or agent tools.
 

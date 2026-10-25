@@ -48,7 +48,7 @@
           "typingReaction": "",
           "reactionNotifications": "off",
           "actions": {
-            "reactions": false
+            "reactions": true
           },
           "commands": {
             "native": false,

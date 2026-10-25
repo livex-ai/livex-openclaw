@@ -28,13 +28,8 @@ skill, not an installation or wholesale copy of the kit. Adapted files are
 [replay-template.md](../../../tests/replay-template.md). Synthetic fixtures and
 their outcomes were newly authored and contain no upstream/private incidents.
 
-**Local reporting update, 2026-10-21:** the skill now requires bold Finding,
-Impact / status, and Next step fields, plus a separate Blocked field when a
-material blocker remains. This local output contract is not an upstream runtime
-feature.
-
 We retain the local debug dependency, bounded read-only investigation, existing
-emoji/authorization rules and a compact 60–100-word summary. We do not import
+emoji/authorization rules and labeled 60–100-word summary. We do not import
 upstream Claude runtime, broad channel sweeps, auto-posting, paging, schedules,
 alert-rule creation, remediation, policy-edit gates or numerical promotion
 thresholds. Recovery requires our existing observed-success standard; empty
