@@ -1,6 +1,6 @@
 # Shared skills
 
-The canonical skill files now live in [agent-skills](../../../agent-skills/README.md).
+The canonical skill files now live in [agent-skills](../../../../agent-skills/README.md).
 The oncall template loads that shared directory and selects its four existing
 skill names. Keep this directory free of same-named skill copies: workspace
 copies override the shared source. Agent instructions remain in `../AGENTS.md`.

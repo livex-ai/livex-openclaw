@@ -23,13 +23,13 @@ Set `OPENCLAW_CONFIG_PATH` to an absolute path only if your installation uses an
 From the repository root, check access without starting the Gateway:
 
 ```sh
-./oncall/scripts/local-gcloud-startup/start-gateway.sh --check
+./livex-agents/scripts/local-gcloud-startup/start-gateway.sh --check
 ```
 
 Then start it in the foreground:
 
 ```sh
-./oncall/scripts/local-gcloud-startup/start-gateway.sh
+./livex-agents/scripts/local-gcloud-startup/start-gateway.sh
 ```
 
 The helper keeps port `18791`, loopback binding, token authentication, and Tailscale disabled.
@@ -48,7 +48,7 @@ The operator must complete consent. The script cannot grant IAM permissions.
 Tests use synthetic commands and temporary state:
 
 ```sh
-node --test oncall/scripts/local-gcloud-startup/preflight.test.mjs
+node --test livex-agents/scripts/local-gcloud-startup/preflight.test.mjs
 ```
 
 No live Slack delivery or production log access is covered by those tests.

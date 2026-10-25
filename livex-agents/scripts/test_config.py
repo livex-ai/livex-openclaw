@@ -17,7 +17,7 @@ class ConfigurationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name).resolve() / "oncall"
+        self.root = Path(self.tmp.name).resolve() / "livex-agents"
         self.root.mkdir()
         self.library = self.root.parent / "agent-skills"
         (self.library / "skills").mkdir(parents=True)
@@ -90,6 +90,13 @@ class ConfigurationTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
         self.assertNotIn("${", json.dumps(rendered))
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        workspace = Path(rendered["agents"]["entries"]["oncall"]["workspace"])
+        self.assertEqual(workspace, root / "workspaces/oncall")
+        self.assertTrue((workspace / "AGENTS.md").is_file())
+        plugin = Path(rendered["plugins"]["load"]["paths"][0])
+        self.assertEqual(plugin, root / "plugins/livex-gcp-readonly")
+        self.assertTrue((plugin / "index.ts").is_file())
 
     def test_identity_fields_reject_invalid_values(self):
         for key, value in (("project", "other project"), ("project", "--project=x"),

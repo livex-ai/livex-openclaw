@@ -52,7 +52,7 @@ clean pinned checkout for a release.
 For OpenClaw, point `skills.load.extraDirs` at the exported `skills/` directory
 and select the exact names in `agents.entries.<agent-id>.skills`. Keep the
 agent's tools, caller checks, production restrictions, and instructions in its
-existing configuration and workspace. The repository's oncall template uses
+existing configuration and workspace. The repository's [oncall template](../livex-agents/config/openclaw.template.json) uses
 this shared source directly; it is suitable for a checkout pinned to a commit.
 
 `extraDirs` is Gateway-wide. Before using it on a Gateway with other agents,
@@ -97,7 +97,7 @@ branch during a turn. Do not edit or delete an active release directory.
 ```sh
 python3 -B agent-skills/scripts/library.py validate
 python3 -B -m unittest discover -s agent-skills/tests -p 'test_*.py'
-python3 -B -m unittest discover -s oncall/scripts -p 'test_*.py'
+python3 -B -m unittest discover -s livex-agents/scripts -p 'test_*.py'
 ```
 
 The initial centralization at `bdfee0ba` preserved the existing oncall skill

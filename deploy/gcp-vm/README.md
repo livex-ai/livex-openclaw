@@ -139,7 +139,7 @@ export COMPOSE_FILE='<absolute-reviewed-package-path>/compose.yaml'
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR" "$SDK_STATE_DIR"
 sudo install -m 0600 -o 1000 -g 1000 '<transferred-prepared-openclaw.json>' "$STATE_DIR/openclaw.json"
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR/workspace"
-sudo install -m 0600 -o 1000 -g 1000 '<reviewed-archive>/oncall/workspace/AGENTS.md' "$STATE_DIR/workspace/AGENTS.md"
+sudo install -m 0600 -o 1000 -g 1000 '<reviewed-archive>/livex-agents/workspaces/oncall/AGENTS.md' "$STATE_DIR/workspace/AGENTS.md"
 ```
 
 Compare the previous approved workspace instructions before installing the archived
@@ -258,7 +258,7 @@ run old/new releases against one state directory or Slack account.
 
 ```sh
 python3 -B -m unittest discover -s deploy/gcp-vm -p 'test_*.py'
-python3 -B -m unittest discover -s oncall/plugins/livex-gcp-readonly -p 'test_logging_page.py'
+python3 -B -m unittest discover -s livex-agents/plugins/livex-gcp-readonly -p 'test_logging_page.py'
 sh -n deploy/gcp-vm/start.sh
 ```
 
