@@ -377,6 +377,7 @@ export function createSlackStreamingDeliveryRuntime(setup: SlackDispatchSetup) {
       !state.streamFailed &&
       !reply.hasMedia &&
       renderPlan.mode !== "split" &&
+      !renderPlan.attachments?.length &&
       !renderPlan.textIsSlackPlainText &&
       !plannedBlocks?.length &&
       !resolveSlackReplyBlocks(payload)?.length &&

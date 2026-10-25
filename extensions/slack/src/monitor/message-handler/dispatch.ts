@@ -23,6 +23,8 @@ import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
 import { resolveSlackReplyRenderPlan } from "../../reply-blocks.js";
 import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
+import { buildSlackThreadSummaryCard } from "../../thread-summary-card.js";
+import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "../../thread-ts.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
 import { resolveSlackBotLoopProtection } from "./dispatch-helpers.js";
@@ -108,6 +110,7 @@ async function dispatchSlackMessageWithSetup(
     useStreaming,
   } = setup;
   let dispatchError: unknown;
+  let summaryUpdateUnverified = false;
   const delivery = createSlackStreamingDeliveryRuntime(setup);
   const progress = createSlackProgressRuntime({ setup, delivery });
   let shouldYieldDraftProgress = async () => false;
@@ -143,6 +146,57 @@ async function dispatchSlackMessageWithSetup(
         ...payload,
         text: formatSlackGroupThreadReply(payload.text ?? "", info.participant),
       };
+    }
+    const originalThreadTs = normalizeSlackThreadTsCandidate(message.thread_ts);
+    if (
+      info.kind === "final" &&
+      !info.participant &&
+      route.agentId === "oncall" &&
+      ctx.botUserId === "U09JKS5FHUM" &&
+      (prepared.eventScope?.teamId ?? ctx.teamId) === "T04MA1X41CM" &&
+      !prepared.isDirectMessage &&
+      originalThreadTs &&
+      prepared.ctxPayload.MessageThreadId === originalThreadTs &&
+      resolveSlackReplyThreadTs({
+        replyToMode: setup.replyDeliveryMode,
+        replyToId: payload.replyToId,
+        replyToCurrent: payload.replyToCurrent,
+        threadId: originalThreadTs,
+      }) === originalThreadTs &&
+      typeof payload.text === "string" &&
+      !payload.isReasoning &&
+      !payload.isCommentary &&
+      !payload.isStatusNotice &&
+      !payload.isCompactionNotice &&
+      !payload.isFallbackNotice &&
+      !payload.mediaUrl &&
+      !payload.mediaUrls?.length &&
+      !payload.attachments?.length &&
+      !payload.presentation &&
+      !payload.interactive &&
+      !payload.channelData?.slack
+    ) {
+      // The current report contract supplies no verified critical-impact authority.
+      // Do not infer it from priority labels, counts or words in the report.
+      const card = buildSlackThreadSummaryCard(payload.text, { textLimit: ctx.textLimit });
+      if (card) {
+        if (summaryUpdateUnverified) {
+          return { visibleReplySent: false };
+        }
+        payload = {
+          ...payload,
+          channelData: {
+            ...payload.channelData,
+            slack: { threadSummaryCard: card },
+          },
+        };
+        if (draftStream?.messageId() === originalThreadTs) {
+          // Protect the source alert before any normal, streaming or progress cleanup.
+          previewLifecycle.retainPreview();
+          await draftStream.discardPending();
+          return await delivery.deliverNormally({ payload, kind: info.kind });
+        }
+      }
     }
     if (info.kind === "final" && slackStreaming.mode === "progress" && progress.isProgressMode) {
       const supplement = getReplyPayloadTtsSupplement(payload);
@@ -212,6 +266,8 @@ async function dispatchSlackMessageWithSetup(
       replyRenderPlan.mode === "single"
         ? replyRenderPlan.blocks
         : replyRenderPlan.blockPart?.blocks;
+    const slackAttachments =
+      replyRenderPlan.mode === "single" ? replyRenderPlan.attachments : undefined;
     const requiresSeparateFallbackDelivery =
       replyRenderPlan.mode === "split" || replyRenderPlan.textIsSlackPlainText === true;
     const trimmedFinalText =
@@ -219,15 +275,17 @@ async function dispatchSlackMessageWithSetup(
         ? replyRenderPlan.text.trim()
         : replyRenderPlan.fallbackText.trim();
     const previewFinalText =
-      replyRenderPlan.mode === "single" && replyRenderPlan.textIsSlackMrkdwn
-        ? trimmedFinalText
-        : normalizeSlackOutboundText((replySourceText ?? "").trim(), {
-            tableMode: resolveMarkdownTableMode({
-              cfg,
-              channel: "slack",
-              accountId: account.accountId,
-            }),
-          });
+      replyRenderPlan.mode === "single" && slackAttachments?.length
+        ? replyRenderPlan.text
+        : replyRenderPlan.mode === "single" && replyRenderPlan.textIsSlackMrkdwn
+          ? trimmedFinalText
+          : normalizeSlackOutboundText((replySourceText ?? "").trim(), {
+              tableMode: resolveMarkdownTableMode({
+                cfg,
+                channel: "slack",
+                accountId: account.accountId,
+              }),
+            });
     const previewFinalTextFitsEdit =
       countSlackTextUtf8Bytes(previewFinalText) <= SLACK_EDIT_TEXT_MAX_BYTES;
     const shouldRestoreTtsSupplementTextForPreviewFallback =
@@ -276,6 +334,7 @@ async function dispatchSlackMessageWithSetup(
               messageId: preview.messageId,
               text: edit.text,
               ...(edit.blocks?.length ? { blocks: edit.blocks } : {}),
+              ...(slackAttachments?.length ? { attachments: slackAttachments } : {}),
               threadTs: edit.threadTs,
             });
           });
@@ -331,10 +390,22 @@ async function dispatchSlackMessageWithSetup(
           }
           return supplementalResult;
         },
+        handlePreviewEditError: () => (slackAttachments?.length ? "retain" : "fallback"),
         logPreviewEditFailure: (err) => {
-          logVerbose(
-            `slack: preview final edit failed; falling back to standard send (${formatSlackError(err)})`,
-          );
+          if (slackAttachments?.length) {
+            const failureMessage =
+              "slack: summary final update unverified; retaining existing preview without a duplicate send (" +
+              formatSlackError(err) +
+              ")";
+            logVerbose(failureMessage);
+            runtime.error?.(danger(failureMessage));
+          } else {
+            logVerbose(
+              "slack: preview final edit failed; falling back to standard send (" +
+                formatSlackError(err) +
+                ")",
+            );
+          }
         },
       },
       deliverNormally: async (normalPayload) => {
@@ -352,6 +423,12 @@ async function dispatchSlackMessageWithSetup(
         });
       },
     });
+    if (slackAttachments?.length && result.kind === "preview-retained") {
+      // Hold later summary finals for this turn without claiming a delivery receipt.
+      summaryUpdateUnverified = true;
+      // Keep custody without asserting a verified final delivery or deleting an uncertain edit.
+      previewLifecycle.retainPreview();
+    }
     return result.deliveryResult ?? { visibleReplySent: false };
   };
   let agentRunFailed = false;
@@ -437,7 +514,13 @@ async function dispatchSlackMessageWithSetup(
           await progress.onDraftBoundary?.();
           return false;
         },
-        onQueuedFollowupAdmitted: progress.onQueuedFollowupAdmitted,
+        onQueuedFollowupAdmitted: progress.onQueuedFollowupAdmitted
+          ? async () => {
+              await progress.onQueuedFollowupAdmitted?.();
+              // A new input may deliver its own summary after the prior turn's uncertain edit.
+              summaryUpdateUnverified = false;
+            }
+          : undefined,
         onQueuedFollowupSettled: progress.onQueuedFollowupSettled,
         onReasoningStream: async (payload) => {
           const visible = await progress.pushReasoningProgress(payload);
@@ -524,7 +607,11 @@ async function dispatchSlackMessageWithSetup(
       await previewLifecycle.observeDelivery({ visibleReplySent: true });
     }
   }
-  await previewLifecycle.cleanup({ failed: Boolean(dispatchError || agentRunFailed) });
+  // Compact drafts contain stage text, not a partial answer worth retaining.
+  // Clear an abandoned stage when dispatch fails before final delivery starts.
+  await previewLifecycle.cleanup({
+    failed: Boolean(dispatchError || agentRunFailed) && !progress.preambleOnlyProgress,
+  });
 
   if (anyReplyDelivered) {
     failurePolicy.recordDelivered();
