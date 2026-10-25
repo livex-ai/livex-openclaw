@@ -14,14 +14,15 @@ or personal Desktop skill is changed by this source migration.
 
 This package configures one native OpenClaw agent named `oncall`. OpenClaw routes
 Slack channel mentions to it and keeps its thread history in the native session
-store. Native Codex App Server runs the investigation. No second agent loop is
-added.
+store. Native Codex App Server runs the triage or investigation. No second agent
+loop is added.
 
 The profile enables the read-only log and repository plugin. Logs use one
 configured project and caller. Repository access stays disabled until an operator
-adds approved repository bindings. The profile exposes read tools only; generic
-shell execution is not in the agent tool allowlist. The Codex harness requires
-its execution policy for startup. That setting does not grant production writes.
+adds approved repository bindings. The profile exposes bounded evidence reads and
+qualified bot review reactions; separate message sends and generic shell execution
+are not in the agent tool allowlist. The Codex harness requires its execution
+policy for startup. That setting does not grant production writes.
 
 ## Prepare local settings
 
@@ -73,8 +74,11 @@ message. Follow the CLI's state-ownership and restart instructions after apply.
 Slack routing uses the `default` account and every channel accessible to that
 app. Each request requires an explicit mention from the configured caller. This
 does not join channels or grant access to private channels. Direct messages and
-bot triggers are disabled. Progress uses native Slack task cards. Individual
-tool-call rows are disabled to keep the card compact.
+bot triggers are disabled. Progress uses the native transport with one compact
+progress surface. Native task cards, individual tool-call rows, commentary and
+narration are disabled. Review markers follow the shared skill's provenance,
+outcome and opt-out rules; a checkmark means reviewed—no new action. Recovery and
+incident closure require their separate evidence.
 
 ## Verification
 

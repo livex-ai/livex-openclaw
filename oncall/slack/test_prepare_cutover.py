@@ -53,6 +53,7 @@ class CutoverTests(unittest.TestCase):
         self.assertFalse(slack["accounts"]["default"]["enabled"])
         account = slack["accounts"]["oncall"]
         self.assertEqual(account["userToken"], "")
+        self.assertTrue(account["actions"]["reactions"])
         self.assertEqual(account["allowFrom"], ["U000000001"])
         self.assertEqual(account["channels"]["*"]["users"], ["U000000001"])
         self.assertTrue(account["requireMention"])

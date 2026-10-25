@@ -52,7 +52,8 @@ clean pinned checkout for a release.
 For OpenClaw, point `skills.load.extraDirs` at the exported `skills/` directory
 and select the exact names in `agents.entries.<agent-id>.skills`. Keep the
 agent's tools, caller checks, production restrictions, and instructions in its
-existing configuration and workspace. The repository's oncall template uses
+existing configuration and workspace. The repository's [integration template](../oncall/config/openclaw.template.json)
+selects the [oncall workspace](../oncall/workspace/AGENTS.md) and uses
 this shared source directly; it is suitable for a checkout pinned to a commit.
 
 `extraDirs` is Gateway-wide. Before using it on a Gateway with other agents,
@@ -102,8 +103,12 @@ python3 -B -m unittest discover -s oncall/scripts -p 'test_*.py'
 
 The initial centralization at `bdfee0ba` preserved the existing oncall skill
 files. Later instruction changes are recorded in `sources.json`. The oncall
-Report template now requires consistent bold labels and a separate material
-blocker field. This is an instruction contract; it is not a deterministic
+workflow follows the pinned canonical investigation source: triage first, preserve
+requested deeper work, and report outcome/priority/disposition with separate bold
+Finding, Action, Owner and Evidence fields. Lifecycle and review markers stay
+separate from health and incident closure. Notion and follow-up remain capability
+and authorization gated. The source hash records the actual canonical input; the
+repository adaptation preserves this runtime's tool and identity boundaries. This is an instruction contract; it is not a deterministic
 formatter or proof of live Slack rendering.
 
 ## Licenses

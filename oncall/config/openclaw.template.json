@@ -104,7 +104,9 @@
           "message": {
             "actions": {
               "allow": [
-                "read"
+                "read",
+                "react",
+                "reactions"
               ]
             }
           },
@@ -184,11 +186,16 @@
         "mode": "progress",
         "nativeTransport": true,
         "progress": {
-          "style": "card",
-          "nativeTaskCards": true,
+          "style": "compact",
+          "nativeTaskCards": false,
           "toolProgress": false,
-          "commandText": "status"
+          "commandText": "status",
+          "commentary": false,
+          "narration": false
         }
+      },
+      "actions": {
+        "reactions": true
       }
     }
   },

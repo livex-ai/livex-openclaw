@@ -86,6 +86,36 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("botToken", json.dumps(rendered))
         self.assertNotIn("appToken", json.dumps(rendered))
 
+    def test_review_profile_limits_message_actions_and_keeps_compact_native_progress(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        tools = rendered["agents"]["entries"]["oncall"]["tools"]
+        self.assertEqual(tools["message"]["actions"]["allow"], ["read", "react", "reactions"])
+        self.assertEqual(tools["allow"], ["read", "skills_read", "message",
+                                          "livex_gcp_logs_read", "livex_repository_read"])
+        slack = rendered["channels"]["slack"]
+        self.assertTrue(slack["actions"]["reactions"])
+        streaming = slack["streaming"]
+        self.assertEqual(streaming["mode"], "progress")
+        self.assertTrue(streaming["nativeTransport"])
+        self.assertEqual(streaming["progress"]["style"], "compact")
+        self.assertFalse(streaming["progress"]["nativeTaskCards"])
+        for key in ("toolProgress", "commentary", "narration"):
+            self.assertFalse(streaming["progress"][key])
+
+    def test_dedicated_app_has_scopes_and_account_gate_for_review_markers(self):
+        root = Path(__file__).resolve().parent.parent
+        manifest = json.loads((root / "slack/app-manifest.json").read_text())
+        scopes = manifest["oauth_config"]["scopes"]["bot"]
+        self.assertIn("reactions:read", scopes)
+        self.assertIn("reactions:write", scopes)
+        cutover = json.loads((root / "slack/account-cutover.patch.json").read_text())
+        account = cutover["channels"]["slack"]["accounts"]["oncall"]
+        self.assertTrue(account["actions"]["reactions"])
+        self.assertEqual(account["reactionNotifications"], "off")
+        self.assertEqual(account["botToken"]["source"], "file")
+        self.assertEqual(account["appToken"]["source"], "file")
+
     def test_supplied_example_renders_without_unresolved_values(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
