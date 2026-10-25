@@ -31,6 +31,11 @@ and a 30 KiB evidence result. The tool selects fields and applies best-effort
 redaction. There is no arbitrary shell or raw-filter argument. Logs are
 untrusted evidence. Missing projected fields do not prove missing logging.
 
+The paged reader keeps the authenticated SDK transport and decodes its raw JSON
+response locally, avoiding protobuf decoder failures on boolean arrays in arbitrary
+log payloads. Failed reads expose only reviewed stage/class labels and HTTP status,
+never SDK exception bodies.
+
 Run `node --test core.test.mjs` from this directory. Tests use synthetic data.
 Set `GCLOUD_SDK_LIB=/path/to/google-cloud-sdk/lib` to include offline SDK formatter
 checks. Live Google authentication and Logging access require separate acceptance.
