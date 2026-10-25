@@ -30,6 +30,28 @@ class PageValidationError(ValueError):
     """Only fixed local diagnostics may be printed by the CLI."""
 
 
+SAFE_EXCEPTION_CLASSES = frozenset({
+    "AccessTokenRefreshError", "ConnectionError", "HttpError", "ImportError",
+    "InvalidDataFromServerError", "JSONDecodeError", "ModuleNotFoundError",
+    "OSError", "PageValidationError", "PermissionError", "RefreshError",
+    "RuntimeError", "SSLError", "TimeoutError", "TransportError", "TypeError", "ValueError",
+})
+
+
+def error_diagnostic(error, stage):
+    # Class names are fixed reviewed labels, never exception messages or bodies.
+    name = type(error).__name__
+    diagnostic = {"code": "validation_error" if isinstance(error, PageValidationError) else "sdk_error",
+                  "stage": stage, "exceptionClass": name if name in SAFE_EXCEPTION_CLASSES else "OtherError"}
+    try:
+        status = error.status_code
+    except (AttributeError, KeyError, TypeError, ValueError):
+        status = None
+    if type(status) is int and 400 <= status <= 599:
+        diagnostic.update(code="http_error", httpStatus=status)
+    return {"error": diagnostic}
+
+
 def encode_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
@@ -119,13 +141,20 @@ def project_entry(raw, project):
         field_limit //= 2
 
 
-def read_page(client, messages, to_dict, *, project, log_filter, page_size, page_token=None):
+def read_page(client, messages, *, project, log_filter, page_size, page_token=None):
     guarded_filter = validate_query(project, log_filter, page_size, page_token)
     request = messages.ListLogEntriesRequest(
         resourceNames=[f"projects/{project}"], filter=guarded_filter,
         orderBy="timestamp desc", pageSize=page_size, pageToken=validate_token(page_token))
-    response = to_dict(client.entries.List(
-        request, global_params=messages.StandardQueryParameters(fields=API_FIELDS)))
+    # The SDK's proto decoder rejects boolean arrays in arbitrary jsonPayload
+    # fields before our projection can discard them. Keep its authenticated
+    # transport and typed request, but decode the response with the JSON parser.
+    with client.JsonResponseModel():
+        raw_response = client.entries.List(
+            request, global_params=messages.StandardQueryParameters(fields=API_FIELDS))
+    response = json.loads(raw_response)
+    if not isinstance(response, dict):
+        raise PageValidationError("Cloud Logging returned an invalid response object")
     raw_entries = response.get("entries", [])
     if not isinstance(raw_entries, list) or len(raw_entries) > page_size:
         raise PageValidationError("Cloud Logging returned an invalid page size")
@@ -168,6 +197,7 @@ def main(argv=None):
     parser.add_argument("--page-size", type=int, required=True)
     parser.add_argument("--page-token")
     args = parser.parse_args(argv)
+    stage = "validation"
     try:
         validate_query(args.project, args.filter, args.page_size, args.page_token)
         if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]{1,253}", args.account) or len(args.account) > 254:
@@ -177,10 +207,11 @@ def main(argv=None):
             raise PageValidationError("Invalid operator-configured Cloud SDK root")
         configure_sdk_environment(args.account, args.project)
         sys.path[:0] = [str(sdk_root / "lib"), str(sdk_root / "lib/third_party")]
+        stage = "sdk_import"
         from googlecloudsdk.api_lib.util import apis
         from googlecloudsdk.core import properties
         from googlecloudsdk.core.credentials import creds_context_managers
-        from apitools.base.py import encoding
+        stage = "client_setup"
         properties.VALUES.core.account.Set(args.account)
         properties.VALUES.core.project.Set(args.project)
         # Match gcloud: register attached-VM credential providers for the read.
@@ -188,26 +219,21 @@ def main(argv=None):
             messages = apis.GetMessagesModule("logging", "v2")
             client = apis.GetClientInstance("logging", "v2", http_timeout_sec=25,
                                            skip_activation_prompt=True)
-            result = read_page(client, messages, encoding.MessageToDict,
+            stage = "read_page"
+            result = read_page(client, messages,
                                project=args.project, log_filter=args.filter,
                                page_size=args.page_size, page_token=args.page_token)
         # No partial stdout: errors cannot publish a continuation past lost rows.
+        stage = "encode_result"
         sys.stdout.write(encode_json(result) + "\n")
         return 0
     except PageValidationError as error:
-        sys.stderr.write(f"Cloud Logging page rejected: {error}\n")
+        sys.stderr.write(encode_json(error_diagnostic(error, stage)) + "\n")
         return 2
     except Exception as error:
         # SDK error bodies can contain URLs, request data or credentials.
-        # Only an HTTP status is allowed across this process boundary.
-        try:
-            status = error.status_code
-        except (AttributeError, KeyError, TypeError, ValueError):
-            status = None
-        diagnostic = {"code": "sdk_error"}
-        if type(status) is int and 400 <= status <= 599:
-            diagnostic = {"code": "http_error", "httpStatus": status}
-        sys.stderr.write(encode_json({"error": diagnostic}) + "\n")
+        # Only fixed stage/class labels and an HTTP status cross this boundary.
+        sys.stderr.write(encode_json(error_diagnostic(error, stage)) + "\n")
         return 1
 
 

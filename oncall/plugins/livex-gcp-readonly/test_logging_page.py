@@ -1,11 +1,14 @@
-"""Offline contract tests; SDK boundaries are faked; no credentials or network."""
+"""Offline contracts; the optional real SDK client uses a synthetic HTTP transport."""
 import importlib.util
 import json
 from pathlib import Path
 import contextlib
 import io
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -52,13 +55,16 @@ class FakeClient:
         self.calls = []
         self.entries = self
 
+    def JsonResponseModel(self):
+        return contextlib.nullcontext()
+
     def List(self, request, global_params):
         self.calls.append((request, global_params))
         # Cloud Logging jsonPayload is a protobuf Struct: its arbitrary keys
         # cannot be selected as declared API response fields (live HTTP 400).
         if "jsonPayload(" in global_params["fields"]:
             raise ValueError("Invalid response field selection inside jsonPayload")
-        return self.response
+        return json.dumps(self.response)
 
 
 class LoggingPageTests(unittest.TestCase):
@@ -69,7 +75,7 @@ class LoggingPageTests(unittest.TestCase):
     def read(self, response, **options):
         client = FakeClient(response)
         result = self.helper.read_page(
-            client, FakeMessages, lambda value: value,
+            client, FakeMessages,
             project=PROJECT, log_filter=FILTER, page_size=50, **options)
         return result, client
 
@@ -139,7 +145,7 @@ class LoggingPageTests(unittest.TestCase):
             with self.subTest(log_filter=log_filter, size=size):
                 client = FakeClient({"entries": []})
                 with self.assertRaises(ValueError):
-                    self.helper.read_page(client, FakeMessages, lambda value: value,
+                    self.helper.read_page(client, FakeMessages,
                                           project=PROJECT, log_filter=log_filter, page_size=size)
                 self.assertEqual(client.calls, [])
 
@@ -147,18 +153,101 @@ class LoggingPageTests(unittest.TestCase):
         import sys
         self.assertNotIn("googlecloudsdk.api_lib.util.apis", sys.modules)
 
+    @unittest.skipUnless(os.environ.get("GCLOUD_SDK_LIB"), "set GCLOUD_SDK_LIB for the offline SDK contract")
+    def test_sdk_scalar_and_boolean_array_responses_preserve_projection_and_cursor(self):
+        script = textwrap.dedent('''
+            import contextlib, importlib.util, io, json, sys
+            from pathlib import Path
+            from unittest.mock import patch
+            helper_path, sdk_lib, fixture = sys.argv[1:]
+            sys.path[:0] = [sdk_lib, str(Path(sdk_lib) / "third_party")]
+            from googlecloudsdk.api_lib.util import apis
+            import httplib2
+            spec = importlib.util.spec_from_file_location("logging_page", helper_path)
+            helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helper)
+            client_type = apis.GetClientClass("logging", "v2")
+            results = []
+            for name, args in [("boolean-array", [True, False]), ("scalar", "ignored")]:
+                row = json.loads(fixture)
+                row["jsonPayload"]["args"] = args
+                body = json.dumps({"entries": [row], "nextPageToken": "retained/+=="})
+                class OfflineHttp:
+                    calls = 0
+                    def request(self, *args, **kwargs):
+                        self.calls += 1
+                        return httplib2.Response({"status": "200"}), body
+                http = OfflineHttp()
+                client = client_type(get_credentials=False, http=http)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.object(apis, "GetClientInstance", return_value=client):
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        code = helper.main(["--sdk-root", str(Path(sdk_lib).parent),
+                            "--account", "fixture@example.com", "--project", "fixture-prd",
+                            "--filter", 'logName =~ "^projects/fixture-prd/logs/" AND severity>=ERROR',
+                            "--page-size", "1"])
+                results.append({"case": name, "code": code, "calls": http.calls,
+                                "stdout": stdout.getvalue(), "stderr": stderr.getvalue()})
+            print(json.dumps(results))
+        ''')
+        with tempfile.TemporaryDirectory() as isolated:
+            environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": isolated,
+                           "TMPDIR": isolated, "CLOUDSDK_CONFIG": isolated,
+                           "CLOUDSDK_CORE_CHECK_GCE_METADATA": "false",
+                           "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
+                           "CLOUDSDK_CORE_DISABLE_PROMPTS": "true", "CLOUDSDK_CORE_LOG_HTTP": "false"}
+            completed = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(HELPER),
+                                        os.environ["GCLOUD_SDK_LIB"], json.dumps(entry())],
+                                       env=environment, capture_output=True, text=True, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        for case in json.loads(completed.stdout):
+            with self.subTest(case=case["case"]):
+                self.assertEqual(case["code"], 0, case["stderr"])
+                self.assertEqual(case["calls"], 1)
+                result = json.loads(case["stdout"])
+                self.assertEqual(result["entries"], [entry()])
+                self.assertEqual(result["nextPageToken"], "retained/+==")
+                self.assertEqual(case["stderr"], "")
+
+    def test_invalid_json_and_nonobject_response_cannot_return_a_page(self):
+        for response, error in [("PRIVATE-SDK-ERROR", json.JSONDecodeError), ("[]", ValueError)]:
+            with self.subTest(response=response):
+                client = FakeClient({})
+                client.List = lambda *args, **kwargs: response
+                with self.assertRaises(error):
+                    self.helper.read_page(client, FakeMessages, project=PROJECT,
+                                          log_filter=FILTER, page_size=50)
+
     def test_sdk_value_error_never_exposes_exception_body(self):
         self.assert_cli_failure(ValueError("Bearer PRIVATE-SDK-ERROR"),
-                                {"error": {"code": "sdk_error"}})
+                                {"error": {"code": "sdk_error", "stage": "client_setup",
+                                           "exceptionClass": "ValueError"}})
 
     def test_sdk_http_error_reports_status_without_private_body(self):
         error = RuntimeError("Bearer PRIVATE-SDK-ERROR https://private.example/request")
         error.status_code = 400
-        self.assert_cli_failure(error, {"error": {"code": "http_error", "httpStatus": 400}})
+        self.assert_cli_failure(error, {"error": {"code": "http_error", "httpStatus": 400,
+                                                 "stage": "client_setup", "exceptionClass": "RuntimeError"}})
 
-    def assert_cli_failure(self, failure, expected):
+    def test_sdk_unknown_exception_class_is_not_disclosed(self):
+        error = type("PRIVATE-SDK-ERROR", (Exception,), {})("Bearer PRIVATE-SDK-ERROR")
+        self.assert_cli_failure(error, {"error": {"code": "sdk_error", "stage": "client_setup",
+                                                 "exceptionClass": "OtherError"}})
+
+    def test_sdk_read_failure_reports_stage_without_disclosing_payload_or_cursor(self):
+        error = json.JSONDecodeError("PRIVATE-SDK-ERROR", "PRIVATE-SDK-ERROR", 0)
+        self.assert_cli_failure(error, {"error": {"code": "sdk_error", "stage": "read_page",
+                                                 "exceptionClass": "JSONDecodeError"}}, during_read=True)
+
+    def assert_cli_failure(self, failure, expected, during_read=False):
         import sys
         def rejected_client(*args, **kwargs):
+            if during_read:
+                client = FakeClient({})
+                client.List = lambda *args, **kwargs: rejected_read()
+                return client
+            raise failure
+        def rejected_read():
             raise failure
         property_stub = SimpleNamespace(Set=lambda value: None)
         modules = {
@@ -168,7 +257,6 @@ class LoggingPageTests(unittest.TestCase):
                 CredentialProvidersManager=contextlib.nullcontext)),
             "googlecloudsdk.core": SimpleNamespace(properties=SimpleNamespace(
                 VALUES=SimpleNamespace(core=SimpleNamespace(account=property_stub, project=property_stub)))),
-            "apitools.base.py": SimpleNamespace(encoding=SimpleNamespace(MessageToDict=lambda value: value)),
         }
         with tempfile.TemporaryDirectory() as root:
             package = Path(root) / "lib/googlecloudsdk"
@@ -227,7 +315,6 @@ class LoggingPageTests(unittest.TestCase):
                         CredentialProvidersManager=providers)),
                     "googlecloudsdk.core": SimpleNamespace(properties=SimpleNamespace(
                         VALUES=SimpleNamespace(core=SimpleNamespace(account=prop("account"), project=prop("project"))))),
-                    "apitools.base.py": SimpleNamespace(encoding=SimpleNamespace(MessageToDict=lambda value: value)),
                 }
                 with tempfile.TemporaryDirectory() as root:
                     package = Path(root) / "lib/googlecloudsdk"

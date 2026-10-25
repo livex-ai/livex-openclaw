@@ -53,6 +53,62 @@ test("cloud reader reports HTTP request and access failures without SDK body dis
   }
 });
 
+test("cloud reader exposes only allowlisted helper stages and exception classes", async () => {
+  for (const [code, stage, exceptionClass, httpStatus] of [
+    [1, "sdk_import", "ModuleNotFoundError"],
+    [1, "client_setup", "RefreshError"],
+    [1, "read_page", "JSONDecodeError"],
+    [1, "encode_result", "ValueError"],
+    [2, "validation", "PageValidationError"],
+    [1, "read_page", "HttpError", 403],
+  ]) {
+    const reader = createCloudPageReader(config, async () => ({
+      ...success,
+      code,
+      stdout: "",
+      stderr: JSON.stringify({
+        error: {
+          code: httpStatus ? "http_error" : code === 2 ? "validation_error" : "sdk_error",
+          stage,
+          exceptionClass,
+          httpStatus,
+          message: secret,
+          traceback: secret,
+        },
+      }),
+    }));
+    await assert.rejects(
+      reader(query),
+      (error) =>
+        error.message.includes(`stage=${stage}, class=${exceptionClass}`) &&
+        (!httpStatus || error.message.includes(`HTTP ${httpStatus}`)) &&
+        !error.message.includes(secret) &&
+        /no cursor was advanced/.test(error.message),
+    );
+  }
+  for (const [stage, exceptionClass] of [
+    [secret, "ValueError"],
+    ["read_page", secret],
+    ["read_page", "UnreviewedError"],
+  ]) {
+    const reader = createCloudPageReader(config, async () => ({
+      ...success,
+      code: 1,
+      stdout: "",
+      stderr: JSON.stringify({
+        error: { code: "sdk_error", stage, exceptionClass, message: secret },
+      }),
+    }));
+    await assert.rejects(
+      reader(query),
+      (error) =>
+        !error.message.includes(secret) &&
+        !error.message.includes("UnreviewedError") &&
+        !error.message.includes("stage="),
+    );
+  }
+});
+
 test("cloud reader distinguishes process failures and gives cleanup uncertainty precedence", async () => {
   const failures = [
     [{ termination: "timeout", code: 124, killed: true }, /timed out after 30 seconds/i],

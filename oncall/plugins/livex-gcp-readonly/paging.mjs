@@ -32,13 +32,45 @@ const digest = (value) =>
     .update(JSON.stringify(stable(value)))
     .digest("hex");
 
+const HELPER_STAGES = new Set([
+  "validation",
+  "sdk_import",
+  "client_setup",
+  "read_page",
+  "encode_result",
+]);
+const HELPER_EXCEPTION_CLASSES = new Set([
+  "AccessTokenRefreshError",
+  "ConnectionError",
+  "HttpError",
+  "ImportError",
+  "InvalidDataFromServerError",
+  "JSONDecodeError",
+  "ModuleNotFoundError",
+  "OSError",
+  "PageValidationError",
+  "PermissionError",
+  "RefreshError",
+  "RuntimeError",
+  "SSLError",
+  "TimeoutError",
+  "TransportError",
+  "TypeError",
+  "ValueError",
+  "OtherError",
+]);
+
 function helperFailure(result) {
-  // Only the helper's fixed code and numeric HTTP status may leave this boundary.
+  // Only the helper's fixed labels and numeric HTTP status may leave this boundary.
   // SDK stderr can contain credentials, request bodies and private log content.
   let error;
   try {
     error = JSON.parse(result.stderr).error;
   } catch {}
+  const diagnostic =
+    HELPER_STAGES.has(error?.stage) && HELPER_EXCEPTION_CLASSES.has(error?.exceptionClass)
+      ? ` (stage=${error.stage}, class=${error.exceptionClass})`
+      : "";
   const status = error?.httpStatus;
   if (
     result.code === 1 &&
@@ -59,11 +91,11 @@ function helperFailure(result) {
               : status >= 500
                 ? "Cloud Logging service failed; retry only after reconciling this attempt"
                 : "inspect the Cloud Logging request and endpoint";
-    return `Cloud Logging request failed (HTTP ${status}); ${action}; no cursor was advanced`;
+    return `Cloud Logging request failed (HTTP ${status}); ${action}${diagnostic}; no cursor was advanced`;
   }
   if (result.code === 2)
-    return "Cloud Logging rejected the local query or response; inspect reader validation; no cursor was advanced";
-  return "Cloud Logging helper failed; verify the configured SDK, account and connectivity; no cursor was advanced";
+    return `Cloud Logging rejected the local query or response; inspect reader validation${diagnostic}; no cursor was advanced`;
+  return `Cloud Logging helper failed; verify the configured SDK, account and connectivity${diagnostic}; no cursor was advanced`;
 }
 
 export function createCloudPageReader(config, runCommand) {
