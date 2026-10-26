@@ -477,7 +477,11 @@ async function sendFollowupPayloads(params: {
   const origin = resolveOriginMessageProvider({ originatingChannel });
   const sameChannelOrigin = Boolean(origin && origin === provider);
   const crossChannelOrigin = Boolean(origin && provider && origin !== provider);
-  for (const payload of payloads) {
+  const deliveryCorrelations = turn.queued.deliveryCorrelations ?? [];
+  const projectionOwners = deliveryCorrelations.filter((correlation) => correlation.prepareReply);
+  for (const initialPayload of payloads) {
+    let payload = initialPayload;
+    let projectedBy: (typeof deliveryCorrelations)[number] | undefined;
     const providerRoute = deliveryPlan.resolveFollowupRoute({
       payload,
       originatingChannel,
@@ -499,12 +503,21 @@ async function sendFollowupPayloads(params: {
     if (route === "origin") {
       // Retain every collected source's policy: an explicit request must not be
       // silenced by a passive message sharing the same follow-up batch.
-      const suppressions = (turn.queued.deliveryCorrelations ?? []).flatMap((correlation) =>
+      const suppressions = deliveryCorrelations.flatMap((correlation) =>
         correlation.shouldSuppressReply ? [correlation.shouldSuppressReply(payload)] : [],
       );
       if (suppressions.length > 0 && suppressions.every(Boolean)) {
         logVerbose("followup queue: origin reply suppressed by source policy");
         continue;
+      }
+      // A collected answer cannot acknowledge multiple source-specific reports.
+      if (projectionOwners.length === 1) {
+        const owner = projectionOwners[0]!;
+        const projected = owner.prepareReply?.(payload, { kind: params.kind ?? "final" });
+        if (projected) {
+          payload = projected;
+          projectedBy = owner;
+        }
       }
     }
     await typing.signalTextDelta(payload.text);
@@ -557,7 +570,10 @@ async function sendFollowupPayloads(params: {
           crossChannelFailures.push(payload);
         }
       } else if (result.delivered) {
-        for (const correlation of turn.queued.deliveryCorrelations ?? []) {
+        for (const correlation of deliveryCorrelations) {
+          if (correlation.prepareReply && correlation !== projectedBy) {
+            continue;
+          }
           await correlation.onReplyDelivered?.(payload, {
             kind: params.kind ?? "final",
             messageId: result.messageId,

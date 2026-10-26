@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PreparedCompactReport } from "./report-form.js";
 import { createInvestigationTurnRegistry } from "./runtime.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
 
@@ -43,6 +44,25 @@ function register(
   });
 }
 
+function compactReport(): PreparedCompactReport {
+  const text = "Canonical compact investigation";
+  return {
+    form: {
+      title: "Variant lookup",
+      priority: "medium",
+      summary: "One job failed with variant_name",
+      nextAction: "Fix field mapping; owner unassigned",
+      evidence: { links: [] },
+    },
+    text,
+    card: {
+      blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+      attachment: { fallback: text },
+      fallbackText: text,
+    },
+  };
+}
+
 describe("Slack investigation turn handoff", () => {
   it("keeps simultaneous turns separate through serializable bindings", () => {
     const registry = createInvestigationTurnRegistry();
@@ -64,6 +84,44 @@ describe("Slack investigation turn handoff", () => {
     expect(() => registry.stage("first", { ...scope, channelId: "C2" }, "final", [update])).toThrow(
       /scope/,
     );
+  });
+  it("matches only the canonical report or its exact legacy acknowledgement and clones the form", () => {
+    const registry = createInvestigationTurnRegistry();
+    const turn = register(registry, "first");
+    const report = compactReport();
+    registry.stage("first", scope, report.text, [update], report, "Legacy final acknowledgement");
+    report.form.summary = "Mutated after staging";
+    report.card.fallbackText = "Mutated after staging";
+    expect(turn.matchFinal("Legacy final acknowledgement")?.report?.form.summary).toBe(
+      "One job failed with variant_name",
+    );
+    expect(turn.matchFinal(report.text)?.report?.card.fallbackText).toBe(report.text);
+    expect(turn.matchFinal("An unrelated final")).toBeUndefined();
+  });
+  it("clears an earlier prepared report before a later preparation attempt", () => {
+    const registry = createInvestigationTurnRegistry();
+    const turn = register(registry, "first");
+    const report = compactReport();
+    registry.stage("first", scope, report.text, [update], report, "Legacy final acknowledgement");
+    registry.clearStaged("first");
+    expect(turn.matchFinal(report.text)).toBeUndefined();
+    expect(turn.matchFinal("Legacy final acknowledgement")).toBeUndefined();
+    expect(registry.get("first")).toBe(turn);
+  });
+  it("retains immediate findings after model settlement until final delivery cleanup", async () => {
+    const registry = createInvestigationTurnRegistry();
+    const turn = register(registry, "first");
+    const lifecycle = turn.lifecycle();
+    await lifecycle.onAdopted?.();
+    registry.stage("first", scope, "final", [update]);
+
+    // The model owner settles before Slack receives the returned final payload.
+    await lifecycle.onSettled?.();
+    expect(turn.matchFinal("final")?.updates).toEqual([update]);
+
+    turn.releaseImmediate();
+    expect(registry.get("first")).toBeUndefined();
+    expect(() => turn.matchFinal("final")).toThrow(/active/);
   });
   it("retains deferred turns and releases them only when their owner settles", async () => {
     const registry = createInvestigationTurnRegistry();

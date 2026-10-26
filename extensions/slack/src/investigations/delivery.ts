@@ -1,16 +1,38 @@
 import type { LivePreviewDeliveryResult } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  copyReplyPayloadMetadata,
+  isHostNoticePayload,
+  isReplyPayloadTerminalContent,
+} from "openclaw/plugin-sdk/reply-payload";
+import { HEARTBEAT_TOKEN, isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import type {
   GetReplyOptions,
   ReplyDispatchRuntimeInfo,
   ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
+import { appendCompactReportNotice, type PreparedCompactReport } from "./report-form.js";
 import type { InvestigationTurn } from "./runtime.js";
 import { commitInvestigations } from "./store.js";
 
-export type InvestigationPublicationResult = {
-  status: "recorded" | "skipped" | "failed";
-  reason?: string;
-};
+function isInvestigationFinal(payload: ReplyPayload, kind: "tool" | "block" | "final"): boolean {
+  return (
+    kind === "final" &&
+    Boolean(payload.text?.trim()) &&
+    !isSilentReplyText(payload.text) &&
+    payload.text?.trim().toUpperCase() !== HEARTBEAT_TOKEN &&
+    isReplyPayloadTerminalContent(payload) &&
+    !isHostNoticePayload(payload) &&
+    !payload.mediaUrl &&
+    !payload.mediaUrls?.length &&
+    !payload.attachments?.length &&
+    !payload.presentation &&
+    !payload.interactive
+  );
+}
+
+export type InvestigationPublicationResult =
+  | { status: "recorded" | "skipped" | "failed"; reason?: string }
+  | { status: "partial"; saved: number; skipped: number; reason: string };
 
 /** Catalog publication follows confirmed transport settlement; model completion alone is insufficient. */
 export function createInvestigationPublication(params: {
@@ -31,7 +53,7 @@ export function createInvestigationPublication(params: {
       try {
         params.turn.assertCurrent();
         const prepared = params.turn.matchFinal(input.text);
-        if (!prepared) {
+        if (!prepared || (prepared.report && prepared.finalText !== input.text.trim())) {
           return {
             status: "skipped",
             reason: "The final reply has no matching prepared investigation facts",
@@ -75,6 +97,19 @@ export function createInvestigationPublication(params: {
           recorded = true;
           return { status: "recorded" };
         }
+        if (
+          result.status === "partial" &&
+          result.saved !== undefined &&
+          result.skipped !== undefined
+        ) {
+          recorded = true;
+          return {
+            status: "partial",
+            saved: result.saved,
+            skipped: result.skipped,
+            reason: `Investigation catalog partially saved: ${result.saved} saved, ${result.skipped} skipped`,
+          };
+        }
         return {
           status: "failed",
           reason: `Investigation catalog update ${result.status}: ${result.reason ?? "completed findings were not fully recorded"}`,
@@ -96,7 +131,11 @@ export function createInvestigationDelivery(params: {
   turn?: InvestigationTurn;
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
-  annotateAcceptedFinal: (input: { messageId: string; text: string }) => Promise<void>;
+  annotateAcceptedFinal: (input: {
+    messageId: string;
+    text: string;
+    card?: PreparedCompactReport["card"];
+  }) => Promise<void>;
   reportError: (message: string) => void;
   deliver: (
     payload: ReplyPayload,
@@ -110,6 +149,23 @@ export function createInvestigationDelivery(params: {
         resolvePermalink: params.resolvePermalink,
       })
     : undefined;
+  const prepareFinal = (payload: ReplyPayload, kind: "tool" | "block" | "final") => {
+    if (!investigationTurn || !isInvestigationFinal(payload, kind)) {
+      return undefined;
+    }
+    const prepared = investigationTurn.matchFinal(payload.text!);
+    const outgoing = prepared?.report
+      ? copyReplyPayloadMetadata(payload, {
+          ...payload,
+          text: prepared.finalText,
+          channelData: {
+            ...payload.channelData,
+            slack: { threadSummaryCard: prepared.report.card },
+          },
+        })
+      : payload;
+    return { payload: outgoing, prepared };
+  };
   const addHistoryWarning = (text: string, warning: string) => {
     const sentence = `Investigation history: ${warning}`;
     return /^\*\*Uncertainty:\*\*/m.test(text)
@@ -132,7 +188,11 @@ export function createInvestigationDelivery(params: {
       delivery: result,
       complete,
     });
-    if (publication.status !== "failed" && !(warnOnUnprepared && publication.reason)) {
+    if (
+      publication.status !== "failed" &&
+      publication.status !== "partial" &&
+      !(warnOnUnprepared && publication.reason)
+    ) {
       return;
     }
     params.reportError(publication.reason ?? "Investigation catalog publication failed");
@@ -157,14 +217,22 @@ export function createInvestigationDelivery(params: {
     }
     try {
       investigationTurn.assertCurrent();
+      let warning =
+        "no matching completed record was prepared; this result was not saved to the catalog.";
+      if (publication.status === "failed") {
+        warning =
+          "the final was delivered, but saving the catalog failed; prior records are retained.";
+      } else if (publication.status === "partial") {
+        warning = `saved ${publication.saved} finding${publication.saved === 1 ? "" : "s"}; skipped ${publication.skipped} because matching was uncertain or a catalog limit was reached.`;
+      }
+      const prepared = investigationTurn.matchFinal(payload.text);
+      const report = prepared?.report
+        ? appendCompactReportNotice(prepared.report, prepared.updates, warning)
+        : undefined;
       await params.annotateAcceptedFinal({
         messageId,
-        text: addHistoryWarning(
-          payload.text,
-          publication.status === "failed"
-            ? "the final was delivered, but saving the catalog failed; prior records are retained."
-            : "no matching completed record was prepared; this result was not saved to the catalog.",
-        ),
+        text: report?.text ?? addHistoryWarning(payload.text, warning),
+        ...(report ? { card: report.card } : {}),
       });
     } catch {
       params.reportError(
@@ -176,29 +244,38 @@ export function createInvestigationDelivery(params: {
     payload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
   ): Promise<LivePreviewDeliveryResult> => {
-    let outgoing = payload;
-    if (investigationTurn && info.kind === "final" && payload.text) {
-      const preparedFacts = investigationTurn.matchFinal(payload.text);
-      if (!preparedFacts) {
-        outgoing = {
-          ...payload,
-          text: addHistoryWarning(
-            payload.text,
-            "no matching completed record was prepared; this result was not saved to the catalog.",
-          ),
-        };
-      } else if (investigationTurn.snapshot.status !== "ready") {
-        outgoing = {
-          ...payload,
-          text: addHistoryWarning(
-            payload.text,
-            `the prior-history lookup was ${investigationTurn.snapshot.status}; coverage is incomplete.`,
-          ),
-        };
-      }
+    const projection = prepareFinal(payload, info.kind);
+    let outgoing = projection?.payload ?? payload;
+    if (projection && !projection.prepared) {
+      outgoing = copyReplyPayloadMetadata(outgoing, {
+        ...outgoing,
+        text: addHistoryWarning(
+          outgoing.text!,
+          "no matching completed record was prepared; this result was not saved to the catalog.",
+        ),
+      });
+    } else if (
+      projection &&
+      !projection.prepared?.report &&
+      investigationTurn?.snapshot.status !== "ready"
+    ) {
+      outgoing = copyReplyPayloadMetadata(outgoing, {
+        ...outgoing,
+        text: addHistoryWarning(
+          outgoing.text!,
+          `the prior-history lookup was ${investigationTurn?.snapshot.status}; coverage is incomplete.`,
+        ),
+      });
     }
     const result = await params.deliver(outgoing, info);
-    await recordInvestigationDelivery(payload, info.kind, result, true);
+    if (projection) {
+      await recordInvestigationDelivery(
+        projection.prepared?.report ? outgoing : payload,
+        info.kind,
+        result,
+        true,
+      );
+    }
     return result;
   };
   const queuedCorrelation:
@@ -206,8 +283,11 @@ export function createInvestigationDelivery(params: {
     | undefined = investigationTurn
     ? {
         begin() {},
+        prepareReply(payload, context) {
+          return prepareFinal(payload, context.kind)?.payload;
+        },
         async onReplyDelivered(payload, receipt) {
-          if (!receipt) {
+          if (!receipt || !isInvestigationFinal(payload, receipt.kind)) {
             return;
           }
           await recordInvestigationDelivery(
