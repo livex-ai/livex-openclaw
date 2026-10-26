@@ -271,6 +271,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         configuredSources: resolveConfiguredSourcesForMeta(this.sources),
         configuredScopeHash: resolveConfiguredScopeHash({
           workspaceDir: this.workspaceDir,
+          includeWorkspace: this.settings.includeWorkspace,
           extraPaths: this.settings.extraPaths,
           multimodal: this.settings.multimodal,
         }),
@@ -664,6 +665,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
             sources: resolveConfiguredSourcesForMeta(this.sources),
             scopeHash: resolveConfiguredScopeHash({
               workspaceDir: this.workspaceDir,
+              includeWorkspace: this.settings.includeWorkspace,
               extraPaths: this.settings.extraPaths,
               multimodal: this.settings.multimodal,
             }),

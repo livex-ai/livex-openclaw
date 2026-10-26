@@ -320,6 +320,22 @@ describe("memory reindex state", () => {
     ).toEqual({ status: "valid" });
   });
 
+  it("invalidates broad indexes when workspace memory is excluded without changing default identity", () => {
+    const config = {
+      workspaceDir: "/tmp/workspace",
+      extraPaths: ["/tmp/investigations.md"],
+      multimodal: { enabled: false, modalities: [], maxFileBytes: 1024 },
+    };
+    const original = resolveConfiguredScopeHash(config);
+    expect(original).toBe("30d3bc165d0fbad07284f2680213d3d8e072f80f5b38fd952d59bbd0e480b77c");
+    expect(resolveConfiguredScopeHash({ ...config, includeWorkspace: true })).toBe(original);
+    const narrowed = resolveConfiguredScopeHash({ ...config, includeWorkspace: false });
+    expect(narrowed).not.toBe(original);
+    expect(
+      identity({ meta: createMeta({ scopeHash: original }), configuredScopeHash: narrowed }),
+    ).toMatchObject({ status: "mismatched", code: "scope", owner: "configuration" });
+  });
+
   it("marks identity dirty when extraPaths change", () => {
     const workspaceDir = "/tmp/workspace";
     const firstScopeHash = resolveConfiguredScopeHash({

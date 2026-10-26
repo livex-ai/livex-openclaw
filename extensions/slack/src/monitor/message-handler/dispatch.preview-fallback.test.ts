@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 // Slack tests cover dispatch.preview fallback plugin behavior.
@@ -21,6 +22,14 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
+import { prepareCompactReport } from "../../investigations/report-form.js";
+import { getInvestigationTurnRegistry } from "../../investigations/runtime.js";
+import {
+  serializeCatalog,
+  type CompletedInvestigation,
+  type HistoryScope,
+} from "../../investigations/schema.js";
+import { readCatalog } from "../../investigations/store.js";
 import type { SlackSendResult } from "../../send.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
 import {
@@ -312,6 +321,8 @@ function expectLastDraftUpdateText(
 
 function createPreparedSlackMessage(params?: {
   cfg?: Record<string, unknown>;
+  botUserId?: string;
+  teamId?: string;
   accountConfig?: Record<string, unknown>;
   ctxPayload?: Record<string, unknown>;
   message?: Partial<PreparedSlackMessage["message"]>;
@@ -348,8 +359,8 @@ function createPreparedSlackMessage(params?: {
       runtime: {},
       botToken: "xoxb-test",
       app: { client: { chat: { postMessage: postMessageMock, update: chatUpdateMock } } },
-      teamId: "T1",
-      botUserId: "U_OPENCLAW",
+      teamId: params?.teamId ?? "T1",
+      botUserId: params?.botUserId ?? "U_OPENCLAW",
       botId: "B_OPENCLAW",
       textLimit: 4000,
       typingReaction: params?.typingReaction ?? "",
@@ -525,7 +536,8 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => {
   return { ...actual, getGlobalHookRunner: getGlobalHookRunnerMock };
 });
 
-vi.mock("openclaw/plugin-sdk/security-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
   resolvePinnedMainDmOwnerFromAllowlist: () => mockedPinnedMainDmOwner,
 }));
 
@@ -847,6 +859,254 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
   });
 
   afterEach(() => resetPluginRuntimeStateForTest());
+
+  it.each([
+    "recorded",
+    "missing",
+    "queued-unprepared",
+    "settled-compact",
+    "settled-native",
+    "compact-form",
+    "compact-form-alert-normal",
+    "compact-form-alert-native",
+    "compact-form-alert-compact",
+    "compact-form-alert-card",
+    "compact-form-unverified",
+  ])("settles the investigation catalog through its final receipt (%s)", async (scenario) => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "slack-dispatch-catalog-"));
+    const filePath = path.join(root, "investigations.md");
+    try {
+      await fs.writeFile(filePath, serializeCatalog([]));
+      const settledBeforeFinal = scenario.startsWith("settled-");
+      const alertMode = scenario.startsWith("compact-form-alert-")
+        ? scenario.slice("compact-form-alert-".length)
+        : undefined;
+      const unverifiedForm = scenario === "compact-form-unverified";
+      const sourceAlertTs = "171234.111";
+      mockedSlackStreamingMode =
+        settledBeforeFinal || alertMode === "compact" || alertMode === "card"
+          ? "progress"
+          : alertMode || unverifiedForm
+            ? "partial"
+            : "off";
+      mockedNativeStreaming = settledBeforeFinal || alertMode === "native";
+      const alertDraft = alertMode || unverifiedForm ? useDraftStream() : undefined;
+      if (alertMode) {
+        alertDraft!.messageId = () => sourceAlertTs;
+        mockedReplyThreadTs = sourceAlertTs;
+        mockedStatusThreadTs = sourceAlertTs;
+        finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
+      }
+      if (!settledBeforeFinal && !alertMode && !unverifiedForm) {
+        createSlackDraftStreamMock.mockReturnValue(undefined);
+      }
+      deliverRepliesMock.mockResolvedValue(normalDeliveryResult);
+      const getPermalink = vi.fn(async () => ({
+        ok: true,
+        permalink: "https://example.slack.com/archives/C123/p171234999000",
+      }));
+      const prepared: PreparedSlackMessage = createPreparedSlackMessage({
+        route: { agentId: "oncall", sessionKey: "agent:oncall:slack:C123" },
+        ...(settledBeforeFinal
+          ? {
+              accountConfig: {
+                streaming: {
+                  mode: "progress",
+                  nativeTransport: true,
+                  block: false,
+                  progress:
+                    scenario === "settled-compact"
+                      ? { style: "compact", nativeTaskCards: false, toolProgress: false }
+                      : { style: "card", nativeTaskCards: true },
+                },
+              },
+            }
+          : {}),
+        ...(alertMode
+          ? {
+              message: { thread_ts: sourceAlertTs },
+              ctxPayload: { MessageThreadId: sourceAlertTs },
+              ...(alertMode === "compact" || alertMode === "card"
+                ? {
+                    accountConfig: {
+                      streaming: {
+                        mode: "progress",
+                        progress: { style: alertMode, nativeTaskCards: false, toolProgress: false },
+                      },
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+        eventScope: { teamId: "T1", client: { chat: { getPermalink, update: chatUpdateMock } } },
+      });
+      const scope: HistoryScope = {
+        agentId: "oncall",
+        accountId: "default",
+        teamId: "T1",
+        channelId: "C123",
+        senderId: "U123",
+      };
+      const registry = getInvestigationTurnRegistry();
+      prepared.investigationTurn = registry.register({
+        id: "dispatch-catalog",
+        scope,
+        sessionKey: prepared.route.sessionKey,
+        filePath,
+        snapshot: { status: "ready", scope, revision: "r", issues: [] },
+        assertCurrent() {},
+      });
+      const update: CompletedInvestigation = {
+        signature: {
+          scope,
+          service: "api",
+          environment: "prod",
+          operation: "variant",
+          error: "variant_name",
+        },
+        task: "Variant lookup",
+        status: "open",
+        historySummary: "Verified variant_name persists",
+        waitingOn: "Owner unknown",
+        prs: [],
+        slackThreads: [],
+        jiraTickets: [],
+        facts: {
+          finding: "Unknown variant_name",
+          impact: "One job",
+          nextAction: "Fix field mapping",
+        },
+        evidenceUrls: [],
+      };
+      const report = scenario.startsWith("compact-form")
+        ? prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }])
+        : undefined;
+      if (scenario !== "queued-unprepared") {
+        registry.stage(
+          "dispatch-catalog",
+          scope,
+          report?.text ?? FINAL_REPLY_TEXT,
+          [update],
+          report,
+          report ? FINAL_REPLY_TEXT : undefined,
+        );
+      }
+      if (scenario === "missing") {
+        await fs.rename(filePath, filePath + ".saved");
+      }
+      if (settledBeforeFinal) {
+        mockedDispatchSequence = [
+          ...(scenario === "settled-native"
+            ? [{ kind: "block" as const, payload: { text: "Checking variant lookup" } }]
+            : []),
+          checkpoint(async () => {
+            // The immediate model owner settles before its returned final reaches the dispatcher.
+            await capturedReplyOptions?.turnAdoptionLifecycle?.onAdopted();
+            await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+          }),
+          { kind: "final", payload: { text: FINAL_REPLY_TEXT } },
+        ];
+      }
+      if (unverifiedForm) {
+        mockedDispatchSequence = [
+          { kind: "final", payload: { text: FINAL_REPLY_TEXT } },
+          { kind: "final", payload: { text: FINAL_REPLY_TEXT } },
+        ];
+      }
+      if (scenario === "queued-unprepared") {
+        mockedDispatchSequence = [
+          {
+            kind: "checkpoint",
+            run: async () => {
+              capturedReplyOptions?.turnAdoptionLifecycle?.onDeferred?.();
+            },
+          },
+        ];
+      }
+      await dispatchPreparedSlackMessage(prepared);
+      if (unverifiedForm) {
+        expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+        expect(deliverRepliesMock).not.toHaveBeenCalled();
+        expect(alertDraft?.clear).not.toHaveBeenCalled();
+        expect(getPermalink).not.toHaveBeenCalled();
+        expect((await readCatalog({ filePath, scope })).issues).toEqual([]);
+        expect(registry.get("dispatch-catalog")).toBeUndefined();
+        return;
+      }
+      if (alertMode) {
+        expect(finalizeSlackPreviewEditMock).not.toHaveBeenCalled();
+        expect(alertDraft?.clear).not.toHaveBeenCalled();
+        expect(deliverRepliesMock).toHaveBeenCalledOnce();
+        expect(delivered(0).replyThreadTs).toBe(sourceAlertTs);
+        expect(
+          editSlackMessageMock.mock.calls.every(([, messageId]) => messageId !== sourceAlertTs),
+        ).toBe(true);
+        expect(
+          editSlackRenderedMessageMock.mock.calls.every(
+            ([, messageId]) => messageId !== sourceAlertTs,
+          ),
+        ).toBe(true);
+      }
+      if (scenario === "queued-unprepared") {
+        expect(registry.get("dispatch-catalog")).toBeDefined();
+        const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
+        await correlation?.onReplyDelivered?.(
+          { text: FINAL_REPLY_TEXT },
+          { kind: "final", messageId: "queued-final", complete: true },
+        );
+        expect(getPermalink).not.toHaveBeenCalled();
+        expect(chatUpdateMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            channel: "C123",
+            ts: "queued-final",
+            text: expect.stringContaining("no matching completed record"),
+          }),
+        );
+        expect((await readCatalog({ filePath, scope })).issues).toEqual([]);
+        await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+      } else {
+        expect(getPermalink).toHaveBeenCalledWith({
+          channel: "C123",
+          message_ts: scenario === "settled-native" ? STREAM_MESSAGE_TS : "normal-final",
+        });
+      }
+      if (report) {
+        expect(delivered(0).replies).toEqual([
+          { text: report.text, channelData: { slack: { threadSummaryCard: report.card } } },
+        ]);
+      }
+      if (settledBeforeFinal) {
+        if (scenario === "settled-native") {
+          expectNativeStreamText(`\n${FINAL_REPLY_TEXT}`);
+          expect(stopSlackStreamMock).toHaveBeenCalledOnce();
+          expect(deliverRepliesMock).not.toHaveBeenCalled();
+        } else {
+          expectDeliverReplyCall(0, FINAL_REPLY_TEXT);
+          expect(startSlackStreamMock).not.toHaveBeenCalled();
+        }
+      }
+      if (scenario === "missing") {
+        expect((await readCatalog({ filePath, scope })).status).toBe("uninitialized");
+        expect(await fs.readFile(filePath + ".saved", "utf8")).toBe(serializeCatalog([]));
+        expect(chatUpdateMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            channel: "C123",
+            ts: "normal-final",
+            text: expect.stringContaining("saving the catalog failed"),
+          }),
+        );
+      } else if (scenario === "recorded" || settledBeforeFinal || report) {
+        const catalog = await readCatalog({ filePath, scope });
+        expect(catalog.issues).toHaveLength(1);
+        expect(catalog.issues[0]?.slackThreads[0]).toBe(
+          "https://example.slack.com/archives/C123/p171234999000",
+        );
+      }
+      expect(registry.get("dispatch-catalog")).toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 
   it.each([
     { agents: ["alice", "bob"], withMedia: true },
@@ -2534,6 +2794,155 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     );
   });
 
+  it.each(["success", "blocked", "failure", "interrupted", "display-failure"] as const)(
+    "keeps one editable investigation message through 60 tool calls (%s)",
+    async (outcome) => {
+      mockedNativeStreaming = true;
+      const { createSlackDraftStream } =
+        await vi.importActual<typeof import("../../draft-stream.js")>("../../draft-stream.js");
+      const visibleMessages = new Map<string, string>();
+      let draftStream: ReturnType<typeof createSlackDraftStream> | undefined;
+      const setSlackSessionStatus = vi.fn(
+        async (_input: Parameters<PreparedSlackMessage["ctx"]["setSlackSessionStatus"]>[0]) => true,
+      );
+      sendMessageSlackMock.mockImplementation(async (_target, text) => {
+        visibleMessages.set(STREAM_MESSAGE_TS, text);
+        return {
+          channelId: "C123",
+          messageId: STREAM_MESSAGE_TS,
+          receipt: createMessageReceiptFromOutboundResults({
+            results: [{ channel: "slack", channelId: "C123", messageId: STREAM_MESSAGE_TS }],
+            kind: "preview",
+          }),
+        };
+      });
+      const edit = async (_channelId: string, messageId: string, text: string) => {
+        if (outcome === "display-failure") {
+          throw new Error("Slack progress edit unavailable");
+        }
+        visibleMessages.set(messageId, text);
+      };
+      editSlackMessageMock.mockImplementation(edit);
+      editSlackRenderedMessageMock.mockImplementation(edit);
+      deleteSlackMessageMock.mockImplementation(async (_channelId, messageId) => {
+        visibleMessages.delete(messageId);
+      });
+      createSlackDraftStreamMock.mockImplementationOnce(
+        (params: Parameters<typeof createSlackDraftStream>[0]) => {
+          draftStream = createSlackDraftStream(params);
+          return draftStream;
+        },
+      );
+      const report =
+        outcome === "blocked"
+          ? "Finding: Evidence incomplete.\nImpact / status: Unknown.\nNext step: Restore log access.\nBlocked: Log access denied."
+          : outcome === "failure"
+            ? "Finding: Investigation failed.\nImpact / status: Unknown.\nNext step: Inspect the investigation error."
+            : "Finding: Bounded defect.\nImpact / status: Verified.\nNext step: Review the report.";
+      mockedDispatchSequence = [
+        {
+          kind: "final",
+          payload: { text: report, ...(outcome === "failure" ? { isError: true } : {}) },
+        },
+      ];
+      if (outcome === "interrupted") {
+        mockedDispatchError = new Error("Investigation interrupted");
+      }
+      mockedReplyOptionEvents = [
+        checkpoint(async () => {
+          await requireCapturedTyping().start();
+        }),
+        preamble("Checking production logs.", "stage-1", "end"),
+        {
+          kind: "tool_start",
+          itemId: "log-page-0",
+          name: "exec",
+          phase: "start",
+          args: { command: "read-private-log-page-0" },
+        },
+        checkpoint(async () => {
+          await draftStream?.flush();
+          expect([...visibleMessages.values()]).toEqual(["Checking production logs."]);
+        }),
+        ...Array.from({ length: 59 }, (_, offset): SlackReplyOptionEvent[] => {
+          const index = offset + 1;
+          return [
+            {
+              kind: "tool_start",
+              itemId: `log-page-${index}`,
+              name: "exec",
+              phase: "start",
+              args: { command: `read-private-log-page-${index}` },
+            },
+            {
+              kind: "command_output",
+              itemId: `log-page-${index}`,
+              name: "exec",
+              phase: "end",
+              title: `read-private-log-page-${index}`,
+              exitCode: 0,
+            },
+          ];
+        }).flat(),
+        {
+          kind: "command_output",
+          itemId: "log-page-0",
+          name: "exec",
+          phase: "end",
+          title: "read-private-log-page-0",
+          exitCode: 0,
+        },
+        preamble("Verifying the findings.", "stage-2", "end"),
+        checkpoint(async () => {
+          await draftStream?.flush();
+          if (outcome !== "display-failure") {
+            expect([...visibleMessages.values()]).toEqual(["Verifying the findings."]);
+          }
+        }),
+      ];
+      const result = dispatch({
+        setSlackSessionStatus,
+        accountConfig: progressAccount({
+          style: "compact",
+          nativeTaskCards: false,
+          toolProgress: false,
+          commentary: false,
+          narration: false,
+        }),
+      });
+      if (outcome === "interrupted") {
+        await expect(result).rejects.toThrow("Investigation interrupted");
+      } else {
+        await result;
+        expect(deliverRepliesMock).toHaveBeenCalledOnce();
+        expect(delivered().replies[0]?.text).toBe(report);
+        expect(delivered().replyThreadTs).toBe(THREAD_TS);
+      }
+      await requireCapturedTyping().stop?.();
+      expect(setSlackSessionStatus.mock.calls.map(([value]) => value)).toEqual([
+        expect.objectContaining({ status: "processing", threadTs: THREAD_TS }),
+        expect.objectContaining({ status: "active", threadTs: THREAD_TS }),
+      ]);
+      expect(sendMessageSlackMock).toHaveBeenCalledOnce();
+      expect(sendMessageSlackMock.mock.calls[0]?.[2]).toMatchObject({ threadTs: THREAD_TS });
+      const edits = [
+        ...editSlackMessageMock.mock.calls,
+        ...editSlackRenderedMessageMock.mock.calls,
+      ];
+      expect(edits.length).toBeGreaterThan(0);
+      expect(
+        edits.every(
+          ([channelId, messageId]) => channelId === "C123" && messageId === STREAM_MESSAGE_TS,
+        ),
+      ).toBe(true);
+      expect(edits.some((call) => call[2].includes("read-private-log-page"))).toBe(false);
+      expect(visibleMessages.size).toBe(0);
+      expect(startSlackStreamMock).not.toHaveBeenCalled();
+      expect(appendSlackStreamMock).not.toHaveBeenCalled();
+      expect(collectNativeTaskUpdates()).toEqual([]);
+    },
+  );
+
   it("publishes compact media finals before clearing the preview after a suppressed send", async () => {
     const draftStream = useDraftStream();
 
@@ -3168,5 +3577,231 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(draftStream.forceNewMessage).toHaveBeenCalled();
     },
   );
+
+  describe("LiveX final summary presentation", () => {
+    const root = "1792854043.288339";
+    const report =
+      "⚠️ Action required · Priority unknown · Investigation partial\n**Finding:** Menu access denied; recovery remains unverified.\n**Action:** Check permissions on installation demo-shop.\n**Owner:** Unassigned.\n**Evidence:** Checked 2026-10-24T00:00:00Z/2026-10-24T15:00:00Z UTC; URL unavailable.";
+    const liveX = {
+      route: { agentId: "oncall", sessionKey: "agent:oncall:slack:channel:c123:thread:" + root },
+      botUserId: "U09JKS5FHUM",
+      teamId: "T04MA1X41CM",
+      message: { thread_ts: root },
+      ctxPayload: { MessageThreadId: root },
+    };
+    const noPreview = () => {
+      const draft = useDraftStream();
+      draft.messageId = () => undefined;
+      return draft;
+    };
+
+    it.each(["normal", "native", "compact"] as const)(
+      "decorates only the final report in its original thread through %s delivery",
+      async (mode) => {
+        noPreview();
+        mockedReplyThreadTs = root;
+        mockedStatusThreadTs = root;
+        mockedNativeStreaming = mode === "native";
+        mockedDispatchSequence = [
+          { kind: "final", payload: { text: report } },
+          { kind: "final", payload: { text: report } },
+        ];
+        await dispatch({
+          ...liveX,
+          ...(mode === "compact"
+            ? {
+                accountConfig: progressAccount({
+                  style: "compact",
+                  nativeTaskCards: false,
+                  toolProgress: false,
+                }),
+              }
+            : {}),
+        });
+        expect(deliverRepliesMock).toHaveBeenCalledOnce();
+        const actual = delivered();
+        expect(actual.replyThreadTs).toBe(root);
+        expect(actual.replies[0]?.text).toBe(report);
+        expect(actual.replies[0]?.channelData?.slack).toHaveProperty("threadSummaryCard");
+        expect(postMessageMock).not.toHaveBeenCalled();
+        expect(startSlackStreamMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { name: "other bot", overrides: { botUserId: "U_OTHER" } },
+      { name: "other workspace", overrides: { teamId: "T_OTHER" } },
+      { name: "other agent", overrides: { route: { agentId: "debugger" } } },
+      { name: "missing root", overrides: { message: { thread_ts: undefined } } },
+    ])("leaves $name reports unchanged", async ({ overrides }) => {
+      noPreview();
+      mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
+      await dispatch({ ...liveX, ...overrides });
+      expect(delivered().replies).toEqual([{ text: report }]);
+    });
+
+    it("updates the existing bot preview with the card and exact canonical fallback", async () => {
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
+      mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
+      await dispatch(liveX);
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      const edit = requireRecord(
+        requireMockCall(finalizeSlackPreviewEditMock, 0, "summary edit")[0],
+        "summary edit",
+      );
+      expect(edit.text).toBe(report);
+      expect(edit.threadTs).toBe(root);
+      expect(edit.messageId).toBe(STREAM_MESSAGE_TS);
+      expect(edit.messageId).not.toBe(root);
+      expect(edit.attachments).toEqual([expect.objectContaining({ color: "#D99A00" })]);
+      expect(deliverRepliesMock).not.toHaveBeenCalled();
+    });
+
+    it("retains an unverified card edit without duplicating the final report", async () => {
+      const draft = useDraftStream();
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
+      await dispatch(liveX);
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      expect(deliverRepliesMock).not.toHaveBeenCalled();
+      expect(logVerboseMock.mock.calls.flat().join(" ")).toContain("retaining");
+      expect(draft.clear).not.toHaveBeenCalled();
+    });
+
+    it("holds repeated final delivery after a summary edit remains unverified", async () => {
+      const draft = useDraftStream();
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      mockedDispatchSequence = [
+        { kind: "final", payload: { text: report } },
+        { kind: "final", payload: { text: report } },
+      ];
+      await dispatch(liveX);
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      expect(deliverRepliesMock).not.toHaveBeenCalled();
+      expect(draft.clear).not.toHaveBeenCalled();
+    });
+
+    it("delivers a queued followup after retaining an unverified summary edit", async () => {
+      const draft = useDraftStream();
+      let previewMessageId: string | undefined = STREAM_MESSAGE_TS;
+      draft.messageId = () => previewMessageId;
+      draft.forceNewMessage.mockImplementation(() => {
+        previewMessageId = undefined;
+      });
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      const followupReport = report.replace(
+        "Menu access denied",
+        "Follow-up confirms access denied",
+      );
+      mockedDispatchSequence = [
+        { kind: "final", payload: { text: report } },
+        { kind: "final", payload: { text: report } },
+        checkpoint(async () => {
+          expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+          expect(deliverRepliesMock).not.toHaveBeenCalled();
+          expect(draft.clear).not.toHaveBeenCalled();
+        }),
+        { kind: "queued_followup" },
+        { kind: "final", payload: { text: followupReport } },
+        { kind: "final", payload: { text: followupReport } },
+      ];
+
+      await dispatch(liveX);
+
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      expect(draft.forceNewMessage).toHaveBeenCalledOnce();
+      expect(deliverRepliesMock).toHaveBeenCalledOnce();
+      expect(delivered().replyThreadTs).toBe(root);
+      expect(delivered().replies[0]?.text).toBe(followupReport);
+      expect(delivered().replies[0]?.channelData?.slack).toHaveProperty("threadSummaryCard");
+    });
+
+    it.each(["normal", "native", "compact", "card"] as const)(
+      "never edits or clears the original alert through %s delivery",
+      async (mode) => {
+        const draft = useDraftStream();
+        mockedNativeStreaming = mode === "native";
+        draft.messageId = () => root;
+        mockedReplyThreadTs = root;
+        mockedStatusThreadTs = root;
+        finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
+        mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
+        await dispatch({
+          ...liveX,
+          ...(mode === "compact"
+            ? {
+                accountConfig: progressAccount({
+                  style: "compact",
+                  nativeTaskCards: false,
+                  toolProgress: false,
+                }),
+              }
+            : mode === "card"
+              ? { accountConfig: { streaming: { mode: "progress", progress: { style: "card" } } } }
+              : {}),
+        });
+        expect(finalizeSlackPreviewEditMock).not.toHaveBeenCalled();
+        expect(deliverRepliesMock).toHaveBeenCalledOnce();
+        expect(delivered().replyThreadTs).toBe(root);
+        expect(draft.clear).not.toHaveBeenCalled();
+        expect(editSlackMessageMock.mock.calls.every(([, messageId]) => messageId !== root)).toBe(
+          true,
+        );
+        expect(
+          editSlackRenderedMessageMock.mock.calls.every(([, messageId]) => messageId !== root),
+        ).toBe(true);
+      },
+    );
+
+    it("preserves the canonical dispatch fallback when updating the existing reply", async () => {
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
+      const exact = report + "\n";
+      mockedDispatchSequence = [{ kind: "final", payload: { text: exact } }];
+      await dispatch(liveX);
+      const edit = requireRecord(
+        requireMockCall(finalizeSlackPreviewEditMock, 0, "summary whitespace edit")[0],
+        "summary edit",
+      );
+      // Core normalizes the authored reply before this presentation adapter.
+      expect(edit.text).toBe(report);
+      expect(edit.attachments).toEqual([expect.objectContaining({ fallback: report })]);
+    });
+
+    it("includes attachment appearance in the existing delivery identity", async () => {
+      const { buildSlackEventDeliveryKey } = await import("./dispatch-helpers.js");
+      const payload = (color: string): ReplyPayload => ({
+        text: report,
+        channelData: {
+          slack: {
+            threadSummaryCard: {
+              fallbackText: report,
+              blocks: [
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: "Action required · Severity unknown" },
+                },
+              ],
+              attachment: {
+                color,
+                blocks: [{ type: "section", text: { type: "mrkdwn", text: "Finding unchanged." } }],
+              },
+            },
+          },
+        },
+      });
+      expect(
+        buildSlackEventDeliveryKey({ kind: "final", payload: payload("#D99A00"), threadTs: root }),
+      ).not.toBe(
+        buildSlackEventDeliveryKey({ kind: "final", payload: payload("#9CA3AF"), threadTs: root }),
+      );
+    });
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

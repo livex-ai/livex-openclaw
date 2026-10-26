@@ -36,6 +36,40 @@ async function createDirectorySymlink(target: string, linkPath: string): Promise
   }
 }
 
+it("restricts excluded workspace reads to explicitly configured extra files", async () => {
+  const { workspaceDir, directory } = await fixture({
+    "workspace/MEMORY.md": "private root",
+    "workspace/USER.md": "private profile",
+    "workspace/memory/note.md": "private note",
+    "investigations.md": "approved catalog",
+  });
+  const catalog = path.join(directory, "investigations.md");
+  const cfg = {
+    memory: { search: { includeWorkspace: false, extraPaths: [catalog] } },
+    agents: { entries: { main: { workspace: workspaceDir } } },
+  };
+  for (const relPath of ["MEMORY.md", "USER.md", "memory/note.md"]) {
+    await expect(readAgentMemoryFile({ cfg, agentId: "main", relPath })).rejects.toMatchObject({
+      code: "MEMORY_PATH_NOT_ALLOWED",
+    });
+  }
+  await expect(
+    readAgentMemoryFile({ cfg, agentId: "main", relPath: catalog }),
+  ).resolves.toMatchObject({
+    status: "ok",
+    text: "approved catalog",
+  });
+  // An operator can still explicitly select a file inside the workspace.
+  await expect(
+    readMemoryFile({
+      workspaceDir,
+      includeWorkspace: false,
+      extraPaths: [path.join(workspaceDir, "MEMORY.md")],
+      relPath: "MEMORY.md",
+    }),
+  ).resolves.toMatchObject({ status: "ok", text: "private root" });
+});
+
 it.each([
   { name: "omitted agent limits", contextLimits: undefined, maxChars: 2000 },
   {

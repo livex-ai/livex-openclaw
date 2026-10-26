@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 git lso
     && rm -rf /var/lib/apt/lists/*
 # Google Cloud CLI Debian images install the full SDK at this documented path.
 COPY --from=sdk /usr/lib/google-cloud-sdk /opt/google-cloud-sdk
-COPY oncall/plugins/livex-gcp-readonly /opt/oncall/plugins/livex-gcp-readonly
-COPY oncall/workspace/AGENTS.md /opt/oncall/workspace/AGENTS.md
-COPY oncall/prompts /opt/oncall/prompts
-COPY oncall/scripts/local-gcloud-startup/preflight.mjs /opt/oncall/preflight.mjs
+COPY livex-agents/plugins/livex-gcp-readonly /opt/oncall/plugins/livex-gcp-readonly
+COPY livex-agents/workspaces/oncall/AGENTS.md /opt/oncall/workspace/AGENTS.md
+COPY livex-agents/prompts /opt/oncall/prompts
+COPY livex-agents/scripts/local-gcloud-startup/preflight.mjs /opt/oncall/preflight.mjs
 COPY agent-skills /opt/agent-skills
 COPY deploy/gcp-vm/start.sh /opt/oncall/start.sh
 RUN python3 /opt/agent-skills/scripts/library.py validate \

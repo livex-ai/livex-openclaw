@@ -120,6 +120,7 @@ function configuredIndexMismatch(
 
 export function resolveConfiguredScopeHash(params: {
   workspaceDir: string;
+  includeWorkspace?: boolean;
   extraPaths?: MemoryExtraPath[];
   multimodal: {
     enabled: boolean;
@@ -135,6 +136,8 @@ export function resolveConfiguredScopeHash(params: {
     .toSorted((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   return hashText(
     JSON.stringify({
+      // Preserve existing scope identities when the optional narrowing is not selected.
+      ...(params.includeWorkspace === false ? { includeWorkspace: false } : {}),
       extraPaths,
       multimodal: {
         enabled: params.multimodal.enabled,

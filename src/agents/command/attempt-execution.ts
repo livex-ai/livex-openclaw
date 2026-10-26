@@ -567,13 +567,14 @@ export async function runAgentAttempt(params: AgentAttemptParams) {
             images: params.opts.images,
             imageOrder: params.opts.imageOrder,
             ...toolContext,
-            // Completion relays can carry the trusted source only in their
-            // delivery target; the restricted CLI grant must retain that owner.
-            currentChannelId:
-              params.runContext.currentChannelId ??
-              (completionNeedsMessageDelivery
-                ? (params.opts.replyTo ?? params.opts.to)
-                : undefined),
+            // Preserve admitted origin facts, including an absent channel.
+            // Completion relays without an origin may use their delivery target.
+            currentChannelId: params.opts.requesterOrigin
+              ? toolContext.currentChannelId
+              : (params.runContext.currentChannelId ??
+                (completionNeedsMessageDelivery
+                  ? (params.opts.replyTo ?? params.opts.to)
+                  : undefined)),
             toolsAllow: resolveCliRuntimeToolsAllow(cliRuntimeToolsAllow),
             // This loop is the command-origin sibling of the auto-reply fallback
             // candidate, so its CLI grant needs the same delegation gate; the

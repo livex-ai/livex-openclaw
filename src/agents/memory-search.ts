@@ -104,6 +104,7 @@ export function resolveMemorySearchIndexConfig(cfg: OpenClawConfig, agentId: str
   });
   return {
     enabled,
+    includeWorkspace: overrides?.includeWorkspace ?? defaults?.includeWorkspace ?? true,
     rememberAcrossConversations,
     ...sourcePolicy,
     extraPaths: normalizeConfiguredMemoryExtraPaths([

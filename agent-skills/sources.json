@@ -3,28 +3,38 @@
     {
       "name": "investigate-alerts",
       "path": "skills/investigate-alerts/SKILL.md",
-      "sha256": "6edacfb40890933bd8fbbd87953be059b1094834019485d31922312a8eabe5f7",
-      "importedSha256": "ffb6785ff06017b4ada8e90ba3a4259af64cd90db878f7067af027ac0b0cfcd0",
+      "sha256": "d2f01b3ec16eb151d06bdb54334da89b8da7975ec0812b02e5c141e30a9add21",
+      "importedSha256": "fcd846ec8b4265a0dc83b4edbf51db196b9d7fbcbd883a8a5cd72427a23db305",
       "adaptation": {
         "scope": "shared-source",
-        "updatedOn": "2026-10-21",
-        "purpose": "Full-window log discovery, pagination, evidence reuse, pinned repository reads, and a required labeled report under the configured caller and project rules."
+        "updatedOn": "2026-10-23",
+        "purpose": "Canonical triage, ownership/lifecycle, action-based markers and concise evidence reports; adapt only OpenClaw tool, bot identity, configured runbook destination and normal reply delivery boundaries."
       },
-      "source": "Repository-owned adaptation of the local investigation workflow",
+      "source": "livex-alert-investigator:skills/investigate-alerts/SKILL.md",
       "files": [
         {
           "path": "skills/investigate-alerts/references/LICENSE-oncall-kit.txt",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "importedSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
         },
         {
           "path": "skills/investigate-alerts/references/evidence-record.md",
-          "sha256": "8efcca1994165d64ad9a31407459ec60fde62be49a0979cd478b3db796411df4"
+          "sha256": "51c4c59ce0c0b9cb1bfc19de2e11312814d683af18ed1423529f3b86d1bf3a6d",
+          "importedSha256": "51c4c59ce0c0b9cb1bfc19de2e11312814d683af18ed1423529f3b86d1bf3a6d"
         },
         {
           "path": "skills/investigate-alerts/references/oncall-kit-attribution.md",
-          "sha256": "8c266573f7e688a99d7d76ae3bae54052f26149785f6ce00120cf4a24ecaecfd"
+          "sha256": "244eada9055d12da6ea75b7d387d0dcb4027417937538b5636065e88c7a0827b",
+          "importedSha256": "f4385457bdc44602a4d593762e922ee14ae7f1fb07fa89242251d07676c25379"
+        },
+        {
+          "path": "skills/investigate-alerts/references/triage-lifecycle.md",
+          "sha256": "b1e5d0e28247b7f8fe0ec12a5c90aab29495c7ebcef22fb8da9dc2ca55893a29",
+          "importedSha256": "701987a88f208e4966cb23ccf685d79d779605484c585638ea9a88d6c03c2e8d"
         }
-      ]
+      ],
+      "sourceRevision": "86f4572f15923d210113379aa13d599c11ca7846",
+      "sourceDirty": true
     },
     {
       "name": "debug",
@@ -48,7 +58,7 @@
       "sha256": "808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787",
       "adaptation": {
         "scope": "shared-source",
-        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in oncall/workspace/AGENTS.md."
+        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in livex-agents/workspaces/oncall/AGENTS.md."
       },
       "files": [
         {
@@ -111,7 +121,7 @@
       "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3",
       "adaptation": {
         "scope": "shared-source",
-        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in oncall/workspace/AGENTS.md."
+        "purpose": "Selected upstream skill and supporting files; production read-only application is defined in livex-agents/workspaces/oncall/AGENTS.md."
       },
       "files": [
         {

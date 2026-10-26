@@ -1,3 +1,4 @@
+import type { MessageAttachment } from "@slack/types";
 import {
   normalizeMessagePresentation,
   renderMessagePresentationFallbackText,
@@ -40,7 +41,12 @@ import { SLACK_SECTION_TEXT_MAX } from "./presentation.js";
 import { SLACK_BUTTON_ACTION_IDS, SLACK_SELECT_ACTION_IDS } from "./reply-action-ids.js";
 
 export type SlackReplyBlockSegment =
-  | { kind: "blocks"; blocks: SlackBlock[] }
+  | {
+      kind: "blocks";
+      blocks: SlackBlock[];
+      attachments?: MessageAttachment[];
+      fallbackText?: string;
+    }
   | { kind: "text"; text: string; mrkdwn: false };
 
 export type SlackReplyBlockResolution = {
@@ -73,6 +79,7 @@ export function normalizeSlackReplyPayload(payload: ReplyPayload): ReplyPayload 
 export type SlackReplyDeliveryMessage = {
   text: string;
   blocks?: SlackBlock[];
+  attachments?: MessageAttachment[];
   authoredTextPlacement?: SlackAuthoredTextPlacement;
   nativeDataFallbackBaseText?: string;
   textIsSlackPlainText?: true;
@@ -93,6 +100,16 @@ export function* iterateSlackReplyDeliveryMessages(params: {
       if (text) {
         yield { text, textIsSlackPlainText: true };
       }
+      continue;
+    }
+    if (segment.attachments?.length) {
+      outsideText = "";
+      yield {
+        text: segment.fallbackText ?? params.text ?? "",
+        blocks: segment.blocks,
+        attachments: segment.attachments,
+        authoredTextPlacement: "none",
+      };
       continue;
     }
     const baseText = outsideText;
@@ -128,6 +145,7 @@ type SlackReplyRenderPlan =
       mode: "single";
       text: string;
       blocks?: SlackBlock[];
+      attachments?: MessageAttachment[];
       textIsSlackMrkdwn?: boolean;
       textIsSlackPlainText?: true;
     }
@@ -198,6 +216,15 @@ function projectSlackReplyRenderPlan(
   });
   if (messages.length <= 1) {
     const [message] = messages;
+    if (message?.attachments?.length) {
+      return {
+        mode: "single",
+        text: message.text,
+        blocks: message.blocks,
+        attachments: message.attachments,
+        textIsSlackMrkdwn: true,
+      };
+    }
     const sourceText = resolution.authoredTextPlacement === "none" ? "" : (text?.trim() ?? "");
     const blocks =
       message?.authoredTextPlacement === "blocks"
@@ -247,8 +274,30 @@ function readSlackChannelBlocks(payload: ReplyPayload): SlackBlock[] {
   return parseSlackBlocksInput(asOptionalRecord(payload.channelData?.slack)?.blocks) ?? [];
 }
 
+// This projection is authored only after the final-report identity/thread guard.
+// Match its exact fallback to avoid displaying a stale card after text rewrites.
+function readSlackThreadSummaryCard(payload: ReplyPayload) {
+  const source = asOptionalRecord(asOptionalRecord(payload.channelData?.slack)?.threadSummaryCard);
+  if (!source || typeof payload.text !== "string" || source.fallbackText !== payload.text) {
+    return undefined;
+  }
+  const attachment = asOptionalRecord(source.attachment);
+  const blocks = parseSlackBlocksInput(source.blocks);
+  const attachmentBlocks = parseSlackBlocksInput(attachment?.blocks);
+  const color = normalizeOptionalString(attachment?.color);
+  if (!blocks?.length || !attachmentBlocks?.length || !color || !/^#[0-9a-f]{6}$/iu.test(color)) {
+    return undefined;
+  }
+  return {
+    blocks,
+    attachments: [{ color, blocks: attachmentBlocks, fallback: payload.text }],
+    fallbackText: payload.text,
+  };
+}
+
 export function hasSlackReplyStructuredContent(payload: ReplyPayload): boolean {
   return Boolean(
+    readSlackThreadSummaryCard(payload) ||
     readSlackChannelBlocks(payload).length ||
     normalizeMessagePresentation(payload.presentation) ||
     payload.interactive?.blocks.length,
@@ -450,6 +499,13 @@ export function resolveSlackReplyBlockResolution(
     resolveAuthoredTextChunks?: () => readonly string[];
   } = {},
 ): SlackReplyBlockResolution {
+  const summary = readSlackThreadSummaryCard(payload);
+  if (summary) {
+    return {
+      authoredTextPlacement: "none",
+      segments: [{ kind: "blocks", ...summary }],
+    };
+  }
   const segments: SlackReplyBlockSegment[] = [];
   const presentation = normalizeMessagePresentation(payload.presentation);
   const textIsFallback = presentation && payload.presentationTextMode === "fallback";
