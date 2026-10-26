@@ -142,6 +142,66 @@ describe("completed investigation catalog", () => {
     );
   });
 
+  it.each([false, true])(
+    "persists independent same-error operations against one locked baseline (reversed=%s)",
+    async (reversed) => {
+      const filePath = await catalogPath();
+      const updates = ["parse", "delete"].map((operation) =>
+        finding("operation failed", {
+          signature: { ...finding().signature, operation, error: "operation failed" },
+        }),
+      );
+      if (reversed) {
+        updates.reverse();
+      }
+      const before = await readCatalog({ filePath, scope });
+      expect(compareFindings(before, updates).map((match) => match.kind)).toEqual(["new", "new"]);
+      const result = await record(filePath, updates);
+      expect(result).toMatchObject({ status: "committed", saved: 2, skipped: 0 });
+      const after = await readCatalog({ filePath, scope });
+      expect(after.status).toBe("ready");
+      expect(after.issues.map((issue) => issue.signature.operation).toSorted()).toEqual([
+        "delete",
+        "parse",
+      ]);
+      expect(after.issues.every((issue) => issue.whatWeDidLast[0]?.kind === "new")).toBe(true);
+    },
+  );
+
+  it("records an exact duplicate signature only once within one delivered batch", async () => {
+    const filePath = await catalogPath();
+    const result = await record(filePath, [finding(), finding()]);
+    expect(result).toMatchObject({ status: "committed", saved: 1, skipped: 0 });
+    const after = await readCatalog({ filePath, scope });
+    expect(after.status).toBe("ready");
+    expect(after.issues).toHaveLength(1);
+    expect(after.issues[0]?.whatWeDidLast).toHaveLength(1);
+    expect(after.issues[0]?.slackThreads).toEqual([firstUrl]);
+    expect(await record(filePath, [finding(), finding()])).toMatchObject({
+      status: "unchanged",
+      saved: 0,
+      skipped: 0,
+    });
+  });
+
+  it("retains a preexisting near-collision as uncertain without changing its record", async () => {
+    const filePath = await catalogPath();
+    await record(filePath);
+    const before = await fs.readFile(filePath, "utf8");
+    const conflicting = finding(undefined, {
+      signature: { ...finding().signature, operation: "delete" },
+    });
+    expect(compareFindings(await readCatalog({ filePath, scope }), [conflicting])[0]?.kind).toBe(
+      "uncertain",
+    );
+    expect(await record(filePath, [conflicting], secondUrl)).toMatchObject({
+      status: "partial",
+      saved: 0,
+      skipped: 1,
+    });
+    expect(await fs.readFile(filePath, "utf8")).toBe(before);
+  });
+
   it.each([
     ["impact", { impact: "New customer impacted" }],
     ["evidence", { evidence: "Pinned source confirms the missing field is required" }],
@@ -234,6 +294,7 @@ describe("completed investigation catalog", () => {
       thirdUrl,
     );
     expect(result.status).toBe("partial");
+    expect(result.saved).toBeUndefined();
     expect(await fs.readFile(filePath, "utf8")).toBe(before);
     expect((await readCatalog({ filePath, scope })).status).toBe("ready");
   });
@@ -264,8 +325,7 @@ describe("completed investigation catalog", () => {
       "uncertain",
     ]);
     const result = await record(filePath, [missing, finding("new independent error")], secondUrl);
-    expect(result.status).toBe("partial");
-    expect(result.skipped).toBe(1);
+    expect(result).toMatchObject({ status: "partial", saved: 1, skipped: 1 });
     const after = await readCatalog({ filePath, scope });
     expect(after.issues).toHaveLength(2);
     expect(
@@ -387,6 +447,7 @@ describe("completed investigation catalog", () => {
     try {
       const result = await record(filePath, [finding("bulk timeout")], secondUrl);
       expect(result.status).toBe("unavailable");
+      expect(result.saved).toBeUndefined();
       expect(await fs.readFile(filePath, "utf8")).toBe(before);
     } finally {
       spy.mockRestore();

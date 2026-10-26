@@ -28,6 +28,7 @@ export type CommitInvestigationsResult = {
   status: "committed" | "unchanged" | Exclude<CatalogStatus, "ready">;
   revision: string | null;
   issues: CatalogIssue[];
+  saved?: number;
   skipped?: number;
   reason?: string;
 };
@@ -133,24 +134,27 @@ export async function commitInvestigations(params: {
       return { ...document, status: document.status, issues: [] };
     }
     const issues = [...document.issues];
-    let changed = false;
+    const comparisons = compareFindings(
+      {
+        ...document,
+        scope: params.scope,
+        issues: document.issues.filter((issue) =>
+          scopeMatches(issue.signature.scope, params.scope),
+        ),
+      },
+      params.updates,
+    );
+    let saved = 0;
     let skipped = 0;
     const completedAt = pacificDate(params.now);
-    for (const update of params.updates) {
-      const visibleIssues = issues.filter((issue) =>
-        scopeMatches(issue.signature.scope, params.scope),
-      );
-      const comparison = compareFindings(
-        { ...document, scope: params.scope, issues: visibleIssues },
-        [update],
-      )[0]!;
+    for (const comparison of comparisons) {
+      const update = comparison.update;
       if (comparison.kind === "uncertain") {
         skipped++;
         continue;
       }
-      const priorIndex = comparison.issueId
-        ? issues.findIndex((issue) => issue.issueId === comparison.issueId)
-        : -1;
+      const issueId = comparison.issueId ?? createIssueId(update.signature);
+      const priorIndex = issues.findIndex((issue) => issue.issueId === issueId);
       const previous = issues[priorIndex];
       if (previous?.whatWeDidLast.some((entry) => entry.reportUrl === params.reportUrl)) {
         continue;
@@ -174,7 +178,7 @@ export async function commitInvestigations(params: {
       };
       const tracking = previous ? trackingFields(previous, update) : update;
       const issue: CatalogIssue = {
-        issueId: previous?.issueId ?? createIssueId(update.signature),
+        issueId,
         signature: previous?.signature ?? normalizeSignature(update.signature),
         task: update.task,
         status: tracking.status,
@@ -195,16 +199,17 @@ export async function commitInvestigations(params: {
       } else {
         issues.push(issue);
       }
-      changed = true;
+      saved++;
     }
     const visibleIssues = issues.filter((issue) =>
       scopeMatches(issue.signature.scope, params.scope),
     );
-    if (!changed) {
+    if (!saved) {
       return {
         status: skipped ? "partial" : "unchanged",
         revision: document.revision,
         issues: visibleIssues,
+        saved,
         skipped,
         ...(skipped ? { reason: "Uncertain or capacity-limited findings were not recorded" } : {}),
       };
@@ -227,6 +232,7 @@ export async function commitInvestigations(params: {
       status: skipped ? "partial" : "committed",
       revision: revisionOf(content),
       issues: visibleIssues,
+      saved,
       skipped,
       ...(skipped
         ? { reason: "Valid findings recorded; uncertain or capacity-limited findings skipped" }

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInvestigationPublication } from "./delivery.js";
+import { createInvestigationDelivery, createInvestigationPublication } from "./delivery.js";
 import { createInvestigationTurnRegistry } from "./runtime.js";
 import { serializeCatalog, type CompletedInvestigation, type HistoryScope } from "./schema.js";
 import { readCatalog } from "./store.js";
@@ -54,7 +54,7 @@ async function setup() {
     async () => "https://example.slack.com/archives/C1/p1000000000000000",
   );
   const publication = createInvestigationPublication({ turn, resolvePermalink });
-  return { filePath, resolvePermalink, publication, registry };
+  return { filePath, resolvePermalink, publication, registry, turn };
 }
 describe("settled Slack investigation publication", () => {
   it("records only a matching confirmed final receipt with its verified permalink", async () => {
@@ -79,6 +79,73 @@ describe("settled Slack investigation publication", () => {
       delivery: { visibleReplySent: true, messageIds: ["1000000000.000000"] },
     });
     expect((await readCatalog({ filePath, scope })).issues[0]?.whatWeDidLast).toHaveLength(1);
+  });
+  it.each([true, false])(
+    "reports confirmed partial saves accurately (valid finding: %s)",
+    async (includeValid) => {
+      const { filePath, publication, registry } = await setup();
+      const uncertain = { ...update, signature: { ...update.signature, operation: "unknown" } };
+      registry.stage(
+        "one",
+        scope,
+        "Final finding",
+        includeValid ? [update, uncertain] : [uncertain],
+      );
+      const input = {
+        kind: "final" as const,
+        text: "Final finding",
+        complete: true,
+        delivery: { visibleReplySent: true, messageIds: ["1000000000.000000"] },
+      };
+
+      expect(await publication.publish(input)).toMatchObject({
+        status: "partial",
+        saved: includeValid ? 1 : 0,
+        skipped: 1,
+      });
+      const catalog = await readCatalog({ filePath, scope });
+      expect(catalog.issues).toHaveLength(includeValid ? 1 : 0);
+      expect((await publication.publish(input)).status).toBe("skipped");
+      expect((await readCatalog({ filePath, scope })).revision).toBe(catalog.revision);
+    },
+  );
+  it("annotates an accepted final with saved and skipped counts instead of total failure", async () => {
+    const { filePath, registry, turn, resolvePermalink } = await setup();
+    registry.stage("one", scope, "Final finding", [
+      update,
+      { ...update, signature: { ...update.signature, operation: "unknown" } },
+    ]);
+    const annotateAcceptedFinal = vi.fn(async (_input: { messageId: string; text: string }) => {});
+    const delivery = createInvestigationDelivery({
+      turn,
+      sourceMessageIds: ["source-alert"],
+      resolvePermalink,
+      annotateAcceptedFinal,
+      reportError() {},
+      deliver: async () => ({ visibleReplySent: true, messageIds: ["1000000000.000000"] }),
+    });
+
+    await delivery.deliver({ text: "Final finding" }, { kind: "final" });
+    const annotation = annotateAcceptedFinal.mock.calls[0]?.[0];
+    expect(annotation).toMatchObject({ messageId: "1000000000.000000" });
+    expect(annotation?.text).toContain("saved 1 finding");
+    expect(annotation?.text).toContain("skipped 1");
+    expect(annotation?.text).not.toContain("saving the catalog failed");
+    expect((await readCatalog({ filePath, scope })).issues).toHaveLength(1);
+  });
+  it("does not claim a confirmed partial save when catalog limits prevent reading", async () => {
+    const { filePath, publication } = await setup();
+    const existing = "x".repeat(2 * 1024 * 1024 + 1);
+    await fs.writeFile(filePath, existing);
+    const result = await publication.publish({
+      kind: "final",
+      text: "Final finding",
+      complete: true,
+      delivery: { visibleReplySent: true, messageIds: ["1000000000.000000"] },
+    });
+    expect(result.status).toBe("failed");
+    expect(result).not.toHaveProperty("saved");
+    expect(await fs.readFile(filePath, "utf8")).toBe(existing);
   });
   it("refuses publication when the owning runtime closes during permalink retrieval", async () => {
     const { filePath, publication, resolvePermalink, registry } = await setup();

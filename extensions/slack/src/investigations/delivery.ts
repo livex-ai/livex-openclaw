@@ -7,10 +7,9 @@ import type {
 import type { InvestigationTurn } from "./runtime.js";
 import { commitInvestigations } from "./store.js";
 
-export type InvestigationPublicationResult = {
-  status: "recorded" | "skipped" | "failed";
-  reason?: string;
-};
+export type InvestigationPublicationResult =
+  | { status: "recorded" | "skipped" | "failed"; reason?: string }
+  | { status: "partial"; saved: number; skipped: number; reason: string };
 
 /** Catalog publication follows confirmed transport settlement; model completion alone is insufficient. */
 export function createInvestigationPublication(params: {
@@ -75,6 +74,19 @@ export function createInvestigationPublication(params: {
           recorded = true;
           return { status: "recorded" };
         }
+        if (
+          result.status === "partial" &&
+          result.saved !== undefined &&
+          result.skipped !== undefined
+        ) {
+          recorded = true;
+          return {
+            status: "partial",
+            saved: result.saved,
+            skipped: result.skipped,
+            reason: `Investigation catalog partially saved: ${result.saved} saved, ${result.skipped} skipped`,
+          };
+        }
         return {
           status: "failed",
           reason: `Investigation catalog update ${result.status}: ${result.reason ?? "completed findings were not fully recorded"}`,
@@ -132,7 +144,11 @@ export function createInvestigationDelivery(params: {
       delivery: result,
       complete,
     });
-    if (publication.status !== "failed" && !(warnOnUnprepared && publication.reason)) {
+    if (
+      publication.status !== "failed" &&
+      publication.status !== "partial" &&
+      !(warnOnUnprepared && publication.reason)
+    ) {
       return;
     }
     params.reportError(publication.reason ?? "Investigation catalog publication failed");
@@ -157,14 +173,17 @@ export function createInvestigationDelivery(params: {
     }
     try {
       investigationTurn.assertCurrent();
+      let warning =
+        "no matching completed record was prepared; this result was not saved to the catalog.";
+      if (publication.status === "failed") {
+        warning =
+          "the final was delivered, but saving the catalog failed; prior records are retained.";
+      } else if (publication.status === "partial") {
+        warning = `saved ${publication.saved} finding${publication.saved === 1 ? "" : "s"}; skipped ${publication.skipped} because matching was uncertain or a catalog limit was reached.`;
+      }
       await params.annotateAcceptedFinal({
         messageId,
-        text: addHistoryWarning(
-          payload.text,
-          publication.status === "failed"
-            ? "the final was delivered, but saving the catalog failed; prior records are retained."
-            : "no matching completed record was prepared; this result was not saved to the catalog.",
-        ),
+        text: addHistoryWarning(payload.text, warning),
       });
     } catch {
       params.reportError(
