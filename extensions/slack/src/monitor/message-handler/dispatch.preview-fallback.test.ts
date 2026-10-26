@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 // Slack tests cover dispatch.preview fallback plugin behavior.
@@ -21,6 +22,13 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
+import { getInvestigationTurnRegistry } from "../../investigations/runtime.js";
+import {
+  serializeCatalog,
+  type CompletedInvestigation,
+  type HistoryScope,
+} from "../../investigations/schema.js";
+import { readCatalog } from "../../investigations/store.js";
 import type { SlackSendResult } from "../../send.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
 import {
@@ -527,7 +535,8 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => {
   return { ...actual, getGlobalHookRunner: getGlobalHookRunnerMock };
 });
 
-vi.mock("openclaw/plugin-sdk/security-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
   resolvePinnedMainDmOwnerFromAllowlist: () => mockedPinnedMainDmOwner,
 }));
 
@@ -849,6 +858,122 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
   });
 
   afterEach(() => resetPluginRuntimeStateForTest());
+
+  it.each(["recorded", "missing", "queued-unprepared"])(
+    "settles the investigation catalog through its final receipt (%s)",
+    async (scenario) => {
+      const root = await fs.mkdtemp(path.join(tmpdir(), "slack-dispatch-catalog-"));
+      const filePath = path.join(root, "investigations.md");
+      try {
+        await fs.writeFile(filePath, serializeCatalog([]));
+        mockedSlackStreamingMode = "off";
+        createSlackDraftStreamMock.mockReturnValue(undefined);
+        deliverRepliesMock.mockResolvedValue(normalDeliveryResult);
+        const getPermalink = vi.fn(async () => ({
+          ok: true,
+          permalink: "https://example.slack.com/archives/C123/p171234999000",
+        }));
+        const prepared: PreparedSlackMessage = createPreparedSlackMessage({
+          route: { agentId: "oncall", sessionKey: "agent:oncall:slack:C123" },
+          eventScope: { teamId: "T1", client: { chat: { getPermalink, update: chatUpdateMock } } },
+        });
+        const scope: HistoryScope = {
+          agentId: "oncall",
+          accountId: "default",
+          teamId: "T1",
+          channelId: "C123",
+          senderId: "U123",
+        };
+        const registry = getInvestigationTurnRegistry();
+        prepared.investigationTurn = registry.register({
+          id: "dispatch-catalog",
+          scope,
+          sessionKey: prepared.route.sessionKey,
+          filePath,
+          snapshot: { status: "ready", scope, revision: "r", issues: [] },
+          assertCurrent() {},
+        });
+        const update: CompletedInvestigation = {
+          signature: {
+            scope,
+            service: "api",
+            environment: "prod",
+            operation: "variant",
+            error: "variant_name",
+          },
+          task: "Variant lookup",
+          status: "open",
+          historySummary: "Verified variant_name persists",
+          waitingOn: "Owner unknown",
+          prs: [],
+          slackThreads: [],
+          jiraTickets: [],
+          facts: {
+            finding: "Unknown variant_name",
+            impact: "One job",
+            nextAction: "Fix field mapping",
+          },
+          evidenceUrls: [],
+        };
+        if (scenario !== "queued-unprepared") {
+          registry.stage("dispatch-catalog", scope, FINAL_REPLY_TEXT, [update]);
+        }
+        if (scenario === "missing") {
+          await fs.rename(filePath, filePath + ".saved");
+        }
+        if (scenario === "queued-unprepared") {
+          mockedDispatchSequence = [
+            {
+              kind: "checkpoint",
+              run: async () => {
+                capturedReplyOptions?.turnAdoptionLifecycle?.onDeferred?.();
+              },
+            },
+          ];
+        }
+        await dispatchPreparedSlackMessage(prepared);
+        if (scenario === "queued-unprepared") {
+          expect(registry.get("dispatch-catalog")).toBeDefined();
+          const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
+          await correlation?.onReplyDelivered?.(
+            { text: FINAL_REPLY_TEXT },
+            { kind: "final", messageId: "queued-final", complete: true },
+          );
+          expect(getPermalink).not.toHaveBeenCalled();
+          expect(chatUpdateMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+              channel: "C123",
+              ts: "queued-final",
+              text: expect.stringContaining("no matching completed record"),
+            }),
+          );
+          expect((await readCatalog({ filePath, scope })).issues).toEqual([]);
+          await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+        } else {
+          expect(getPermalink).toHaveBeenCalledWith({
+            channel: "C123",
+            message_ts: "normal-final",
+          });
+        }
+        if (scenario === "missing") {
+          expect((await readCatalog({ filePath, scope })).status).toBe("uninitialized");
+          expect(await fs.readFile(filePath + ".saved", "utf8")).toBe(serializeCatalog([]));
+          expect(chatUpdateMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+              channel: "C123",
+              ts: "normal-final",
+              text: expect.stringContaining("saving the catalog failed"),
+            }),
+          );
+        } else if (scenario === "recorded") {
+          expect((await readCatalog({ filePath, scope })).issues).toHaveLength(1);
+        }
+        expect(registry.get("dispatch-catalog")).toBeUndefined();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each([
     { agents: ["alice", "bob"], withMedia: true },

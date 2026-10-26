@@ -35,6 +35,7 @@ type FileCommand =
   | MaintenanceCommand
   | {
       operation: "list";
+      includeWorkspace?: boolean;
       extraPaths?: Parameters<MemoryWorkspaceFiles["listFiles"]>[1];
       multimodal?: Parameters<MemoryWorkspaceFiles["listFiles"]>[2];
     }
@@ -154,6 +155,7 @@ export async function serveMemoryFiles(options: {
           request.extraPaths,
           request.multimodal,
           (p) => skipped.push(p),
+          { includeWorkspace: request.includeWorkspace },
         );
         result = { files, skipped };
         break;

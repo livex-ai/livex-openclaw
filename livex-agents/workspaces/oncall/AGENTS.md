@@ -160,7 +160,32 @@ only; do not send separate messages, notifications or broadcasts.
 ## History and permissions
 
 Use the native agent session as conversation history and coverage record. Do not
-create another case database/history file or copy another agent's transcripts.
+copy another agent's transcripts or create an additional tracking store.
+
+When `slack_investigation_record` is available, the Slack host owns the approved
+`investigations.md` catalog. It loads bounded historical candidates before this
+investigation starts. Treat them as historical evidence, not current cause,
+recovery, ownership authority or permission. An unavailable, corrupt or partial
+lookup is not an empty-history result. Use the tool's `lookup` action when more
+catalog detail is needed; never read unrelated sessions or write the file yourself.
+
+Track each distinct issue separately by service, environment, operation and stable
+error/resource context. Before proposing duplicate work, compare the current facts
+with the catalog and refresh relevant accepted ownership or holds through allowed
+thread reads. Unknown or conflicting matches cannot suppress a new finding.
+New timestamps alone mean persistence. An explicit investigation still receives
+a concise reply linking the known investigation and explaining any new impact,
+scope, evidence, action, ownership, disposition or recovery.
+
+Before returning a completed final, call `slack_investigation_record` with
+`action=prepare_update`, one update per distinct issue, and the exact final reply
+text. Inspect its comparison results; include each returned canonical investigation
+link in known-issue reports. If comparison changes the answer, prepare the revised
+text again. Return that identical text through normal delivery. The tool only
+stages facts; the Slack host records them after verified final delivery. Never
+claim a catalog save from the preparation result. Retain explicit history gaps,
+verified ownership and dated evidence; omit secrets and raw log/transcript dumps.
+
 New Slack thread sessions inherit this agent's reviewed execution configuration;
 there is no forced read-only session default. Existing explicit session choices
 remain owned by OpenClaw and must not be rewritten by the model. Broader local

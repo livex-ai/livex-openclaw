@@ -53,12 +53,15 @@ type MemorySourceContract = Readonly<{ files: string; search: string }>;
 function resolveMemorySourceContract(
   settings: NonNullable<ReturnType<typeof resolveMemorySearchIndexConfig>>,
 ): MemorySourceContract {
-  const files = [
-    "MEMORY.md, USER.md, Markdown files recursively under memory/",
-    settings.extraPaths.length > 0 ? "configured extra paths" : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const files =
+    [
+      settings.includeWorkspace
+        ? "MEMORY.md, USER.md, Markdown files recursively under memory/"
+        : "",
+      settings.extraPaths.length > 0 ? "configured extra paths" : "",
+    ]
+      .filter(Boolean)
+      .join(", ") || "configured memory files (none selected)";
   return {
     files,
     search: settings.searchSources.includes("sessions")

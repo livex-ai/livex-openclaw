@@ -496,6 +496,17 @@ auto-injected.
 
 ## Additional memory paths
 
+`memory.search.includeWorkspace` defaults to `true`. Set it to `false` to exclude
+implicit `MEMORY.md`, `USER.md`, and `memory/` discovery, file watching, and
+`memory_get` reads. Workspace bootstrap context is unchanged. Only explicitly
+configured `extraPaths` remain eligible;
+an explicit path can still select a file inside the workspace. Global and
+per-agent extra paths are additive. This option does not disable session indexing:
+use `sources: ["memory"]`, `rememberAcrossConversations: false`, and
+`experimental.sessionMemory: false` when transcripts must stay excluded.
+Narrowing this scope invalidates an existing broader index until it is explicitly
+rebuilt; the underlying notes are preserved.
+
 | Key          | Type                                                  | Description                              |
 | ------------ | ----------------------------------------------------- | ---------------------------------------- |
 | `extraPaths` | `Array<string \| { path: string; pattern?: string }>` | Additional directories or files to index |

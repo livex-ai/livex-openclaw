@@ -22,7 +22,7 @@ const { a2aChannelPlugin } = await loadBundledPluginFacade<{ a2aChannelPlugin: C
 });
 
 const channelState = vi.hoisted(() => ({
-  outcomes: [] as Array<"delivered" | "failed" | "held" | "ambiguous">,
+  outcomes: [] as Array<"delivered" | "failed" | "held" | "ambiguous" | "partial">,
   deliver: vi.fn(),
 }));
 
@@ -167,6 +167,12 @@ beforeEach(() => {
     if (outcome === "delivered") {
       return [{ channel: params.channel, messageId: `message-${channelState.outcomes.length}` }];
     }
+    if (outcome === "partial") {
+      throw new OutboundDeliveryError("second physical send failed", {
+        cause: new Error("transport unavailable"),
+        results: [{ channel: "slack", messageId: "partial-final" }],
+      });
+    }
     if (outcome === "held" || outcome === "ambiguous") {
       const error = new OutboundDeliveryError("delivery still owned by transport", {
         cause: new Error("transport unavailable"),
@@ -184,6 +190,50 @@ afterEach(() => {
 });
 
 describe("follow-up delivery channel boundary", () => {
+  it("passes a confirmed final receipt and awaits source-owned completion recording", async () => {
+    let release: (() => void) | undefined;
+    const recorded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let recordingFinished = false;
+    const delivered = vi.fn(async (_payload: ReplyPayload, _receipt?: unknown) => {
+      await recorded;
+      recordingFinished = true;
+    });
+    const pending = deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Completed investigation" }],
+      correlations: [{ begin() {}, onReplyDelivered: delivered }],
+    });
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(1));
+    expect(delivered.mock.calls[0]?.[1]).toEqual({
+      kind: "final",
+      messageId: "message-0",
+      complete: true,
+    });
+    expect(recordingFinished).toBe(false);
+    release?.();
+    await pending;
+    expect(recordingFinished).toBe(true);
+  });
+
+  it("marks a partial accepted origin receipt incomplete for source-owned recording", async () => {
+    const delivered = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["partial"],
+      payloads: [{ text: "Completed investigation" }],
+      correlations: [{ begin() {}, onReplyDelivered: delivered }],
+    });
+    expect(delivered).toHaveBeenCalledWith(
+      { text: "Completed investigation" },
+      { kind: "final", messageId: "partial-final", complete: false },
+    );
+  });
+
   it("suppresses repeated source failures before transport without falling back to another dispatcher", async () => {
     const delivered = vi.fn();
     const { onBlockReply, result } = await deliverBatch({

@@ -102,7 +102,15 @@ export type QueuedReplyDeliveryCorrelation = {
    * A collected batch is suppressed only when all participating policies agree. */
   shouldSuppressReply?: (payload: ReplyPayload) => boolean;
   /** Called only after the origin transport confirms visible delivery. */
-  onReplyDelivered?: (payload: ReplyPayload) => void;
+  onReplyDelivered?: (
+    payload: ReplyPayload,
+    receipt?: {
+      kind: "tool" | "block" | "final";
+      messageId?: string;
+      /** The transport confirmed the entire logical payload, not partial/ambiguous delivery. */
+      complete: boolean;
+    },
+  ) => void | Promise<void>;
   /** No settlement means a source retry or a separate source-owned delivery outcome. */
   begin: () =>
     | ((settlement?: {

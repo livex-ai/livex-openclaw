@@ -558,7 +558,11 @@ async function sendFollowupPayloads(params: {
         }
       } else if (result.delivered) {
         for (const correlation of turn.queued.deliveryCorrelations ?? []) {
-          correlation.onReplyDelivered?.(payload);
+          await correlation.onReplyDelivered?.(payload, {
+            kind: params.kind ?? "final",
+            messageId: result.messageId,
+            complete: result.ok && !result.ambiguous,
+          });
         }
         await params.onObservedReplyDelivery?.();
         if (!result.ok) {

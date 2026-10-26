@@ -133,6 +133,25 @@ afterEach(() => {
 });
 
 describe("local Memory watcher transport", () => {
+  it("carries catalog-only scope to the local file worker", async () => {
+    const { instance } = watcher({
+      settings: {
+        includeWorkspace: false,
+        extraPaths: ["/approved/investigations.md"],
+        multimodal: { enabled: false, modalities: [], maxFileBytes: 1024 },
+        sync: { watchDebounceMs: 10 },
+      },
+    });
+    const worker = await start(instance);
+    expect(worker.commands[0]).toMatchObject({
+      type: "open",
+      request: {
+        settings: { includeWorkspace: false, extraPaths: ["/approved/investigations.md"] },
+      },
+    });
+    await close(instance, worker);
+  });
+
   it("waits for readiness, publishes facts, and delivers dirty before settled in the owner's context", async () => {
     const context = new AsyncLocalStorage<string>();
     const events: string[] = [];
