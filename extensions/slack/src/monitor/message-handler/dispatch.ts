@@ -184,9 +184,6 @@ async function dispatchSlackMessageWithSetup(
       // Do not infer it from priority labels, counts or words in the report.
       const card = buildSlackThreadSummaryCard(payload.text, { textLimit: ctx.textLimit });
       if (card) {
-        if (summaryUpdateUnverified) {
-          return { visibleReplySent: false };
-        }
         payload = {
           ...payload,
           channelData: {
@@ -194,12 +191,23 @@ async function dispatchSlackMessageWithSetup(
             slack: { threadSummaryCard: card },
           },
         };
-        if (draftStream?.messageId() === originalThreadTs) {
-          // Protect the source alert before any normal, streaming or progress cleanup.
-          previewLifecycle.retainPreview();
-          await draftStream.discardPending();
-          return await delivery.deliverNormally({ payload, kind: info.kind });
-        }
+      }
+    }
+    const slackData = payload.channelData?.slack;
+    if (
+      info.kind === "final" &&
+      slackData &&
+      typeof slackData === "object" &&
+      "threadSummaryCard" in slackData
+    ) {
+      if (summaryUpdateUnverified) {
+        return { visibleReplySent: false };
+      }
+      if (originalThreadTs && draftStream?.messageId() === originalThreadTs) {
+        // Protect the source alert for both parsed and host-prepared summary cards.
+        previewLifecycle.retainPreview();
+        await draftStream.discardPending();
+        return await delivery.deliverNormally({ payload, kind: info.kind });
       }
     }
     if (info.kind === "final" && slackStreaming.mode === "progress" && progress.isProgressMode) {
@@ -450,14 +458,14 @@ async function dispatchSlackMessageWithSetup(
       }
       return response.permalink;
     },
-    annotateAcceptedFinal: async ({ messageId, text }) => {
+    annotateAcceptedFinal: async ({ messageId, text, card }) => {
       const client = prepared.eventScope?.writeClient ?? slackClient;
       await client.chat.update({
         channel: message.channel,
         ts: messageId,
         text,
-        attachments: [],
-        blocks: [],
+        attachments: card ? [card.attachment] : [],
+        blocks: card?.blocks ?? [],
       });
     },
     reportError: (errorMessage) => {

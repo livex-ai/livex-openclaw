@@ -98,6 +98,13 @@ export type TaskSuggestionDeliveryMode = "gateway";
 
 /** Correlates queued reply ownership transfer with later delivery drains. */
 export type QueuedReplyDeliveryCorrelation = {
+  /** Optional source-owned projection before origin routing. Collected batches with
+   * multiple projection owners retain ordinary delivery without source publication.
+   * Returning undefined keeps the payload and declines this source's receipt. */
+  prepareReply?: (
+    payload: ReplyPayload,
+    context: { kind: "tool" | "block" | "final" },
+  ) => ReplyPayload | undefined;
   /** Source-owned suppression for origin-routed replies that bypass the dispatcher.
    * A collected batch is suppressed only when all participating policies agree. */
   shouldSuppressReply?: (payload: ReplyPayload) => boolean;

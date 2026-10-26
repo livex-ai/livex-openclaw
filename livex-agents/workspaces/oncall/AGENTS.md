@@ -144,9 +144,15 @@ Follow the skill's provenance and remove/verify-before-add rules; preserve human
 and uncertain-origin markers. Opt-outs disable all reaction writes, including
 cleanup. No tool/identity changes are authorized by these instructions.
 
-Return the canonical outcome/priority/disposition header and separate bold
-Finding, Action, Owner and Evidence lines. Use the skill's rule for material
-blockers and short follow-up reports, not a second competing template here.
+For a completed bound investigation, fill the compact report object in
+`slack_investigation_record` instead of formatting a prose report. The host owns
+Title, Priority, Next action, Summary and Evidence presentation. Summary combines
+finding, impact and relevant uncertainty; Next action includes only confirmed
+ownership or Unassigned. Use unknowns where evidence is missing. The host derives
+optional Known issue/Blocked/Resolved badges from supported facts; priority alone
+cannot establish verified critical impact. This host form supersedes the older
+prose layout in the pinned skill; the skill's investigation/evidence rules remain.
+Short follow-up acknowledgements remain concise ordinary replies.
 Attach tool-returned `logsExplorerUrl` or another verified evidence URL with its
 checked window and fresh/saved status. Omit a link back to the original thread
 when replying inside it. Never invent links, owners, reads, cause, recovery,
@@ -178,11 +184,15 @@ a concise reply linking the known investigation and explaining any new impact,
 scope, evidence, action, ownership, disposition or recovery.
 
 Before returning a completed final, call `slack_investigation_record` with
-`action=prepare_update`, one update per distinct issue, and the exact final reply
-text. Inspect its comparison results; include each returned canonical investigation
-link in known-issue reports. If comparison changes the answer, prepare the revised
-text again. Return that identical text through normal delivery. The tool only
-stages facts; the Slack host records them after verified final delivery. Never
+`action=prepare_update`, one update per distinct issue, and the typed `report`
+object. Use title, priority, summary, nextAction and evidence (verified links and
+checkedWindow, or an explicit unknown). Do not add Markers/Limits fields or repeat
+Finding/Impact/Owner/Uncertainty paragraphs. Inspect comparison results and reprepare
+if facts change. Return the exact host-provided `finalText` through normal delivery.
+Known-issue links are merged by the host. Legacy finalText calls are supported only
+as acknowledgements; compact content derives from typed facts. A failed later
+preparation invalidates the previous one. The tool only stages facts; the Slack
+host records them after verified final delivery. Never
 claim a catalog save from the preparation result. Retain explicit history gaps,
 verified ownership and dated evidence; omit secrets and raw log/transcript dumps.
 

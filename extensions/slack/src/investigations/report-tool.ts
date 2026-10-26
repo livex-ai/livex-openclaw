@@ -3,6 +3,7 @@ import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { projectInvestigationIssue } from "./lookup.js";
 import { compareFindings } from "./matching.js";
+import { compactReportParameters, prepareCompactReport } from "./report-form.js";
 import { sameInvestigationScope, tryGetInvestigationTurnRegistry } from "./runtime.js";
 import { parseCompletedInvestigations } from "./schema.js";
 import { readCatalog } from "./store.js";
@@ -18,7 +19,13 @@ const parameters = {
       maxItems: 20,
       items: { type: "string", minLength: 1, maxLength: 128 },
     },
-    finalText: { type: "string", minLength: 1, maxLength: 32000 },
+    report: compactReportParameters,
+    finalText: {
+      type: "string",
+      minLength: 1,
+      maxLength: 32000,
+      description: "Legacy acknowledgement only; compact content derives from typed updates.",
+    },
     updates: {
       type: "array",
       minItems: 1,
@@ -92,7 +99,7 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
     name: "slack_investigation_record",
     label: "Investigation record",
     description:
-      "Look up this authorized oncall turn's investigation catalog, or prepare completed per-issue findings. prepare_update requires the exact final reply text and one update for each independent finding. It validates known issues and meaningful changes but does not write or send. Reply with the identical finalText; the Slack owner records findings only after confirmed final delivery. Historical owner/hold/recovery claims need evidence; use unknown when not verified.",
+      "Look up this authorized oncall turn's catalog, or prepare completed findings and a compact report form. prepare_update takes report (Title, Priority, Summary, Next action, Evidence; optional factual badge) plus one update per independent finding. The host validates and renders the final; return exactly the returned finalText without extra prose or markers. Legacy finalText input is an acknowledgement only: content derives from typed updates, never its prose. Supply report OR legacy finalText, not both. The tool stages only; confirmed Slack delivery owns catalog saving. Ownership, recovery and evidence claims require typed support; unknowns stay unknown.",
     parameters,
     async execute(_toolCallId, input, signal) {
       ctx.assertInvocationCurrent();
@@ -155,12 +162,21 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
           totalIssues: snapshot.issues.length,
         });
       }
+      if (args?.action !== "prepare_update") {
+        throw new Error("Use lookup or prepare_update");
+      }
+      // A failed later attempt must not leave an older final eligible for publication.
+      registry.clearStaged(turnId);
+      const legacyText = typeof args.finalText === "string" ? args.finalText.trim() : undefined;
       if (
-        args?.action !== "prepare_update" ||
-        typeof args.finalText !== "string" ||
-        !Array.isArray(args.updates)
+        !Array.isArray(args.updates) ||
+        (args.report === undefined && !legacyText) ||
+        (args.report !== undefined && args.finalText !== undefined) ||
+        (args.finalText !== undefined && (!legacyText || legacyText.length > 32000))
       ) {
-        throw new Error("prepare_update requires finalText and completed issue updates");
+        throw new Error(
+          "prepare_update requires completed updates and report OR legacy finalText, not both",
+        );
       }
       const updates = parseCompletedInvestigations(
         args.updates.map((value) => {
@@ -172,7 +188,9 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
       if (updates.some((update) => !sameInvestigationScope(update.signature.scope, turn.scope))) {
         throw new Error("Slack investigation signature scope does not match this turn");
       }
-      const findings = compareFindings(turn.snapshot, updates).map(
+      const comparisons = compareFindings(turn.snapshot, updates);
+      const prepared = prepareCompactReport(args.report, updates, comparisons);
+      const findings = comparisons.map(
         ({ kind, issueId, canonicalThreadUrl, changes, reason }) => ({
           kind,
           issueId,
@@ -181,29 +199,17 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
           reason,
         }),
       );
-      const finalText = args.finalText;
-      const missingLinks = findings.flatMap((finding) =>
-        (finding.kind === "known-persistence" || finding.kind === "changed") &&
-        finding.canonicalThreadUrl &&
-        !finalText.includes(finding.canonicalThreadUrl)
-          ? [finding.canonicalThreadUrl]
-          : [],
-      );
-      if (missingLinks.length) {
-        throw new Error(
-          `The final reply must include each existing canonical investigation link: ${[...new Set(missingLinks)].join(" ")}`,
-        );
-      }
       ctx.assertInvocationCurrent();
       turn.assertCurrent();
       signal?.throwIfAborted();
-      registry.stage(turnId, turn.scope, args.finalText, updates);
+      registry.stage(turnId, turn.scope, prepared.text, updates, prepared, legacyText);
       return jsonResult({
         status: "prepared",
         historyStatus: turn.snapshot.status,
+        finalText: prepared.text,
         findings,
         instruction:
-          "Return exactly the prepared finalText. Nothing has been sent or recorded yet.",
+          "Return exactly finalText. The host renders the compact report; add no labels, markers or extra prose. Nothing has been sent or recorded yet.",
       });
     },
   };

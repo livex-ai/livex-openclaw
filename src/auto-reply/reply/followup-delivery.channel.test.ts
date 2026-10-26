@@ -219,6 +219,78 @@ describe("follow-up delivery channel boundary", () => {
     expect(recordingFinished).toBe(true);
   });
 
+  it("projects one source-owned queued final before origin routing and publishes that exact payload", async () => {
+    const projected: ReplyPayload = {
+      text: "Canonical compact report",
+      channelData: { slack: { marker: "card" } },
+    };
+    const prepareReply = vi.fn(() => projected);
+    const delivered = vi.fn();
+    const unrelatedPolicy = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Legacy acknowledgement" }],
+      correlations: [
+        { begin() {}, onReplyDelivered: unrelatedPolicy },
+        { begin() {}, prepareReply, onReplyDelivered: delivered },
+      ],
+    });
+    expect(prepareReply).toHaveBeenCalledWith(
+      { text: "Legacy acknowledgement" },
+      { kind: "final" },
+    );
+    expect(channelState.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ payloads: [expect.objectContaining(projected)] }),
+      undefined,
+    );
+    expect(delivered.mock.calls[0]?.[0]).toBe(projected);
+    expect(unrelatedPolicy).toHaveBeenCalledOnce();
+  });
+  it("does not rewrite or cross-publish a collected final with multiple projection owners", async () => {
+    const first = {
+      begin() {},
+      prepareReply: vi.fn(() => ({ text: "First source report" })),
+      onReplyDelivered: vi.fn(),
+    };
+    const second = {
+      begin() {},
+      prepareReply: vi.fn(() => ({ text: "Second source report" })),
+      onReplyDelivered: vi.fn(),
+    };
+    const unrelatedPolicy = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Collected answer" }],
+      correlations: [first, second, { begin() {}, onReplyDelivered: unrelatedPolicy }],
+    });
+    expect(first.prepareReply).not.toHaveBeenCalled();
+    expect(second.prepareReply).not.toHaveBeenCalled();
+    expect(first.onReplyDelivered).not.toHaveBeenCalled();
+    expect(second.onReplyDelivered).not.toHaveBeenCalled();
+    expect(channelState.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloads: [expect.objectContaining({ text: "Collected answer" })],
+      }),
+      undefined,
+    );
+    expect(unrelatedPolicy).toHaveBeenCalledOnce();
+  });
+  it("keeps ordinary delivery but does not publish when a queued projector declines the payload", async () => {
+    const delivered = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Unrelated answer" }],
+      correlations: [{ begin() {}, prepareReply: () => undefined, onReplyDelivered: delivered }],
+    });
+    expect(channelState.deliver).toHaveBeenCalledOnce();
+    expect(delivered).not.toHaveBeenCalled();
+  });
   it("marks a partial accepted origin receipt incomplete for source-owned recording", async () => {
     const delivered = vi.fn();
     await deliverBatch({
