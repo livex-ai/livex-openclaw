@@ -1,0 +1,220 @@
+{
+  "plugins": {
+    "enabled": true,
+    "allow": [
+      "openai",
+      "codex",
+      "slack",
+      "livex-gcp-readonly"
+    ],
+    "entries": {
+      "openai": {
+        "enabled": true
+      },
+      "codex": {
+        "enabled": true,
+        "config": {
+          "appServer": {
+            "homeScope": "agent",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "auto_review"
+          },
+          "sessionCatalog": {
+            "enabled": false
+          },
+          "supervision": {
+            "enabled": false
+          }
+        }
+      },
+      "slack": {
+        "enabled": true
+      },
+      "livex-gcp-readonly": {
+        "enabled": true,
+        "config": {
+          "gcloudPath": "${GCLOUD_PATH}",
+          "cloudSdkConfig": "${CLOUDSDK_CONFIG}",
+          "gcloudAccount": "${GCLOUD_ACCOUNT}",
+          "project": "${GCP_PROJECT}",
+          "allowedChannelId": "*",
+          "allowedSenderId": "${SLACK_SENDER_ID}",
+          "paging": {
+            "enabled": true,
+            "pythonPath": "${PYTHON_PATH}",
+            "sdkRoot": "${GCLOUD_SDK_ROOT}"
+          },
+          "repositories": []
+        }
+      }
+    },
+    "load": {
+      "paths": [
+        "${PACKAGE_ROOT}/plugins/livex-gcp-readonly"
+      ]
+    }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "agentRuntime": {
+          "id": "codex"
+        }
+      }
+    }
+  },
+  "agents": {
+    "ownership": "explicit",
+    "defaults": {
+      "timeoutSeconds": 1200,
+      "maxConcurrent": 5,
+      "skills": null,
+      "permissionModeDefault": null,
+      "authInheritance": {
+        "agentId": "main"
+      },
+      "systemAgent": {
+        "agentId": "oncall"
+      }
+    },
+    "entries": {
+      "oncall": {
+        "name": "LiveX Oncall",
+        "description": "Mention-triggered production investigations with reviewed local execution and evidence-backed next actions.",
+        "workspace": "${PACKAGE_ROOT}/workspaces/oncall",
+        "skills": [
+          "investigate-alerts",
+          "debug",
+          "systematic-debugging",
+          "verification-before-completion"
+        ],
+        "permissionModeDefault": null,
+        "tools": {
+          "profile": "full",
+          "exec": {
+            "mode": "auto"
+          },
+          "elevated": {
+            "enabled": false
+          },
+          "fs": {
+            "workspaceOnly": true
+          },
+          "message": {
+            "actions": {
+              "allow": [
+                "read",
+                "react",
+                "reactions"
+              ]
+            }
+          },
+          "alsoAllow": null,
+          "allow": [
+            "read",
+            "skills_read",
+            "message",
+            "livex_gcp_logs_read",
+            "livex_repository_read"
+          ]
+        }
+      }
+    }
+  },
+  "tools": {
+    "profile": "minimal",
+    "exec": {
+      "mode": "deny"
+    },
+    "elevated": {
+      "enabled": false
+    },
+    "alsoAllow": null,
+    "message": null
+  },
+  "skills": {
+    "load": {
+      "extraDirs": [
+        "${SHARED_SKILLS_ROOT}"
+      ]
+    }
+  },
+  "channels": {
+    "slack": {
+      "channels": {
+        "*": {
+          "skills": null,
+          "systemPrompt": null,
+          "enabled": true,
+          "requireMention": true,
+          "replyToMode": "all",
+          "allowBots": false,
+          "users": [
+            "${SLACK_SENDER_ID}"
+          ],
+          "requireMentionInBotThreads": true
+        }
+      },
+      "groupPolicy": "open",
+      "allowBots": false,
+      "joinIntro": false,
+      "ackReaction": "",
+      "typingReaction": "",
+      "enabled": true,
+      "requireMention": true,
+      "dm": {
+        "groupEnabled": false,
+        "enabled": false
+      },
+      "dmPolicy": "disabled",
+      "allowFrom": [
+        "${SLACK_SENDER_ID}"
+      ],
+      "implicitMentions": {
+        "replyToBot": false,
+        "threadParticipation": false
+      },
+      "commands": {
+        "native": false,
+        "nativeSkills": false
+      },
+      "slashCommand": {
+        "enabled": false
+      },
+      "streaming": {
+        "mode": "progress",
+        "nativeTransport": true,
+        "progress": {
+          "style": "compact",
+          "nativeTaskCards": false,
+          "toolProgress": false,
+          "commandText": "status",
+          "commentary": false,
+          "narration": false
+        }
+      },
+      "actions": {
+        "reactions": true
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "oncall",
+      "match": {
+        "channel": "slack",
+        "accountId": "default",
+        "peer": {
+          "kind": "channel",
+          "id": "*"
+        }
+      }
+    }
+  ],
+  "messages": {
+    "groupChat": {
+      "visibleReplies": "automatic"
+    }
+  }
+}

@@ -4,6 +4,7 @@ import type { ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import type { FinalizedMsgContext, GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import type { ResolvedSlackAccount } from "../../accounts.js";
+import type { InvestigationTurn } from "../../investigations/runtime.js";
 import type { SlackSendIdentity } from "../../send.js";
 import type { SlackMessageEvent } from "../../types.js";
 import type { SlackChannelConfigResolved } from "../channel-config.js";
@@ -30,6 +31,7 @@ export type PreparedSlackMessage = {
   channelConfig: SlackChannelConfigResolved | null;
   replyTarget: string;
   ctxPayload: FinalizedMsgContext;
+  investigationTurn?: InvestigationTurn;
   turn: {
     record: InboundReplyRecordOptions;
   };

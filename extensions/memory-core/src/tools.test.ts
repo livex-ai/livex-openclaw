@@ -103,6 +103,17 @@ describe("memory tool schemas", () => {
     }
   });
 
+  it("describes only configured extra files when workspace memory is excluded", () => {
+    const description = corpusTool({
+      includeWorkspace: false,
+      extraPaths: ["/approved/investigations.md"],
+      rememberAcrossConversations: false,
+    }).description;
+    expect(description).toContain("configured extra paths");
+    expect(description).not.toContain("MEMORY.md, USER.md");
+    expect(description).toMatch(/^Semantically search configured extra paths when /);
+  });
+
   it("describes search as evidence-driven without repeating supplied recall", () => {
     const description = createMemorySearchToolOrThrow().description;
 

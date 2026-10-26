@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import type { MessageMetadata } from "@slack/types";
+import type { MessageAttachment, MessageMetadata } from "@slack/types";
 import type { Block, KnownBlock, WebClient } from "@slack/web-api";
 import {
   createMessageReceiptFromOutboundResults,
@@ -46,7 +46,11 @@ import {
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { getSlackWebApiErrorData } from "./errors.js";
 import { chunkSlackMrkdwnText, markdownToSlackMrkdwnChunks } from "./format.js";
-import { SLACK_EDIT_TEXT_MAX_BYTES, SLACK_TEXT_LIMIT } from "./limits.js";
+import {
+  SLACK_EDIT_TEXT_MAX_BYTES,
+  SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT,
+  SLACK_TEXT_LIMIT,
+} from "./limits.js";
 import type { SlackEventScope } from "./monitor/event-scope.js";
 import { hasSlackNativeDataBlock, isSlackInvalidBlocksError } from "./native-data-blocks.js";
 import { buildSlackNativeDataDeliveryPlan } from "./native-data-fallback.js";
@@ -60,7 +64,11 @@ import { recordSlackThreadParticipation } from "./sent-thread-cache.js";
 import { cacheSlackDmChannelId, readCachedSlackDmChannelId } from "./slack-dm-channel-cache.js";
 import { canonicalizeSlackApiTargetId, parseSlackTarget } from "./target-parsing.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackThreadTsValue } from "./thread-ts.js";
-import { truncateSlackText, truncateSlackTextByUtf8Bytes } from "./truncate.js";
+import {
+  countSlackTextUtf8Bytes,
+  truncateSlackText,
+  truncateSlackTextByUtf8Bytes,
+} from "./truncate.js";
 const SLACK_DELIVERY_METADATA_EVENT = "openclaw_delivery";
 const SLACK_DELIVERY_METADATA_KEY = "openclaw_delivery_id";
 const SLACK_DELIVERY_METADATA_PART_INDEX_KEY = "openclaw_delivery_part_index";
@@ -130,6 +138,7 @@ type SlackSendOpts = {
   replyBroadcast?: boolean;
   identity?: SlackSendIdentity;
   blocks?: (Block | KnownBlock)[];
+  attachments?: MessageAttachment[];
   metadata?: MessageMetadata;
   /** Opaque durable intent id used to reconcile ambiguous platform outcomes. */
   deliveryQueueId?: string;
@@ -879,7 +888,9 @@ export async function sendMessageSlack(
 ): Promise<SlackSendResult> {
   const normalizedMessage = normalizeOptionalString(message) ?? "";
   const trimmedMessage =
-    opts.textIsSlackPlainText && normalizedMessage ? message : normalizedMessage;
+    (opts.textIsSlackPlainText || opts.attachments?.length) && normalizedMessage
+      ? message
+      : normalizedMessage;
   const cfg = requireRuntimeConfig(opts.cfg, "Slack send");
   const account = resolveSlackAccount({
     cfg,
@@ -1028,7 +1039,7 @@ async function sendMessageSlackQueued(params: {
   const postPart = async (
     part: Pick<
       Parameters<typeof postSlackMessageBestEffort>[0],
-      "text" | "blocks" | "metadata" | "replyBroadcast" | "mrkdwn"
+      "text" | "blocks" | "attachments" | "metadata" | "replyBroadcast" | "mrkdwn"
     >,
   ) => {
     const posted = await postSlackMessageBestEffort({
@@ -1051,7 +1062,7 @@ async function sendMessageSlackQueued(params: {
       createSlackSendResult(
         response.ts,
         deliveredChannelId,
-        part.blocks ? "card" : "text",
+        part.blocks || part.attachments?.length ? "card" : "text",
         responseThreadTs ?? normalizeSlackThreadTsCandidate(opts.threadTs),
       ),
       part.blocks,
@@ -1059,6 +1070,35 @@ async function sendMessageSlackQueued(params: {
   };
   if (blocks && opts.mediaUrl) {
     throw new Error("Slack send does not support blocks with mediaUrl");
+  }
+  if (opts.attachments?.length) {
+    if (opts.mediaUrl) {
+      throw new Error("Slack send does not support attachments with mediaUrl");
+    }
+    // A summary attachment owns its visible blocks; the caller's complete text
+    // is accessibility fallback, not content to regenerate or split invisibly.
+    if (
+      !trimmedMessage.trim() ||
+      countSlackTextUtf8Bytes(trimmedMessage) >
+        Math.min(textChunkLimit, SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT)
+    ) {
+      throw new Error("Slack attachment fallback must be complete and fit one message");
+    }
+    await dispatchOnce();
+    return await postPart({
+      text: trimmedMessage,
+      ...(blocks ? { blocks } : {}),
+      attachments: opts.attachments,
+      replyBroadcast: opts.replyBroadcast,
+      metadata: withSlackDeliveryMetadata(opts.metadata, {
+        queueId: opts.deliveryQueueId,
+        channelId,
+        threadTs: opts.threadTs,
+        partIndex: 0,
+        partCount: 1,
+      }),
+      ...(opts.textIsSlackPlainText ? { mrkdwn: false } : {}),
+    });
   }
   if (blocks) {
     if (pendingBlockFallback) {

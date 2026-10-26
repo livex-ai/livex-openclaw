@@ -151,6 +151,54 @@ describe("deliverReplies identity passthrough", () => {
     },
   );
 
+  it("forwards one native summary attachment and full fallback into the original thread", async () => {
+    const text =
+      "⚠️ Action required · Priority unknown\n**Finding:** Recovery unverified.\n**Action:** Inspect demo-shop.\n**Owner:** Unassigned.\n**Evidence:** URL unavailable.";
+    const blocks = [
+      {
+        type: "context",
+        elements: [{ type: "mrkdwn", text: "Action required · Severity unknown" }],
+      },
+    ];
+    const attachment = {
+      color: "#D99A00",
+      fallback: text,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "*Next action:* Inspect demo-shop.\n*Impact:* Unknown.\n*Finding:* Recovery unverified.",
+          },
+        },
+      ],
+    };
+    sendMock.mockResolvedValue(acceptedSlackSendResult("1792854044.000001", "card"));
+    await deliverReplies(
+      baseParams({
+        replies: [
+          {
+            text,
+            channelData: {
+              slack: { threadSummaryCard: { blocks, attachment, fallbackText: text } },
+            },
+          },
+        ],
+        replyThreadTs: "1792854043.288339",
+        replyToMode: "all",
+      }),
+    );
+    expect(sendMock).toHaveBeenCalledOnce();
+    const call = requireSendCall();
+    expect(call[1]).toBe(text);
+    expect(call[2]).toMatchObject({
+      threadTs: "1792854043.288339",
+      blocks,
+      attachments: [attachment],
+    });
+    expect(call[2].replyBroadcast).not.toBe(true);
+  });
+
   it("sends nothing when the producer supplies no payload", async () => {
     await deliverReplies(baseParams({ replies: [] }));
     expect(sendMock).not.toHaveBeenCalled();

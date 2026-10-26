@@ -1,3 +1,4 @@
+import type { MessageAttachment } from "@slack/types";
 import type { Block, KnownBlock, WebClient } from "@slack/web-api";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-resolution";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -358,11 +359,21 @@ export async function editSlackRenderedMessage(
   channelId: string,
   messageId: string,
   content: string,
-  opts: SlackActionClientOpts & { blocks?: (Block | KnownBlock)[] } = {},
+  opts: SlackActionClientOpts & {
+    blocks?: (Block | KnownBlock)[];
+    attachments?: MessageAttachment[];
+  } = {},
 ) {
   const client = await getClient(opts, "write");
   const blocks = opts.blocks == null ? undefined : validateSlackBlocksArray(opts.blocks);
-  const editText = buildSlackEditTextPayload(content, blocks);
+  const hasAttachments = Boolean(opts.attachments?.length);
+  if (
+    hasAttachments &&
+    (!content.trim() || countSlackTextUtf8Bytes(content) > SLACK_EDIT_TEXT_MAX_BYTES)
+  ) {
+    throw new Error("Slack attachment fallback must be complete and fit one edit");
+  }
+  const editText = hasAttachments ? content : buildSlackEditTextPayload(content, blocks);
   const hasNativeData = hasSlackNativeDataBlock(blocks);
   const nativeFallbackText = hasNativeData
     ? appendSlackNativeDataFallbackText(editText, blocks)
@@ -380,6 +391,7 @@ export async function editSlackRenderedMessage(
     ts: messageId,
     text,
     ...(blocks ? { blocks } : {}),
+    ...(opts.attachments !== undefined ? { attachments: opts.attachments } : {}),
   };
   try {
     await client.chat.update(update);

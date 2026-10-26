@@ -42,6 +42,7 @@ export abstract class MemoryManagerWatchOps extends MemoryManagerSyncBase {
           {
             agentId: this.agentId,
             settings: {
+              ...(!this.settings.includeWorkspace ? { includeWorkspace: false } : {}),
               extraPaths: this.settings.extraPaths,
               multimodal: this.settings.multimodal,
               sync: { watchDebounceMs: this.settings.sync.watchDebounceMs },

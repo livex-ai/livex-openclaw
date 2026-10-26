@@ -194,6 +194,8 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   "memory.search": "Vector search over MEMORY.md and memory/*.md (per-agent overrides supported).",
   "memory.search.enabled":
     "Master toggle for memory search indexing and retrieval behavior on this agent profile. Keep enabled for semantic recall, and disable when you want fully stateless responses.",
+  "memory.search.includeWorkspace":
+    "Include MEMORY.md, USER.md, and memory/ in indexing and memory-file reads (default: true). Set false to select only explicit extraPaths. This does not disable session transcript indexing; scope changes require an index rebuild.",
   "memory.search.rememberAcrossConversations":
     'Use relevant context from this agent\'s other private conversations through protected transcript recall. Defaults on only when global session.dmScope is unset or "main" and no binding overrides DM scope; any configured DM isolation defaults it off. An explicit true or false always wins.',
   "memory.search.sources":
