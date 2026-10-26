@@ -121,3 +121,22 @@ and launcher/code selection, and start one prior gateway. Preserve the catalog
 and agent database. Disabling the optional catalog tool prevents new writes;
 disabling the memory owner stops indexing. Do not remove retained investigation
 records or reset conversation storage as a rollback shortcut.
+
+## Compact report form
+
+The `prepare_update` action accepts a bounded typed `report` with `title`, `priority`,
+`summary`, `nextAction`, and `evidence` (`links`, optional `checkedWindow`/`note`).
+The host validates and renders Title/Priority, Next action, Summary and Evidence;
+there are no expanded repetitive Finding/Impact/Owner/Uncertainty sections. Optional
+Known issue/Blocked/Resolved badges need supporting catalog/fact evidence. Model
+priority never establishes verified-critical styling. Missing ownership, impact or
+evidence remains unknown; supplied URLs must be grounded in the typed findings.
+
+Legacy finalText input is an acknowledgement, never parsed for report content.
+The host derives a compact report from the typed completed findings, so Markers
+and Limits prose cannot break rendering. Return the current preparation's exact
+canonical finalText; unrelated, silent, error or independent replies are not replaced.
+Later invalid preparation clears the older stage. The catalog's ten fields, scope,
+retention and confirmed-delivery write rules are unchanged. New instructions must
+be selected deliberately on activation; stable existing session prompts are not
+rewritten. No rollout is performed by these source changes.
