@@ -19,6 +19,7 @@ import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { formatSlackError } from "../../errors.js";
 import { normalizeSlackOutboundText } from "../../format.js";
+import { createInvestigationDelivery } from "../../investigations/delivery.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
 import { resolveSlackReplyRenderPlan } from "../../reply-blocks.js";
@@ -59,7 +60,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         sessionKey: prepared.ctxPayload.SessionKey ?? prepared.route.sessionKey,
       },
     );
-  const upstreamLifecycle = prepared.turnAdoptionLifecycle;
+  const upstreamLifecycle =
+    prepared.investigationTurn?.lifecycle(prepared.turnAdoptionLifecycle) ??
+    prepared.turnAdoptionLifecycle;
   let releaseDeferred: (() => void) | undefined;
   const turnAdoptionLifecycle = upstreamLifecycle && {
     ...upstreamLifecycle,
@@ -76,9 +79,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     },
   };
   const release = beginSessionRun();
-  await dispatchSlackMessageWithSetup(setup, beginSessionRun, turnAdoptionLifecycle).finally(
-    release,
-  );
+  await dispatchSlackMessageWithSetup(setup, beginSessionRun, turnAdoptionLifecycle).finally(() => {
+    release();
+    prepared.investigationTurn?.releaseImmediate();
+  });
 }
 
 async function dispatchSlackMessageWithSetup(
@@ -136,7 +140,7 @@ async function dispatchSlackMessageWithSetup(
     () => delivery.observedReplyDelivery || previewLifecycle.previewFinalized,
   );
 
-  const deliverSlackPayload = async (
+  const deliverSlackPayloadInner = async (
     incomingPayload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
   ): Promise<LivePreviewDeliveryResult> => {
@@ -180,9 +184,6 @@ async function dispatchSlackMessageWithSetup(
       // Do not infer it from priority labels, counts or words in the report.
       const card = buildSlackThreadSummaryCard(payload.text, { textLimit: ctx.textLimit });
       if (card) {
-        if (summaryUpdateUnverified) {
-          return { visibleReplySent: false };
-        }
         payload = {
           ...payload,
           channelData: {
@@ -190,12 +191,23 @@ async function dispatchSlackMessageWithSetup(
             slack: { threadSummaryCard: card },
           },
         };
-        if (draftStream?.messageId() === originalThreadTs) {
-          // Protect the source alert before any normal, streaming or progress cleanup.
-          previewLifecycle.retainPreview();
-          await draftStream.discardPending();
-          return await delivery.deliverNormally({ payload, kind: info.kind });
-        }
+      }
+    }
+    const slackData = payload.channelData?.slack;
+    if (
+      info.kind === "final" &&
+      slackData &&
+      typeof slackData === "object" &&
+      "threadSummaryCard" in slackData
+    ) {
+      if (summaryUpdateUnverified) {
+        return { visibleReplySent: false };
+      }
+      if (originalThreadTs && draftStream?.messageId() === originalThreadTs) {
+        // Protect the source alert for both parsed and host-prepared summary cards.
+        previewLifecycle.retainPreview();
+        await draftStream.discardPending();
+        return await delivery.deliverNormally({ payload, kind: info.kind });
       }
     }
     if (info.kind === "final" && slackStreaming.mode === "progress" && progress.isProgressMode) {
@@ -431,6 +443,39 @@ async function dispatchSlackMessageWithSetup(
     }
     return result.deliveryResult ?? { visibleReplySent: false };
   };
+  const investigationDelivery = createInvestigationDelivery({
+    turn: prepared.investigationTurn,
+    sourceMessageIds: [message.ts, message.thread_ts],
+    resolvePermalink: async (messageId) => {
+      prepared.investigationTurn?.assertCurrent();
+      const response = await slackClient.chat.getPermalink({
+        channel: message.channel,
+        message_ts: messageId,
+      });
+      prepared.investigationTurn?.assertCurrent();
+      if (!response.ok || !response.permalink) {
+        throw new Error("Slack investigation permalink unavailable");
+      }
+      return response.permalink;
+    },
+    annotateAcceptedFinal: async ({ messageId, text, card }) => {
+      const client = prepared.eventScope?.writeClient ?? slackClient;
+      await client.chat.update({
+        channel: message.channel,
+        ts: messageId,
+        text,
+        attachments: card ? [card.attachment] : [],
+        blocks: card?.blocks ?? [],
+      });
+    },
+    reportError: (errorMessage) => {
+      runtime.error?.(danger(errorMessage));
+    },
+    deliver: deliverSlackPayloadInner,
+  });
+  const deliverSlackPayload = investigationDelivery.deliver;
+  const queuedInvestigationCorrelation = investigationDelivery.queuedCorrelation;
+
   let agentRunFailed = false;
   let settledDispatchResult: Parameters<typeof hasVisibleInboundReplyDispatch>[0];
   try {
@@ -469,6 +514,7 @@ async function dispatchSlackMessageWithSetup(
         // Followups can outlive this dispatch and retain their own source address.
         queuedDeliveryCorrelations: [
           createSlackQueuedFailureNoticePolicy(failurePolicyParams, beginSessionRun),
+          ...(queuedInvestigationCorrelation ? [queuedInvestigationCorrelation] : []),
         ],
         ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
         skillFilter: prepared.channelConfig?.skills,

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   resolveAckReaction,
   shouldAckReaction as shouldAckReactionGate,
@@ -49,6 +50,13 @@ import type { ResolvedSlackAccount } from "../../accounts.js";
 import { reactSlackMessage } from "../../actions.js";
 import { normalizeSlackAppContextEntities, isSlackAppContext } from "../../agent-context.js";
 import { formatSlackError } from "../../errors.js";
+import { resolveInvestigationCatalogPath } from "../../investigations/config.js";
+import { lookupInvestigationHistory } from "../../investigations/lookup.js";
+import {
+  getInvestigationTurnRegistry,
+  type InvestigationTurn,
+} from "../../investigations/runtime.js";
+import type { HistoryScope } from "../../investigations/schema.js";
 import { sendMessageSlack } from "../../send.js";
 import { formatSlackTarget } from "../../target-parsing.js";
 import type { SlackFile, SlackMessageEvent } from "../../types.js";
@@ -1063,7 +1071,7 @@ export async function prepareSlackMessage(params: {
   }
   const { rawBody, effectiveDirectMedia, commandSourceText, mentionStripPatterns } =
     resolvedMessageContent;
-  const bodyForAgent = preflightAudioTranscript
+  let bodyForAgent = preflightAudioTranscript
     ? formatSlackAudioTranscriptForAgent({
         transcript: preflightAudioTranscript,
         rawBody,
@@ -1339,6 +1347,37 @@ export async function prepareSlackMessage(params: {
     ? normalizeSlackAppContextEntities(message.app_context)
     : [];
 
+  const investigationCatalogPath = resolveInvestigationCatalogPath(cfg, route.agentId);
+  const investigationScope: HistoryScope = {
+    agentId: route.agentId,
+    accountId: account.accountId,
+    teamId: opts.eventScope?.teamId ?? ctx.teamId ?? "",
+    channelId: message.channel,
+    senderId,
+  };
+  const investigationLookup =
+    investigationCatalogPath && !isDirectMessage
+      ? await lookupInvestigationHistory({
+          cfg,
+          agentId: route.agentId,
+          sessionKey,
+          scope: investigationScope,
+          filePath: investigationCatalogPath,
+          query: [threadStarterBody, threadHistoryBody, textWithId]
+            .filter(Boolean)
+            .join("\n\n")
+            .slice(0, 2_000),
+          assertCurrent: assertHistoryCurrent,
+          signal: opts.abortSignal,
+        })
+      : undefined;
+  assertHistoryCurrent();
+  if (investigationLookup) {
+    const investigationContext = `\n\n${investigationLookup.context}\nBefore your final reply call slack_investigation_record prepare_update with per-issue facts and the exact finalText. Never treat missing or partial history as a successful empty check.`;
+    combinedBody += investigationContext;
+    bodyForAgent += investigationContext;
+  }
+
   const ctxPayload = (ctx.buildContext ?? buildChannelInboundEventContext)({
     channelIngress: messageIngress,
     channel: "slack",
@@ -1497,6 +1536,21 @@ export async function prepareSlackMessage(params: {
   }
 
   const updateLastRouteSessionKey = resolveInboundLastRouteSessionKey({ route, sessionKey });
+  let investigationTurn: InvestigationTurn | undefined;
+  if (investigationCatalogPath && investigationLookup) {
+    investigationTurn = getInvestigationTurnRegistry().register({
+      id: randomUUID(),
+      scope: investigationScope,
+      sessionKey,
+      filePath: investigationCatalogPath,
+      snapshot: investigationLookup.snapshot,
+      assertCurrent: assertHistoryCurrent,
+    });
+    ctxPayload.GatewayRunToolBindings = {
+      ...ctxPayload.GatewayRunToolBindings,
+      slack_investigation: { turnId: investigationTurn.id },
+    };
+  }
 
   return {
     ctx,
@@ -1508,6 +1562,7 @@ export async function prepareSlackMessage(params: {
     channelConfig,
     replyTarget,
     ctxPayload,
+    investigationTurn,
     sessionDisplayName: sessionEntry?.displayName,
     turn: {
       record: {

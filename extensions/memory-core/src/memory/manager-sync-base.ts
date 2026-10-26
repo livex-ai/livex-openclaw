@@ -504,6 +504,7 @@ export abstract class MemoryManagerSyncBase {
       configuredSources: resolveConfiguredSourcesForMeta(this.sources),
       configuredScopeHash: resolveConfiguredScopeHash({
         workspaceDir: this.workspaceDir,
+        includeWorkspace: this.settings.includeWorkspace,
         extraPaths: this.settings.extraPaths,
         multimodal: this.settings.multimodal,
       }),

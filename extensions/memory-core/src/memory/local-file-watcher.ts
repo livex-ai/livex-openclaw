@@ -235,6 +235,7 @@ export class LocalMemoryFileWatcher {
       request: {
         agentId: this.options.agentId,
         settings: {
+          ...(this.options.settings.includeWorkspace === false ? { includeWorkspace: false } : {}),
           extraPaths: this.options.settings.extraPaths,
           multimodal: this.options.settings.multimodal,
           sync: { watchDebounceMs: this.options.settings.sync.watchDebounceMs },

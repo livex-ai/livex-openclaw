@@ -337,6 +337,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.startupContext.maxTotalChars": "Startup Context Max Total Chars",
   "memory.search": "Memory Search",
   "memory.search.enabled": "Enable Memory Search",
+  "memory.search.includeWorkspace": "Include Workspace Memory",
   "memory.search.rememberAcrossConversations": "Remember Across Conversations",
   "memory.search.sources": "Memory Search Sources",
   "memory.search.extraPaths": "Extra Memory Paths",

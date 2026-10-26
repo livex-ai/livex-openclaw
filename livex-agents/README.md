@@ -20,7 +20,6 @@ schedules, automatic handoffs or runner access. Their [offline replay
 packets](tests/role-replays.md) do not establish live activation or execution.
 This repository relocation does not reconfigure or restart any deployment.
 
-
 ## Existing deployment source-path cutover
 
 Keep the previous checkout available until a separately authorized deployment
@@ -49,6 +48,11 @@ For rollback, stop the Gateway through its owning operator workflow, restore the
 recorded workspace/plugin/launcher/local-setting paths and start from the retained
 previous checkout. Keep credentials, skill selection, bindings and state unchanged.
 These are manual operator steps; this source relocation executes none of them.
+
+The optional [investigation catalog](investigation-memory.md) adds scoped memory
+retrieval and completed-record publication when separately enabled. It is off by
+default. No escalation writes or QA runner integration are included. Keep existing
+cron state unchanged.
 
 # Shared skill source
 

@@ -71,9 +71,13 @@ export class MemoryWatchPolicy {
   ) {
     this.extras = normalizeExtraMemoryPathEntries(workspace, settings.extraPaths);
     this.targets = [
-      { path: path.resolve(workspace, "MEMORY.md"), kind: "entry", core: true },
-      { path: path.resolve(workspace, "USER.md"), kind: "entry", core: true },
-      { path: path.resolve(workspace, "memory"), kind: "tree", core: true },
+      ...(settings.includeWorkspace !== false
+        ? [
+            { path: path.resolve(workspace, "MEMORY.md"), kind: "entry" as const, core: true },
+            { path: path.resolve(workspace, "USER.md"), kind: "entry" as const, core: true },
+            { path: path.resolve(workspace, "memory"), kind: "tree" as const, core: true },
+          ]
+        : []),
       // A tree scope also selects an extra path that is a regular file. Missing
       // configured roots stay observed and do not require a Gateway restart.
       ...this.extras.map((entry) => ({ path: entry.path, kind: "tree" as const, core: false })),
