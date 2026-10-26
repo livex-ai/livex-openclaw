@@ -66,7 +66,87 @@ afterEach(async () => {
   closeInvestigationTurnRegistry();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
+function renderedText(details: unknown): string {
+  const value =
+    details && typeof details === "object" && "finalText" in details
+      ? details.finalText
+      : undefined;
+  expect(value).toBeTypeOf("string");
+  return typeof value === "string" ? value : "";
+}
+const typedReport = {
+  title: "Variant lookup fails",
+  priority: "unknown",
+  summary: "Unknown variant_name affects one job; wider impact is unknown.",
+  nextAction: "Fix field mapping.",
+  evidence: { links: [], note: "Evidence unavailable." },
+};
 describe("Slack investigation record tool", () => {
+  it("stages the typed report and returns the host-rendered final", async () => {
+    register();
+    const result = await createInvestigationRecordTool(context()).execute("stage", {
+      action: "prepare_update",
+      report: typedReport,
+      updates: [update],
+    });
+    const text = renderedText(result.details);
+    expect(text).toContain("*Next action:*");
+    expect(text).toContain("*Summary:*");
+    expect(text).not.toContain("*Finding:*");
+    expect(getInvestigationTurnRegistry().matchFinal("one", text)?.report?.form.title).toBe(
+      typedReport.title,
+    );
+  });
+  it.each(["Markers: eyes warning verified.", "**Limits:** Some source fields unavailable."])(
+    "uses typed facts for legacy acknowledgement without parsing %s",
+    async (footer) => {
+      register();
+      const legacy = `⚠️ Priority unknown · Action required\n**Finding:** Old prose\n**Action:** Old prose\n${footer}`;
+      const result = await createInvestigationRecordTool(context()).execute("stage", {
+        action: "prepare_update",
+        finalText: legacy,
+        updates: [update],
+      });
+      const text = renderedText(result.details);
+      expect(text).toContain("Unknown variant_name");
+      expect(text).not.toContain(footer);
+      expect(text).not.toContain("Old prose");
+      expect(getInvestigationTurnRegistry().matchFinal("one", legacy)?.finalText).toBe(text);
+    },
+  );
+  it("invalidates an older preparation when a later report is invalid", async () => {
+    register();
+    const tool = createInvestigationRecordTool(context());
+    await tool.execute("first", {
+      action: "prepare_update",
+      finalText: "First acknowledgement",
+      updates: [update],
+    });
+    await expect(
+      tool.execute("invalid", {
+        action: "prepare_update",
+        report: { ...typedReport, priority: "P0" },
+        updates: [update],
+      }),
+    ).rejects.toThrow(/report|priority/i);
+    expect(
+      getInvestigationTurnRegistry().matchFinal("one", "First acknowledgement"),
+    ).toBeUndefined();
+  });
+  it("rejects competing report and legacy text inputs without leaving staged facts", async () => {
+    register();
+    await expect(
+      createInvestigationRecordTool(context()).execute("stage", {
+        action: "prepare_update",
+        report: typedReport,
+        finalText: "Competing acknowledgement",
+        updates: [update],
+      }),
+    ).rejects.toThrow(/report.*finalText|finalText.*report/);
+    expect(
+      getInvestigationTurnRegistry().matchFinal("one", "Competing acknowledgement"),
+    ).toBeUndefined();
+  });
   it("retrieves issue 21 by ID with its latest facts while hiding foreign-scope IDs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "slack-record-selector-"));
     roots.push(root);
@@ -136,7 +216,7 @@ describe("Slack investigation record tool", () => {
       update,
     ]);
   });
-  it("requires the existing canonical investigation link before staging a known-issue final", async () => {
+  it("merges the verified canonical link into the host-rendered known-issue report", async () => {
     const canonical = "https://example.slack.com/archives/C1/p1000000000000000";
     getInvestigationTurnRegistry().register({
       id: "one",
@@ -174,21 +254,12 @@ describe("Slack investigation record tool", () => {
       assertCurrent() {},
     });
     const tool = createInvestigationRecordTool(context());
-    await expect(
-      tool.execute("stage", {
-        action: "prepare_update",
-        finalText: "Known issue persists",
-        updates: [update],
-      }),
-    ).rejects.toThrow(/canonical investigation link/);
-    expect(
-      getInvestigationTurnRegistry().matchFinal("one", "Known issue persists"),
-    ).toBeUndefined();
     const result = await tool.execute("stage", {
       action: "prepare_update",
-      finalText: `Known issue persists: ${canonical}`,
+      finalText: "Known issue persists",
       updates: [update],
     });
+    expect(renderedText(result.details)).toContain(canonical);
     expect(result.details).toMatchObject({
       status: "prepared",
       findings: [{ kind: "known-persistence", canonicalThreadUrl: canonical }],

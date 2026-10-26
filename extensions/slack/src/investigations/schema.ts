@@ -244,7 +244,7 @@ export function hasCompleteSignature(signature: IssueSignature): boolean {
   );
 }
 
-function assertNoSensitiveContent(value: unknown): void {
+export function assertNoSensitiveContent(value: unknown): void {
   if (typeof value === "string") {
     if (redactSensitiveText(value, { mode: "tools" }) !== value) {
       throw new Error("Investigation content contains sensitive data");

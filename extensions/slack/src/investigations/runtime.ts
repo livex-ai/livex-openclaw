@@ -1,5 +1,6 @@
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import type { PreparedCompactReport } from "./report-form.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
 
 export type InvestigationTurnInput = {
@@ -10,7 +11,20 @@ export type InvestigationTurnInput = {
   snapshot: CatalogSnapshot;
   assertCurrent: () => void;
 };
-export type StagedInvestigation = { finalText: string; updates: CompletedInvestigation[] };
+export type StagedInvestigation = {
+  finalText: string;
+  updates: CompletedInvestigation[];
+  report?: PreparedCompactReport;
+  legacyAcknowledgement?: string;
+};
+
+function matchStaged(staged: StagedInvestigation | undefined, finalText: string) {
+  const acknowledgement = finalText.trim();
+  return staged &&
+    (staged.finalText === acknowledgement || staged.legacyAcknowledgement === acknowledgement)
+    ? staged
+    : undefined;
+}
 export type InvestigationTurn = InvestigationTurnInput & {
   lifecycle: (
     upstream?: GetReplyOptions["turnAdoptionLifecycle"],
@@ -100,7 +114,7 @@ export function createInvestigationTurnRegistry() {
         },
         matchFinal(finalText) {
           const entry = requireTurn(input.id);
-          return entry.staged?.finalText === finalText.trim() ? entry.staged : undefined;
+          return matchStaged(entry.staged, finalText);
         },
       };
       entries.set(input.id, { turn });
@@ -109,11 +123,17 @@ export function createInvestigationTurnRegistry() {
     get(id: string): InvestigationTurn | undefined {
       return active ? entries.get(id)?.turn : undefined;
     },
+    clearStaged(id: string): void {
+      const entry = requireTurn(id);
+      delete entry.staged;
+    },
     stage(
       id: string,
       scope: HistoryScope,
       finalText: string,
       updates: CompletedInvestigation[],
+      report?: PreparedCompactReport,
+      legacyAcknowledgement?: string,
     ): void {
       const entry = requireTurn(id);
       if (
@@ -126,16 +146,24 @@ export function createInvestigationTurnRegistry() {
         !finalText.trim() ||
         finalText.length > 32_000 ||
         updates.length === 0 ||
-        updates.length > 20
+        updates.length > 20 ||
+        (report !== undefined && report.text.trim() !== finalText.trim()) ||
+        (legacyAcknowledgement !== undefined &&
+          (!legacyAcknowledgement.trim() || legacyAcknowledgement.length > 32_000))
       ) {
         throw new Error("Stage one to twenty investigations with a bounded exact final reply");
       }
       // Model input crosses the boundary once; later model mutations cannot change prepared facts.
-      entry.staged = { finalText: finalText.trim(), updates: structuredClone(updates) };
+      entry.staged = structuredClone({
+        finalText: finalText.trim(),
+        updates,
+        ...(report ? { report } : {}),
+        ...(legacyAcknowledgement ? { legacyAcknowledgement: legacyAcknowledgement.trim() } : {}),
+      });
     },
     matchFinal(id: string, finalText: string): StagedInvestigation | undefined {
       const entry = requireTurn(id);
-      return entry.staged?.finalText === finalText.trim() ? entry.staged : undefined;
+      return matchStaged(entry.staged, finalText);
     },
     close(): void {
       active = false;
