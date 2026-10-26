@@ -334,7 +334,7 @@ function renderCompactReport(
     form,
     text,
     card: {
-      blocks: [{ type: "divider" }],
+      blocks: [],
       // Model priority never grants verified active-critical styling.
       attachment: { color: form.badge?.kind === "resolved" ? "#2E8B57" : "#9CA3AF", blocks },
       fallbackText: text,

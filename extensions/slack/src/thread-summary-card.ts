@@ -274,7 +274,7 @@ export function buildSlackThreadSummaryCard(
     return null;
   }
   return {
-    blocks: [{ type: "divider" }],
+    blocks: [],
     attachment: {
       color: qualifiedCritical ? COLORS.critical : COLORS[disposition],
       blocks: body,

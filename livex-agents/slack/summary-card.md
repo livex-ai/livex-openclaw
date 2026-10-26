@@ -14,7 +14,7 @@ The colored attachment starts with a bold title, immediately followed by a small
 
 Owner stays out of visual rows. The complete original report, including existing canonical fields, remains the top-level accessibility fallback and native history. The adapter does not replace the investigator's report contract.
 
-Slack controls spacing, borders, wrapping and typography. A native Divider is the only top-level block, providing a neutral separator while keeping the complete report as top-level accessibility fallback. Both title and subtitle stay inside the colored attachment; no floating status label or invisible placeholder is used. This approximates the approved hierarchy; it does not promise custom pills, fixed columns or a colored blocker background. The left accent uses Slack's attachment color; no image or custom CSS is sent.
+Slack controls spacing, borders, wrapping and typography. Report cards have no decorative top-level divider; the complete report remains the top-level accessibility fallback. Both title and subtitle stay inside the colored attachment; no floating status label or invisible placeholder is used. This approximates the approved hierarchy; it does not promise custom pills, fixed columns or a colored blocker background. The left accent uses Slack's attachment color; no image or custom CSS is sent.
 
 ## Evidence and missing data
 

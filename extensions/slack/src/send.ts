@@ -904,7 +904,12 @@ export async function sendMessageSlack(
   if (!eventScope) {
     assertSlackDetachedTargetAllowed(account.accountId, recipient.teamId);
   }
-  const blocks = opts.blocks == null ? undefined : validateSlackBlocksArray(opts.blocks);
+  const blocks =
+    opts.attachments?.length && Array.isArray(opts.blocks) && opts.blocks.length === 0
+      ? undefined
+      : opts.blocks == null
+        ? undefined
+        : validateSlackBlocksArray(opts.blocks);
   if (!normalizedMessage && !opts.mediaUrl && !blocks) {
     throw new Error("Slack send requires text, blocks, or media");
   }

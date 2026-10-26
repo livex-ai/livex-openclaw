@@ -365,8 +365,14 @@ export async function editSlackRenderedMessage(
   } = {},
 ) {
   const client = await getClient(opts, "write");
-  const blocks = opts.blocks == null ? undefined : validateSlackBlocksArray(opts.blocks);
   const hasAttachments = Boolean(opts.attachments?.length);
+  // Attachment-only finals must clear the previous preview's top-level blocks.
+  const blocks =
+    hasAttachments && Array.isArray(opts.blocks) && opts.blocks.length === 0
+      ? []
+      : opts.blocks == null
+        ? undefined
+        : validateSlackBlocksArray(opts.blocks);
   if (
     hasAttachments &&
     (!content.trim() || countSlackTextUtf8Bytes(content) > SLACK_EDIT_TEXT_MAX_BYTES)
