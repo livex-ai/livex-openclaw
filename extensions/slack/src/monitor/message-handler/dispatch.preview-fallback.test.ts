@@ -859,15 +859,19 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
 
   afterEach(() => resetPluginRuntimeStateForTest());
 
-  it.each(["recorded", "missing", "queued-unprepared"])(
+  it.each(["recorded", "missing", "queued-unprepared", "settled-compact", "settled-native"])(
     "settles the investigation catalog through its final receipt (%s)",
     async (scenario) => {
       const root = await fs.mkdtemp(path.join(tmpdir(), "slack-dispatch-catalog-"));
       const filePath = path.join(root, "investigations.md");
       try {
         await fs.writeFile(filePath, serializeCatalog([]));
-        mockedSlackStreamingMode = "off";
-        createSlackDraftStreamMock.mockReturnValue(undefined);
+        const settledBeforeFinal = scenario.startsWith("settled-");
+        mockedSlackStreamingMode = settledBeforeFinal ? "progress" : "off";
+        mockedNativeStreaming = settledBeforeFinal;
+        if (!settledBeforeFinal) {
+          createSlackDraftStreamMock.mockReturnValue(undefined);
+        }
         deliverRepliesMock.mockResolvedValue(normalDeliveryResult);
         const getPermalink = vi.fn(async () => ({
           ok: true,
@@ -875,6 +879,21 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         }));
         const prepared: PreparedSlackMessage = createPreparedSlackMessage({
           route: { agentId: "oncall", sessionKey: "agent:oncall:slack:C123" },
+          ...(settledBeforeFinal
+            ? {
+                accountConfig: {
+                  streaming: {
+                    mode: "progress",
+                    nativeTransport: true,
+                    block: false,
+                    progress:
+                      scenario === "settled-compact"
+                        ? { style: "compact", nativeTaskCards: false, toolProgress: false }
+                        : { style: "card", nativeTaskCards: true },
+                  },
+                },
+              }
+            : {}),
           eventScope: { teamId: "T1", client: { chat: { getPermalink, update: chatUpdateMock } } },
         });
         const scope: HistoryScope = {
@@ -921,6 +940,19 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         if (scenario === "missing") {
           await fs.rename(filePath, filePath + ".saved");
         }
+        if (settledBeforeFinal) {
+          mockedDispatchSequence = [
+            ...(scenario === "settled-native"
+              ? [{ kind: "block" as const, payload: { text: "Checking variant lookup" } }]
+              : []),
+            checkpoint(async () => {
+              // The immediate model owner settles before its returned final reaches the dispatcher.
+              await capturedReplyOptions?.turnAdoptionLifecycle?.onAdopted();
+              await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+            }),
+            { kind: "final", payload: { text: FINAL_REPLY_TEXT } },
+          ];
+        }
         if (scenario === "queued-unprepared") {
           mockedDispatchSequence = [
             {
@@ -952,8 +984,18 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         } else {
           expect(getPermalink).toHaveBeenCalledWith({
             channel: "C123",
-            message_ts: "normal-final",
+            message_ts: scenario === "settled-native" ? STREAM_MESSAGE_TS : "normal-final",
           });
+        }
+        if (settledBeforeFinal) {
+          if (scenario === "settled-native") {
+            expectNativeStreamText(`\n${FINAL_REPLY_TEXT}`);
+            expect(stopSlackStreamMock).toHaveBeenCalledOnce();
+            expect(deliverRepliesMock).not.toHaveBeenCalled();
+          } else {
+            expectDeliverReplyCall(0, FINAL_REPLY_TEXT);
+            expect(startSlackStreamMock).not.toHaveBeenCalled();
+          }
         }
         if (scenario === "missing") {
           expect((await readCatalog({ filePath, scope })).status).toBe("uninitialized");
@@ -965,8 +1007,12 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
               text: expect.stringContaining("saving the catalog failed"),
             }),
           );
-        } else if (scenario === "recorded") {
-          expect((await readCatalog({ filePath, scope })).issues).toHaveLength(1);
+        } else if (scenario === "recorded" || settledBeforeFinal) {
+          const catalog = await readCatalog({ filePath, scope });
+          expect(catalog.issues).toHaveLength(1);
+          expect(catalog.issues[0]?.slackThreads[0]).toBe(
+            "https://example.slack.com/archives/C123/p171234999000",
+          );
         }
         expect(registry.get("dispatch-catalog")).toBeUndefined();
       } finally {

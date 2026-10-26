@@ -85,7 +85,10 @@ export function createInvestigationTurnRegistry() {
               try {
                 await upstream?.onSettled?.();
               } finally {
-                release();
+                // Immediate model settlement precedes Slack final delivery; dispatch owns cleanup.
+                if (deferred) {
+                  release();
+                }
               }
             },
           };

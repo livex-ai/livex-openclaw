@@ -65,6 +65,21 @@ describe("Slack investigation turn handoff", () => {
       /scope/,
     );
   });
+  it("retains immediate findings after model settlement until final delivery cleanup", async () => {
+    const registry = createInvestigationTurnRegistry();
+    const turn = register(registry, "first");
+    const lifecycle = turn.lifecycle();
+    await lifecycle.onAdopted?.();
+    registry.stage("first", scope, "final", [update]);
+
+    // The model owner settles before Slack receives the returned final payload.
+    await lifecycle.onSettled?.();
+    expect(turn.matchFinal("final")?.updates).toEqual([update]);
+
+    turn.releaseImmediate();
+    expect(registry.get("first")).toBeUndefined();
+    expect(() => turn.matchFinal("final")).toThrow(/active/);
+  });
   it("retains deferred turns and releases them only when their owner settles", async () => {
     const registry = createInvestigationTurnRegistry();
     const turn = register(registry, "first");
