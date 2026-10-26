@@ -68,7 +68,7 @@
     "ownership": "explicit",
     "defaults": {
       "timeoutSeconds": 1200,
-      "maxConcurrent": 1,
+      "maxConcurrent": 5,
       "skills": null,
       "permissionModeDefault": null,
       "authInheritance": {

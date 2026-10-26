@@ -80,6 +80,38 @@ qualified bot review reactions; separate message sends and generic shell executi
 are not in the agent tool allowlist. The Codex harness requires its execution
 policy for startup. That setting does not grant production writes.
 
+## Investigation concurrency
+
+The dedicated oncall profile sets `agents.defaults.maxConcurrent` to `5`. This
+sets the shared main-lane capacity: up to five independent Slack thread
+investigations can run at once; additional requests queue. Runs in the same
+session/thread remain serialized. This is a Gateway-wide default, so applying the
+profile to a mixed Gateway also affects other agents using the main lane.
+
+More concurrent investigations increase model, Cloud Logging, and host load.
+Provider/account quotas and other runtime limits still apply. This setting does
+not fix queued delivery-capability expiry or excessive pagination reaching an
+investigation's execution deadline.
+
+Changing this template does not update an existing deployment. Preserve a private
+configuration backup and, during a separately authorized configuration change,
+use the configured CLI to update only this path rather than applying the full
+profile. Set `OPENCLAW_COMMAND` to the existing configured CLI executable or
+wrapper before running these commands:
+
+```sh
+"$OPENCLAW_COMMAND" config get agents.defaults.maxConcurrent
+"$OPENCLAW_COMMAND" config set agents.defaults.maxConcurrent 5 --strict-json --dry-run
+"$OPENCLAW_COMMAND" config set agents.defaults.maxConcurrent 5 --strict-json
+"$OPENCLAW_COMMAND" config validate
+"$OPENCLAW_COMMAND" gateway call diagnostics.lanes --params '{}' --json
+```
+
+With the default hybrid reload mode, this single-path change hot reloads without
+a Gateway restart and can immediately admit waiting work. Verify that the main
+lane reports `maxConcurrent: 5`; explicit reload-off settings or unrelated
+configuration changes need their own operator handling.
+
 ## Prepare local settings
 
 Copy `config/local.example.json` to the ignored `config/local.json`. Set the five
