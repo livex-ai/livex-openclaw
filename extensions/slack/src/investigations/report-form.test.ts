@@ -95,6 +95,8 @@ describe("typed compact investigation report", () => {
     expect(prepared.text).toBe(expected);
     expect(prepared.card.fallbackText).toBe(expected);
     expect(visible(prepared.card)).toBe(expected);
+    expect(prepared.card.blocks).toEqual([]);
+    expect(prepared.card.attachment.color).toBe("#9CA3AF");
     expect(prepared.text).not.toMatch(/\n\n\*(Finding|Impact|Owner|Uncertainty):/);
     expect(prepared.form).toEqual(form());
   });

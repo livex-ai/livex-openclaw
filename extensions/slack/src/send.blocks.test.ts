@@ -585,54 +585,59 @@ describe("sendMessageSlack colored attachments", () => {
     expect(client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it("posts a summary once with the complete authored fallback and original-thread receipt", async () => {
-    const fallback =
-      "**Finding:** Access denied.\n**Action:** Check installation permissions.\nRecovery unverified.";
-    const attachments = [
-      {
-        color: "#E3B341",
-        fallback,
-        blocks: [
-          {
-            type: "section" as const,
-            text: {
-              type: "plain_text" as const,
-              text: "Next action: Check installation permissions.",
+  it.each([false, true])(
+    "posts a summary once with complete fallback and receipt (attachment only: %s)",
+    async (attachmentOnly) => {
+      const fallback =
+        "**Finding:** Access denied.\n**Action:** Check installation permissions.\nRecovery unverified.";
+      const attachments = [
+        {
+          color: "#E3B341",
+          fallback,
+          blocks: [
+            {
+              type: "section" as const,
+              text: {
+                type: "plain_text" as const,
+                text: "Next action: Check installation permissions.",
+              },
             },
-          },
-        ],
-      },
-    ];
-    const blocks = [
-      {
-        type: "context" as const,
-        elements: [
-          {
-            type: "plain_text" as const,
-            text: "Action required · Severity unknown · Investigation partial",
-          },
-        ],
-      },
-    ];
-    const onDeliveryResult = vi.fn();
+          ],
+        },
+      ];
+      const blocks = attachmentOnly
+        ? []
+        : [
+            {
+              type: "context" as const,
+              elements: [
+                {
+                  type: "plain_text" as const,
+                  text: "Action required · Severity unknown · Investigation partial",
+                },
+              ],
+            },
+          ];
+      const onDeliveryResult = vi.fn();
 
-    const result = await send(fallback, {
-      attachments,
-      blocks,
-      threadTs: "171234.000000",
-      onDeliveryResult,
-    });
+      const result = await send(fallback, {
+        attachments,
+        blocks,
+        threadTs: "171234.000000",
+        onDeliveryResult,
+      });
 
-    expect(client.chat.postMessage).toHaveBeenCalledExactlyOnceWith({
-      channel: "C123",
-      thread_ts: "171234.000000",
-      text: fallback,
-      blocks,
-      attachments,
-      unfurl_links: false,
-    });
-    expect(onDeliveryResult).toHaveBeenCalledTimes(1);
-    expect(result.receipt.threadId).toBe("171234.000000");
-    expect(result.receipt.platformMessageIds).toEqual(["171234.567"]);
-  });
+      expect(client.chat.postMessage).toHaveBeenCalledExactlyOnceWith({
+        channel: "C123",
+        thread_ts: "171234.000000",
+        text: fallback,
+        ...(attachmentOnly ? {} : { blocks }),
+        attachments,
+        unfurl_links: false,
+      });
+      expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+      expect(result.receipt.threadId).toBe("171234.000000");
+      expect(result.receipt.platformMessageIds).toEqual(["171234.567"]);
+    },
+  );
 });

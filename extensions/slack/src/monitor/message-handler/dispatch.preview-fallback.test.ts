@@ -867,6 +867,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     "settled-compact",
     "settled-native",
     "compact-form",
+    "compact-form-preview-no-top-blocks",
     "compact-form-alert-normal",
     "compact-form-alert-native",
     "compact-form-alert-compact",
@@ -882,22 +883,27 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         ? scenario.slice("compact-form-alert-".length)
         : undefined;
       const unverifiedForm = scenario === "compact-form-unverified";
+      const previewWithoutTopBlocks = scenario === "compact-form-preview-no-top-blocks";
       const sourceAlertTs = "171234.111";
       mockedSlackStreamingMode =
         settledBeforeFinal || alertMode === "compact" || alertMode === "card"
           ? "progress"
-          : alertMode || unverifiedForm
+          : alertMode || unverifiedForm || previewWithoutTopBlocks
             ? "partial"
             : "off";
       mockedNativeStreaming = settledBeforeFinal || alertMode === "native";
-      const alertDraft = alertMode || unverifiedForm ? useDraftStream() : undefined;
+      const alertDraft =
+        alertMode || unverifiedForm || previewWithoutTopBlocks ? useDraftStream() : undefined;
+      if (previewWithoutTopBlocks) {
+        finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
+      }
       if (alertMode) {
         alertDraft!.messageId = () => sourceAlertTs;
         mockedReplyThreadTs = sourceAlertTs;
         mockedStatusThreadTs = sourceAlertTs;
         finalizeSlackPreviewEditMock.mockResolvedValue(undefined);
       }
-      if (!settledBeforeFinal && !alertMode && !unverifiedForm) {
+      if (!settledBeforeFinal && !alertMode && !unverifiedForm && !previewWithoutTopBlocks) {
         createSlackDraftStreamMock.mockReturnValue(undefined);
       }
       deliverRepliesMock.mockResolvedValue(normalDeliveryResult);
@@ -981,6 +987,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       const report = scenario.startsWith("compact-form")
         ? prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }])
         : undefined;
+      if (previewWithoutTopBlocks && report) {
+        report.card.blocks = [];
+      }
       if (scenario !== "queued-unprepared") {
         registry.stage(
           "dispatch-catalog",
@@ -1024,6 +1033,17 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         ];
       }
       await dispatchPreparedSlackMessage(prepared);
+      if (previewWithoutTopBlocks) {
+        expect(finalizeSlackPreviewEditMock).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            messageId: STREAM_MESSAGE_TS,
+            text: report?.text,
+            blocks: [],
+            attachments: [expect.objectContaining(report!.card.attachment)],
+          }),
+        );
+        expect(deliverRepliesMock).not.toHaveBeenCalled();
+      }
       if (unverifiedForm) {
         expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
         expect(deliverRepliesMock).not.toHaveBeenCalled();
@@ -1067,10 +1087,13 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       } else {
         expect(getPermalink).toHaveBeenCalledWith({
           channel: "C123",
-          message_ts: scenario === "settled-native" ? STREAM_MESSAGE_TS : "normal-final",
+          message_ts:
+            scenario === "settled-native" || previewWithoutTopBlocks
+              ? STREAM_MESSAGE_TS
+              : "normal-final",
         });
       }
-      if (report) {
+      if (report && !previewWithoutTopBlocks) {
         expect(delivered(0).replies).toEqual([
           { text: report.text, channelData: { slack: { threadSummaryCard: report.card } } },
         ]);

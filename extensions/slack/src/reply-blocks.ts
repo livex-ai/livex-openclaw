@@ -282,10 +282,13 @@ function readSlackThreadSummaryCard(payload: ReplyPayload) {
     return undefined;
   }
   const attachment = asOptionalRecord(source.attachment);
-  const blocks = parseSlackBlocksInput(source.blocks);
+  const blocks =
+    Array.isArray(source.blocks) && source.blocks.length === 0
+      ? []
+      : parseSlackBlocksInput(source.blocks);
   const attachmentBlocks = parseSlackBlocksInput(attachment?.blocks);
   const color = normalizeOptionalString(attachment?.color);
-  if (!blocks?.length || !attachmentBlocks?.length || !color || !/^#[0-9a-f]{6}$/iu.test(color)) {
+  if (!blocks || !attachmentBlocks?.length || !color || !/^#[0-9a-f]{6}$/iu.test(color)) {
     return undefined;
   }
   return {

@@ -206,7 +206,7 @@ export async function finalizeSlackPreviewEdit(params: {
       token: params.token,
       accountId: params.accountId,
       client: params.client,
-      ...(params.blocks?.length ? { blocks: params.blocks } : {}),
+      ...(params.blocks !== undefined ? { blocks: params.blocks } : {}),
       ...(params.attachments !== undefined ? { attachments: params.attachments } : {}),
     });
   } catch (err) {

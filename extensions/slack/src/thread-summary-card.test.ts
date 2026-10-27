@@ -43,7 +43,7 @@ describe("buildSlackThreadSummaryCard", () => {
     expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "⚠️ Action required" }] },
     ]);
-    expect(card?.blocks).toEqual([{ type: "divider" }]);
+    expect(card?.blocks).toEqual([]);
     expect(text).not.toContain("*Owner:*");
     expect(text).not.toContain("*Recovery:*");
     expect(text.match(/View evidence/g) ?? []).toHaveLength(1);

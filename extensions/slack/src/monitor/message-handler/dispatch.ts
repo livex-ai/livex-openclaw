@@ -345,7 +345,7 @@ async function dispatchSlackMessageWithSetup(
               channelId: preview.channelId,
               messageId: preview.messageId,
               text: edit.text,
-              ...(edit.blocks?.length ? { blocks: edit.blocks } : {}),
+              ...(edit.blocks !== undefined ? { blocks: edit.blocks } : {}),
               ...(slackAttachments?.length ? { attachments: slackAttachments } : {}),
               threadTs: edit.threadTs,
             });

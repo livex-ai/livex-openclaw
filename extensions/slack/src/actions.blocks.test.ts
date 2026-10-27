@@ -187,39 +187,45 @@ describe("Slack edits", () => {
   });
 });
 
-it("updates the same summary message with its accent and complete canonical fallback", async () => {
-  const client = createSlackEditTestClient();
-  const text = "**Finding:** Access denied.\n**Action:** Check installation.\nRecovery unverified.";
-  const blocks = [
-    {
-      type: "context" as const,
-      elements: [{ type: "plain_text" as const, text: "Action required · Severity unknown" }],
-    },
-  ];
-  const attachments = [
-    {
-      color: "#E3B341",
-      fallback: text,
-      blocks: [
-        {
-          type: "section" as const,
-          text: { type: "plain_text" as const, text: "Next action: Check installation." },
-        },
-      ],
-    },
-  ];
-  const options = { token: "xoxb-test", client, blocks, attachments };
+it.each([false, true])(
+  "updates a summary and clears old top blocks when empty (attachment only: %s)",
+  async (attachmentOnly) => {
+    const client = createSlackEditTestClient();
+    const text =
+      "**Finding:** Access denied.\n**Action:** Check installation.\nRecovery unverified.";
+    const blocks = attachmentOnly
+      ? []
+      : [
+          {
+            type: "context" as const,
+            elements: [{ type: "plain_text" as const, text: "Action required · Severity unknown" }],
+          },
+        ];
+    const attachments = [
+      {
+        color: "#E3B341",
+        fallback: text,
+        blocks: [
+          {
+            type: "section" as const,
+            text: { type: "plain_text" as const, text: "Next action: Check installation." },
+          },
+        ],
+      },
+    ];
+    const options = { token: "xoxb-test", client, blocks, attachments };
 
-  await editSlackRenderedMessage("C123", "171234.567", text, options);
+    await editSlackRenderedMessage("C123", "171234.567", text, options);
 
-  expect(client.chat.update).toHaveBeenCalledExactlyOnceWith({
-    channel: "C123",
-    ts: "171234.567",
-    text,
-    blocks,
-    attachments,
-  });
-});
+    expect(client.chat.update).toHaveBeenCalledExactlyOnceWith({
+      channel: "C123",
+      ts: "171234.567",
+      text,
+      blocks,
+      attachments,
+    });
+  },
+);
 
 it("rejects an oversized attachment edit without replacing the visible message", async () => {
   const client = createSlackEditTestClient();

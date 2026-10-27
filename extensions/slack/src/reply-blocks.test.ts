@@ -941,6 +941,25 @@ describe("thread summary attachment projection", () => {
     },
   );
 
+  it("preserves an attachment-only report without adding top-level blocks", () => {
+    const authored = {
+      ...payload,
+      channelData: { slack: { threadSummaryCard: { blocks: [], attachment, fallbackText: text } } },
+    };
+    const messages = resolveSlackReplyDeliveryMessages({
+      ...resolveSlackReplyBlockResolution(authored, { materializeAuthoredText: true }),
+      text,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ text, blocks: [], attachments: [attachment] });
+    expect(resolveSlackReplyRenderPlan(authored)).toMatchObject({
+      mode: "single",
+      text,
+      blocks: [],
+      attachments: [attachment],
+    });
+  });
+
   it("discards a stale card when the authored fallback changes", () => {
     const updated = { ...payload, text: "A materially different follow-up." };
     const messages = resolveSlackReplyDeliveryMessages({
