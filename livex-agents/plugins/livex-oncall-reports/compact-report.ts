@@ -1,10 +1,12 @@
 import type { SectionBlock } from "@slack/types";
 import { z } from "zod";
-import { SLACK_EDIT_TEXT_MAX_BYTES } from "../limits.js";
-import { escapeSlackMrkdwn } from "../monitor/mrkdwn.js";
-import type { SlackThreadSummaryCard } from "../thread-summary-card.js";
-import type { FindingComparison } from "./matching.js";
-import { assertNoSensitiveContent, type CompletedInvestigation } from "./schema.js";
+import type { SlackThreadSummaryCard } from "./legacy-report.js";
+import {
+  assertNoSensitiveContent,
+  type ReportFinding as FindingComparison,
+  type ReportInvestigation as CompletedInvestigation,
+} from "./report-context.js";
+import { escapeSlackMrkdwn, SLACK_EDIT_TEXT_MAX_BYTES } from "./style.js";
 
 export type CompactReport = {
   title: string;
@@ -29,7 +31,7 @@ export type PreparedCompactReport = {
 };
 
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
-const compactReportSchema: z.ZodType<CompactReport> = z
+const compactReportSchema = z
   .object({
     title: boundedText(150),
     priority: z.enum(["unknown", "low", "medium", "high", "critical"]),
@@ -60,6 +62,25 @@ const compactReportSchema: z.ZodType<CompactReport> = z
       .optional(),
   })
   .strict();
+
+// Prepared state includes canonical links, URL normalization and host notices added after
+// model input validation. Keep its structure without reapplying the model-only caps.
+const preparedCompactReportSchema: z.ZodType<CompactReport> = compactReportSchema.extend({
+  evidence: compactReportSchema.shape.evidence.extend({
+    links: z.array(
+      compactReportSchema.shape.evidence.shape.links.element.extend({ url: z.string() }),
+    ),
+    note: z.string().optional(),
+  }),
+  badge: compactReportSchema.shape.badge
+    .unwrap()
+    .extend({ evidenceUrl: z.string().optional() })
+    .optional(),
+});
+
+export function readPreparedCompactReport(value: unknown): CompactReport {
+  return preparedCompactReportSchema.parse(value);
+}
 
 export const compactReportParameters = z.toJSONSchema(compactReportSchema, { target: "draft-7" });
 
@@ -344,7 +365,7 @@ function renderCompactReport(
 
 /** Delivery warnings stay within the same canonical five-field projection. */
 export function appendCompactReportNotice(
-  prepared: PreparedCompactReport,
+  prepared: Pick<PreparedCompactReport, "form">,
   updates: CompletedInvestigation[],
   notice: string,
 ): PreparedCompactReport {

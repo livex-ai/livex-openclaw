@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PreparedCompactReport } from "./report-form.js";
+import { oncallReportProfile, preparedFixture } from "./profile.test-support.js";
 import { createInvestigationTurnRegistry } from "./runtime.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
 
@@ -40,13 +40,14 @@ function register(
     sessionKey: "agent:oncall:slack:channel:c1",
     filePath: "/tmp/synthetic-investigations.md",
     snapshot,
+    reportProfile: oncallReportProfile,
     assertCurrent,
   });
 }
 
-function compactReport(): PreparedCompactReport {
+function compactReport() {
   const text = "Canonical compact investigation";
-  return {
+  return preparedFixture({
     form: {
       title: "Variant lookup",
       priority: "medium",
@@ -60,7 +61,7 @@ function compactReport(): PreparedCompactReport {
       attachment: { fallback: text },
       fallbackText: text,
     },
-  };
+  });
 }
 
 describe("Slack investigation turn handoff", () => {
@@ -92,10 +93,12 @@ describe("Slack investigation turn handoff", () => {
     registry.stage("first", scope, report.text, [update], report, "Legacy final acknowledgement");
     report.form.summary = "Mutated after staging";
     report.card.fallbackText = "Mutated after staging";
-    expect(turn.matchFinal("Legacy final acknowledgement")?.report?.form.summary).toBe(
-      "One job failed with variant_name",
-    );
-    expect(turn.matchFinal(report.text)?.report?.card.fallbackText).toBe(report.text);
+    expect(turn.matchFinal("Legacy final acknowledgement")?.report?.state).toMatchObject({
+      summary: "One job failed with variant_name",
+    });
+    expect(turn.matchFinal(report.text)?.report?.channelData).toMatchObject({
+      slack: { threadSummaryCard: { fallbackText: report.text } },
+    });
     expect(turn.matchFinal("An unrelated final")).toBeUndefined();
   });
   it("clears an earlier prepared report before a later preparation attempt", () => {

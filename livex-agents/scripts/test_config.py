@@ -86,6 +86,15 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("botToken", json.dumps(rendered))
         self.assertNotIn("appToken", json.dumps(rendered))
 
+    def test_report_profile_is_explicit_for_oncall_only(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        plugins = rendered["plugins"]
+        self.assertIn("livex-oncall-reports", plugins["allow"])
+        self.assertEqual(plugins["entries"]["livex-oncall-reports"]["config"],
+                         {"agentProfiles": {"oncall": "compact-v1"}})
+        self.assertIn(str(root / "plugins/livex-oncall-reports"), plugins["load"]["paths"])
+
     def test_review_profile_limits_message_actions_and_keeps_compact_native_progress(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")

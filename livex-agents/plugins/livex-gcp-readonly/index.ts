@@ -4,6 +4,7 @@ import { createLogsTool } from "./core.mjs";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createPageLedger, PAGE_CACHE_ENTRIES } from "./page-store.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
+import { createRecoveryCommand } from "./recovery.mjs";
 import { createRepositoryTool } from "./repository.mjs";
 
 export default definePluginEntry({
@@ -12,6 +13,15 @@ export default definePluginEntry({
   description: manifest.description,
   configSchema: buildJsonPluginConfigSchema(manifest.configSchema),
   register(api) {
+    api.registerCommand(
+      createRecoveryCommand(
+        api.pluginConfig,
+        (
+          options: Parameters<typeof api.runtime.state.openKeyedStoreV2>[0],
+          authority: Parameters<typeof api.runtime.state.openKeyedStoreV2>[1],
+        ) => api.runtime.state.openKeyedStoreV2(options, authority),
+      ),
+    );
     api.registerTool(
       {
         contextVersion: 2,

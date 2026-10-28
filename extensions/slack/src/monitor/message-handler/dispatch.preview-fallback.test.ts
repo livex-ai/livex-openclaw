@@ -20,9 +20,14 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareCompactReport } from "../../../../../livex-agents/plugins/livex-oncall-reports/compact-report.js";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
-import { prepareCompactReport } from "../../investigations/report-form.js";
+import {
+  preparedFixture,
+  oncallReportProfile,
+  withOncallReportProfile,
+} from "../../investigations/profile.test-support.js";
 import { getInvestigationTurnRegistry } from "../../investigations/runtime.js";
 import {
   serializeCatalog,
@@ -805,7 +810,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
 
   beforeEach(() => {
     setActivePluginRegistry(
-      createTestRegistry([{ pluginId: "slack", source: "test", plugin: slackSetupPlugin }]),
+      withOncallReportProfile(
+        createTestRegistry([{ pluginId: "slack", source: "test", plugin: slackSetupPlugin }]),
+      ),
     );
     createSlackDraftStreamMock.mockReset();
     deliverRepliesMock.mockReset();
@@ -873,16 +880,23 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     "compact-form-alert-compact",
     "compact-form-alert-card",
     "compact-form-unverified",
+    "compact-form-blocks-unverified",
+    "compact-form-blocks-alert",
   ])("settles the investigation catalog through its final receipt (%s)", async (scenario) => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "slack-dispatch-catalog-"));
     const filePath = path.join(root, "investigations.md");
     try {
       await fs.writeFile(filePath, serializeCatalog([]));
       const settledBeforeFinal = scenario.startsWith("settled-");
-      const alertMode = scenario.startsWith("compact-form-alert-")
-        ? scenario.slice("compact-form-alert-".length)
-        : undefined;
-      const unverifiedForm = scenario === "compact-form-unverified";
+      const blockOnlyReport = scenario.startsWith("compact-form-blocks-");
+      const alertMode =
+        scenario === "compact-form-blocks-alert"
+          ? "normal"
+          : scenario.startsWith("compact-form-alert-")
+            ? scenario.slice("compact-form-alert-".length)
+            : undefined;
+      const unverifiedForm =
+        scenario === "compact-form-unverified" || scenario === "compact-form-blocks-unverified";
       const previewWithoutTopBlocks = scenario === "compact-form-preview-no-top-blocks";
       const sourceAlertTs = "171234.111";
       mockedSlackStreamingMode =
@@ -956,6 +970,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       const registry = getInvestigationTurnRegistry();
       prepared.investigationTurn = registry.register({
         id: "dispatch-catalog",
+        reportProfile: oncallReportProfile,
         scope,
         sessionKey: prepared.route.sessionKey,
         filePath,
@@ -985,8 +1000,13 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         evidenceUrls: [],
       };
       const report = scenario.startsWith("compact-form")
-        ? prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }])
+        ? preparedFixture(
+            prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }]),
+          )
         : undefined;
+      if (blockOnlyReport && report) {
+        report.channelData = { slack: { blocks: report.card.attachment.blocks } };
+      }
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];
       }
@@ -1070,10 +1090,16 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       if (scenario === "queued-unprepared") {
         expect(registry.get("dispatch-catalog")).toBeDefined();
         const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
-        await correlation?.onReplyDelivered?.(
+        const projected = correlation?.prepareReply?.(
           { text: FINAL_REPLY_TEXT },
-          { kind: "final", messageId: "queued-final", complete: true },
+          { kind: "final" },
         );
+        expect(projected).toBeDefined();
+        await correlation?.onReplyDelivered?.(projected!, {
+          kind: "final",
+          messageId: "queued-final",
+          complete: true,
+        });
         expect(getPermalink).not.toHaveBeenCalled();
         expect(chatUpdateMock).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -1095,7 +1121,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       }
       if (report && !previewWithoutTopBlocks) {
         expect(delivered(0).replies).toEqual([
-          { text: report.text, channelData: { slack: { threadSummaryCard: report.card } } },
+          { text: report.text, channelData: report.channelData },
         ]);
       }
       if (settledBeforeFinal) {
@@ -3682,10 +3708,40 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(deliverRepliesMock).not.toHaveBeenCalled();
     });
 
-    it("retains an unverified card edit without duplicating the final report", async () => {
+    it("falls back once when Slack confirms the summary preview is missing", async () => {
       const draft = useDraftStream();
       mockedReplyThreadTs = root;
       mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockRejectedValue(createSlackPlatformError("message_not_found"));
+      mockedDispatchSequence = [
+        { kind: "final", payload: { text: report } },
+        { kind: "final", payload: { text: report } },
+      ];
+
+      await dispatch(liveX);
+
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      expect(deliverRepliesMock).toHaveBeenCalledOnce();
+      expect(delivered().replyThreadTs).toBe(root);
+      expect(delivered().replies[0]?.text).toBe(report);
+      expect(delivered().replies[0]?.channelData?.slack).toHaveProperty("threadSummaryCard");
+      expect(draft.clear).toHaveBeenCalled();
+      expect(deliverRepliesMock.mock.invocationCallOrder[0]).toBeLessThan(
+        draft.clear.mock.invocationCallOrder[0],
+      );
+      expect(logVerboseMock.mock.calls.flat().join(" ")).toContain("falling back");
+      expect(logVerboseMock.mock.calls.flat().join(" ")).not.toContain("retaining");
+    });
+
+    it.each([
+      { name: "transport timeout", error: new Error("socket closed") },
+      { name: "possibly partial API failure", error: createSlackPlatformError("internal_error") },
+      { name: "unstructured error text", error: new Error("message_not_found") },
+    ])("retains a card after $name without duplicating the final report", async ({ error }) => {
+      const draft = useDraftStream();
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockRejectedValue(error);
       mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
       await dispatch(liveX);
       expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();

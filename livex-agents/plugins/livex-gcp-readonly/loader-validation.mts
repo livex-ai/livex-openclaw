@@ -50,7 +50,7 @@ const assertCurrent = () => {
 const context = {
   agentId: "oncall",
   agentAccountId: "default",
-  sessionKey: "thread-one",
+  sessionKey: "agent:oncall:slack:channel:c123:thread:1792710014.413639",
   sessionId: "generation-one",
   messageChannel: "slack",
   nativeChannelId: "C123",
@@ -64,6 +64,13 @@ type Tool = {
 type Factory = { create: (input: typeof context) => Tool | null };
 const factories = new Map<string, Factory>();
 const stores: Array<{ count: () => Promise<number> }> = [];
+const commands = new Map<
+  string,
+  {
+    requiredScopes: string[];
+    handler: (ctx: Record<string, unknown>) => Promise<{ text: string }>;
+  }
+>();
 try {
   withPluginCache(cache, () =>
     bindPluginInstanceModuleLoader({
@@ -80,6 +87,13 @@ try {
   };
   module.default.register({
     pluginConfig: config,
+    registerCommand(command: {
+      name: string;
+      requiredScopes: string[];
+      handler: (ctx: Record<string, unknown>) => Promise<{ text: string }>;
+    }) {
+      commands.set(command.name, command);
+    },
     registerTool(factory: Factory, options: { name: string }) {
       assert.equal(typeof factory.create, "function");
       factories.set(options.name, factory);
@@ -119,7 +133,75 @@ try {
   assert.equal(await stores[0].count(), 0);
   assert.equal(factory.create({ ...context, requesterSenderId: "U999" }), null);
   assert.equal(factory.create({ ...context, messageChannel: "discord" }), null);
+  const recovery = commands.get("livex-gcp-recover");
+  assert.ok(recovery, "The production plugin must register recovery");
+  assert.deepEqual(recovery.requiredScopes, ["operator.admin"]);
+  const commandContext = {
+    channel: "slack",
+    senderId: "U123",
+    isAuthorizedSender: true,
+    senderIsOwner: true,
+    assertOwnerCurrent: assertCurrent,
+    agentId: context.agentId,
+    accountId: context.agentAccountId,
+    sessionKey: context.sessionKey,
+    sessionId: context.sessionId,
+    from: "slack:channel:C123",
+    to: "channel:C123",
+    messageThreadId: "1792710014.413639",
+  };
+  const listing = JSON.parse((await recovery.handler({ ...commandContext, args: "list" })).text);
+  assert.deepEqual(listing.receipts, []);
+  await assert.rejects(
+    recovery.handler({ ...commandContext, senderIsOwner: false, args: "list" }),
+    /owner/,
+  );
+  await assert.rejects(
+    recovery.handler({ ...commandContext, messageThreadId: "1792710014.413640", args: "list" }),
+    /thread/,
+  );
+  const { createPageLedger } = await import(pathToFileURL(path.join(root, "page-store.mjs")).href);
+  const ledger = createPageLedger(stores[0], context, config);
+  const receiptId = "c".repeat(64),
+    query = {
+      mode: "discover",
+      insertIds: ["synthetic-seed"],
+      start: "2026-10-20T16:00:00.000Z",
+      end: "2026-10-20T17:00:00.000Z",
+      limit: 1,
+    };
+  await ledger.reserveQuery({ toolCallId: "native-original", fingerprint: receiptId, query });
+  const inspection = JSON.parse(
+    (await recovery.handler({ ...commandContext, args: `inspect ${receiptId}` })).text,
+  );
+  await assert.rejects(
+    recovery.handler({ ...commandContext, args: `retry ${receiptId} ${"d".repeat(64)}` }),
+    /changed/,
+  );
+  await recovery.handler({
+    ...commandContext,
+    args: `retry ${receiptId} ${inspection.receiptHash}`,
+  });
+  const resumed = await ledger.reserveQuery({
+    toolCallId: "native-retry",
+    fingerprint: receiptId,
+    query,
+  });
+  assert.equal(resumed.kind, "reserved");
+  assert.equal(resumed.receipt.attempt, 1);
+  await ledger.finishQuery({
+    toolCallId: "native-retry",
+    receiptId,
+    result: { entries: [], nextCursor: null, windowExhausted: true },
+  });
+  assert.equal(
+    (await ledger.reserveQuery({ toolCallId: "native-replay", fingerprint: receiptId, query }))
+      .kind,
+    "cached",
+  );
+  assert.equal(await stores[0].count(), 1);
   current = false;
+  await assert.rejects(recovery.handler({ ...commandContext, args: "list" }), /revoked/);
   await assert.rejects(
     tool.execute("revoked-probe", { cursor: "b".repeat(64) }),
     /Synthetic caller revoked/,
@@ -129,6 +211,8 @@ try {
       realModuleResolver: true,
       logsToolCreated: true,
       nativeWorkerCursorLookup: true,
+      nativeWorkerOperatorRecovery: true,
+      registeredOwnerScope: true,
       unauthorizedCallerRejected: true,
       revokedCallerRejected: true,
       cloudReads: 0,

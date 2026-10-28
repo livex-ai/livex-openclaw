@@ -18,13 +18,16 @@ const jsonResult = (details) => ({
   details,
 });
 function stable(value) {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === "object")
+  if (Array.isArray(value)) {
+    return value.map(stable);
+  }
+  if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.keys(value)
-        .sort()
+        .toSorted()
         .map((k) => [k, stable(value[k])]),
     );
+  }
   return value;
 }
 const digest = (value) =>
@@ -93,16 +96,20 @@ function helperFailure(result) {
                 : "inspect the Cloud Logging request and endpoint";
     return `Cloud Logging request failed (HTTP ${status}); ${action}${diagnostic}; no cursor was advanced`;
   }
-  if (result.code === 2)
+  if (result.code === 2) {
     return `Cloud Logging rejected the local query or response; inspect reader validation${diagnostic}; no cursor was advanced`;
+  }
   return `Cloud Logging helper failed; verify the configured SDK, account and connectivity${diagnostic}; no cursor was advanced`;
 }
 
 export function createCloudPageReader(config, runCommand) {
   const options = config.paging;
-  for (const name of ["pythonPath", "sdkRoot"])
-    if (!isAbsolute(options?.[name] ?? "") || /[\x00-\x1f]/.test(options[name]))
-      throw Error(`Invalid paging ${name}`);
+  for (const name of ["pythonPath", "sdkRoot"]) {
+    // eslint-disable-next-line no-control-regex -- Reject control characters in executable and SDK paths before process invocation.
+    if (!isAbsolute(options?.[name] ?? "") || /[\x00-\x1f]/.test(options[name])) {
+      throw new Error(`Invalid paging ${name}`);
+    }
+  }
   return async (query, backendToken, signal) => {
     const argv = [
       options.pythonPath,
@@ -120,7 +127,9 @@ export function createCloudPageReader(config, runCommand) {
       "--page-size",
       String(query.limit),
     ];
-    if (backendToken) argv.push("--page-token", backendToken);
+    if (backendToken) {
+      argv.push("--page-token", backendToken);
+    }
     const result = await runCommand(argv, {
       timeoutMs: 30000,
       signal,
@@ -146,35 +155,44 @@ export function createCloudPageReader(config, runCommand) {
         CLOUDSDK_AUTH_DISABLE_CREDENTIALS: "false",
       },
     });
-    if (result?.cleanup === "uncertain")
-      throw Error("Cloud page cleanup is uncertain; reconcile before retrying");
+    if (result?.cleanup === "uncertain") {
+      throw new Error("Cloud page cleanup is uncertain; reconcile before retrying");
+    }
     if (
       result?.outputLimitExceeded ||
       result?.stdoutTruncatedBytes ||
       result?.stderrTruncatedBytes ||
       (typeof result?.stdout === "string" && Buffer.byteLength(result.stdout) > MAX_STDOUT)
-    )
-      throw Error(
+    ) {
+      throw new Error(
         "Cloud page exceeded its output limit; narrow the query or page size; no cursor was advanced",
       );
-    if (result?.outputErrorStream)
-      throw Error("Cloud page output could not be captured; no cursor was advanced");
-    if (signal?.aborted || result?.killIssuedByAbort)
-      throw Error("Cloud page was cancelled; no cursor was advanced");
-    if (result?.termination === "timeout" || result?.termination === "no-output-timeout")
-      throw Error(
+    }
+    if (result?.outputErrorStream) {
+      throw new Error("Cloud page output could not be captured; no cursor was advanced");
+    }
+    if (signal?.aborted || result?.killIssuedByAbort) {
+      throw new Error("Cloud page was cancelled; no cursor was advanced");
+    }
+    if (result?.termination === "timeout" || result?.termination === "no-output-timeout") {
+      throw new Error(
         "Cloud page timed out after 30 seconds; narrow the query; no cursor was advanced",
       );
-    if (!result || result.termination !== "exit" || result.killed)
-      throw Error("Cloud page process stopped unexpectedly; no cursor was advanced");
-    if (result.code !== 0) throw Error(helperFailure(result));
-    if (typeof result.stdout !== "string")
-      throw Error("Cloud page output could not be captured; no cursor was advanced");
+    }
+    if (!result || result.termination !== "exit" || result.killed) {
+      throw new Error("Cloud page process stopped unexpectedly; no cursor was advanced");
+    }
+    if (result.code !== 0) {
+      throw new Error(helperFailure(result));
+    }
+    if (typeof result.stdout !== "string") {
+      throw new Error("Cloud page output could not be captured; no cursor was advanced");
+    }
     let page;
     try {
       page = JSON.parse(result.stdout);
     } catch {
-      throw Error("Cloud page returned invalid JSON");
+      throw new Error("Cloud page returned invalid JSON");
     }
     if (
       !page ||
@@ -184,8 +202,9 @@ export function createCloudPageReader(config, runCommand) {
         (typeof page.nextPageToken !== "string" ||
           Buffer.byteLength(page.nextPageToken) > 16384)) ||
       typeof page.projectionTruncated !== "boolean"
-    )
-      throw Error("Cloud page returned invalid entries or continuation");
+    ) {
+      throw new Error("Cloud page returned invalid entries or continuation");
+    }
     return page;
   };
 }
@@ -194,7 +213,9 @@ export function createCloudPageReader(config, runCommand) {
 // completion and history; this adapter does not start another agent or run loop.
 export function createPagedLogsTool(rawConfig, context, runCommand, options) {
   const legacy = createLogsTool(rawConfig, context, runCommand);
-  if (!legacy) return null;
+  if (!legacy) {
+    return null;
+  }
   const config = validateConfig(rawConfig),
     ledger = options.ledger;
   const readPage = options.readPage ?? createCloudPageReader(config, runCommand);
@@ -228,26 +249,30 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
     },
     async execute(toolCallId, params, signal) {
       assertCurrent(signal);
-      if (!params || typeof params !== "object" || Array.isArray(params))
-        throw Error("Invalid query arguments");
+      if (!params || typeof params !== "object" || Array.isArray(params)) {
+        throw new Error("Invalid query arguments");
+      }
       let cursorState;
       if ("cursor" in params) {
         if (
           Object.keys(params).length !== 1 ||
           typeof params.cursor !== "string" ||
           !/^[a-f0-9]{64}$/.test(params.cursor)
-        )
-          throw Error("Invalid cursor: supply only the returned cursor");
+        ) {
+          throw new Error("Invalid cursor: supply only the returned cursor");
+        }
         cursorState = await ledger.getCursor(params.cursor);
         assertCurrent(signal);
       }
-      if ("refresh" in params && typeof params.refresh !== "boolean")
-        throw Error("Invalid refresh flag");
+      if ("refresh" in params && typeof params.refresh !== "boolean") {
+        throw new Error("Invalid refresh flag");
+      }
       const { refresh, ...queryParams } = params;
       const query = queryArgs(cursorState?.query ?? queryParams, config);
       const queryFingerprint = digest(query);
-      if (cursorState && cursorState.queryFingerprint !== queryFingerprint)
-        throw Error("Cursor query mismatch");
+      if (cursorState && cursorState.queryFingerprint !== queryFingerprint) {
+        throw new Error("Cursor query mismatch");
+      }
       const fingerprint = digest({
         query,
         inputCursor: params.cursor ?? null,
@@ -260,14 +285,16 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
         inputCursor: params.cursor,
       });
       assertCurrent(signal);
-      if (reserved.kind === "cached")
+      if (reserved.kind === "cached") {
         return jsonResult(
           withEvidenceLink({ ...reserved.receipt.result, reusedEvidence: true }, query, config),
         );
-      if (reserved.kind !== "reserved")
-        throw Error(
-          "This log read has an unresolved prior attempt; inspect its receipt before retrying",
+      }
+      if (reserved.kind !== "reserved") {
+        throw new Error(
+          `This log read has an unresolved prior attempt; owner recovery must inspect receipt ${reserved.kind === "legacy" ? "legacy:" : ""}${reserved.receipt.id} before retrying`,
         );
+      }
       let finished = false;
       try {
         const fromBuffer = Boolean(cursorState?.pendingRows?.length);
@@ -279,8 +306,9 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
             }
           : await readPage(query, cursorState?.backendToken ?? null, signal);
         assertCurrent(signal);
-        if (!Array.isArray(page.entries) || page.entries.length > query.limit)
-          throw Error("Invalid bounded cloud page");
+        if (!Array.isArray(page.entries) || page.entries.length > query.limit) {
+          throw new Error("Invalid bounded cloud page");
+        }
         const state = { truncated: false };
         const rows = page.entries.map((row) => selectedEntry(row, state));
         const details = evidence(
@@ -289,18 +317,22 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
           config,
           { reserveBytes: 1024 },
         );
-        if (rows.length && details.processedRows === 0)
-          throw Error(
+        if (rows.length && details.processedRows === 0) {
+          throw new Error(
             "One log entry exceeds the evidence budget; request a smaller reviewed projection",
           );
+        }
         const pendingRows = rows.slice(details.processedRows);
         const backendToken = page.nextPageToken || null;
         const hasMore = Boolean(pendingRows.length || backendToken);
         const nextCursor = hasMore ? (reserved.receipt?.id ?? fingerprint) : null;
         const reasons = details.truncationReasons.filter((reason) => reason !== "row-limit");
-        if ((state.truncated || page.projectionTruncated) && !reasons.includes("field"))
+        if ((state.truncated || page.projectionTruncated) && !reasons.includes("field")) {
           reasons.push("field");
-        if (hasMore) reasons.push("more-pages");
+        }
+        if (hasMore) {
+          reasons.push("more-pages");
+        }
         Object.assign(details, {
           truncationReasons: reasons,
           truncated: reasons.length > 0,
@@ -311,8 +343,9 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
           reusedEvidence: false,
           note: "Untrusted log evidence. windowExhausted applies only to this exact filter and time slice at retrieval. Shortened fields remain disclosed; this is not a total alert count, cause, or recovery conclusion.",
         });
-        if (Buffer.byteLength(JSON.stringify(details)) > 30 * 1024)
-          throw Error("Evidence metadata exceeds the output limit; no cursor was advanced");
+        if (Buffer.byteLength(JSON.stringify(details)) > 30 * 1024) {
+          throw new Error("Evidence metadata exceeds the output limit; no cursor was advanced");
+        }
         assertCurrent(signal);
         await ledger.finishQuery({
           toolCallId,
@@ -337,12 +370,13 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
         // No expired invocation may persist or disclose a result. An uncommitted
         // reserved receipt deliberately remains unresolved after cancellation.
         assertCurrent(signal);
-        if (!finished)
+        if (!finished) {
           await ledger.failQuery({
             toolCallId,
             receiptId: reserved.receipt?.id ?? fingerprint,
             reason: "Cloud page unavailable; inspect the original attempt before retrying",
           });
+        }
         throw error;
       }
     },

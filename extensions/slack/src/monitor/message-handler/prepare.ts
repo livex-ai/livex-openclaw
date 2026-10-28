@@ -34,6 +34,7 @@ import {
   type HistoryEntry,
 } from "openclaw/plugin-sdk/reply-history";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
@@ -1544,6 +1545,7 @@ export async function prepareSlackMessage(params: {
       sessionKey,
       filePath: investigationCatalogPath,
       snapshot: investigationLookup.snapshot,
+      reportProfile: resolveAgentReportProfile(route.agentId, "slack"),
       assertCurrent: assertHistoryCurrent,
     });
     ctxPayload.GatewayRunToolBindings = {

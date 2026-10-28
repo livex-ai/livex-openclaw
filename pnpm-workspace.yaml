@@ -3,6 +3,7 @@ packages:
   - ui
   - packages/*
   - extensions/*
+  - livex-agents/plugins/livex-oncall-reports
   - examples/*
   - tools/solid-lint
 

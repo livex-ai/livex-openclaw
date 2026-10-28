@@ -1,6 +1,6 @@
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
+import type { AgentReportProfile, PreparedAgentReport } from "openclaw/plugin-sdk/report-profiles";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
-import type { PreparedCompactReport } from "./report-form.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
 
 export type InvestigationTurnInput = {
@@ -9,12 +9,13 @@ export type InvestigationTurnInput = {
   sessionKey: string;
   filePath: string;
   snapshot: CatalogSnapshot;
+  reportProfile?: AgentReportProfile;
   assertCurrent: () => void;
 };
 export type StagedInvestigation = {
   finalText: string;
   updates: CompletedInvestigation[];
-  report?: PreparedCompactReport;
+  report?: PreparedAgentReport;
   legacyAcknowledgement?: string;
 };
 
@@ -132,7 +133,7 @@ export function createInvestigationTurnRegistry() {
       scope: HistoryScope,
       finalText: string,
       updates: CompletedInvestigation[],
-      report?: PreparedCompactReport,
+      report?: PreparedAgentReport,
       legacyAcknowledgement?: string,
     ): void {
       const entry = requireTurn(id);

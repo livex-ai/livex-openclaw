@@ -13,6 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 git lso
 # Google Cloud CLI Debian images install the full SDK at this documented path.
 COPY --from=sdk /usr/lib/google-cloud-sdk /opt/google-cloud-sdk
 COPY livex-agents/plugins/livex-gcp-readonly /opt/oncall/plugins/livex-gcp-readonly
+COPY livex-agents/plugins/livex-oncall-reports /opt/oncall/plugins/livex-oncall-reports
+# Resolve the relocated source plugin against this reviewed base's existing runtime.
+# Keep links plugin-local; do not install packages or mutate /app/node_modules.
+RUN mkdir -p /opt/oncall/plugins/livex-oncall-reports/node_modules \
+    && ln -s /app /opt/oncall/plugins/livex-oncall-reports/node_modules/openclaw \
+    && ln -s /app/node_modules/zod /opt/oncall/plugins/livex-oncall-reports/node_modules/zod \
+    && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-oncall-reports/index.ts"); for (const spec of ["zod", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/security-runtime"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("Report plugin requires the declared zod version in the reviewed base");'
 COPY livex-agents/workspaces/oncall/AGENTS.md /opt/oncall/workspace/AGENTS.md
 COPY livex-agents/prompts /opt/oncall/prompts
 COPY livex-agents/scripts/local-gcloud-startup/preflight.mjs /opt/oncall/preflight.mjs

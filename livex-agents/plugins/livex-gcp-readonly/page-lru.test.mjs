@@ -60,13 +60,16 @@ async function page(f, label, { scope, inputCursor, more = false, finish = true 
   const l = f.ledger(scope),
     fingerprint = id(label),
     toolCallId = `call-${label}`;
+  const pageQuery = inputCursor
+    ? (await l.getCursor(inputCursor)).query
+    : { ...query, insertIds: [label] };
   const reserved = await l.reserveQuery({
     toolCallId,
     fingerprint,
-    query,
+    query: pageQuery,
     ...(inputCursor ? { inputCursor } : {}),
   });
-  if (finish && reserved.kind === "reserved")
+  if (finish && reserved.kind === "reserved") {
     await l.finishQuery({
       receiptId: fingerprint,
       toolCallId,
@@ -76,7 +79,7 @@ async function page(f, label, { scope, inputCursor, more = false, finish = true 
             cursorState: {
               id: fingerprint,
               queryFingerprint: id("query"),
-              query,
+              query: pageQuery,
               pendingRows: [],
               backendToken: `PRIVATE:${label}`,
               projectionTruncated: false,
@@ -84,6 +87,7 @@ async function page(f, label, { scope, inputCursor, more = false, finish = true 
           }
         : {}),
     });
+  }
   return { ledger: l, id: fingerprint, toolCallId, reserved };
 }
 
@@ -115,7 +119,7 @@ test("more than 200 cloud pages resume through new ledger instances with bounded
         config,
         f.ctx,
         () => {
-          throw Error("no shell");
+          throw new Error("no shell");
         },
         { ledger: f.ledger(), readPage },
       ).execute(call, params)
@@ -126,7 +130,9 @@ test("more than 200 cloud pages resume through new ledger instances with bounded
     assert.ok(f.store.rows.size <= 200);
     assert.ok(!JSON.stringify(last).includes("PRIVATE:"));
     firstCursor ??= last.nextCursor;
-    if (last.nextCursor) args = { cursor: last.nextCursor };
+    if (last.nextCursor) {
+      args = { cursor: last.nextCursor };
+    }
   }
   assert.equal(reads, 245);
   assert.equal(seen.length, 245);
@@ -185,8 +191,9 @@ test("all pinned capacity preserves pending and failed attempts and stops before
 test("a full 200-record legacy chain resumes by proving consumed parents, preserving the live tip", async () => {
   const f = fixture();
   let previous;
-  for (let n = 0; n < 200; n++)
+  for (let n = 0; n < 200; n++) {
     previous = (await page(f, `legacy-${n}`, { inputCursor: previous, more: true })).id;
+  }
   for (const row of f.store.rows.values()) {
     delete row.lastUsedAt;
     delete row.cursorConsumed;
@@ -226,6 +233,76 @@ test("legacy parent stays evictable after its older successor is reclaimed first
   assert.equal(f.store.rows.size, 3);
 });
 
+for (const invalid of [
+  { label: "missing owner", field: "toolCallId", value: undefined },
+  { label: "negative attempt", field: "attempt", value: -1 },
+  { label: "null attempt", field: "attempt", value: null },
+  { label: "string attempt", field: "attempt", value: "0" },
+  { label: "boolean attempt", field: "attempt", value: false },
+  { label: "fractional attempt", field: "attempt", value: 0.5 },
+  { label: "unsafe integer attempt", field: "attempt", value: Number.MAX_SAFE_INTEGER + 1 },
+]) {
+  test(`malformed finished child with ${invalid.label} cannot settle or evict its parent`, async () => {
+    const f = fixture(2);
+    const parent = await page(f, "protected-parent", { more: true });
+    const child = await page(f, "malformed-child", { inputCursor: parent.id });
+    await f.ledger().getCursor(parent.id); // Make the child the oldest apparent candidate.
+    const parentRow = [...f.store.rows.values()].find((row) => row.id === parent.id);
+    const childRow = [...f.store.rows.values()].find((row) => row.id === child.id);
+    delete parentRow.cursorConsumed; // Legacy checkpoints rely on valid successor proof.
+    childRow[invalid.field] = invalid.value;
+    const before = snapshot(f.store);
+    await assert.rejects(page(f, "different-query", { finish: false }), /protected checkpoints/);
+    assert.equal(
+      snapshot(f.store),
+      before,
+      "malformed child and live parent remain byte-identical",
+    );
+    assert.equal(parentRow.cursorConsumed, undefined);
+    assert.equal((await f.ledger().getCursor(parent.id)).backendToken, "PRIVATE:protected-parent");
+  });
+}
+
+test("a valid finished child cannot mark a malformed parent consumed", async () => {
+  const f = fixture(2);
+  const parent = await page(f, "malformed-parent", { more: true });
+  const child = await page(f, "valid-child-of-malformed-parent", { inputCursor: parent.id });
+  await f.ledger().getCursor(parent.id);
+  const parentRow = [...f.store.rows.values()].find((row) => row.id === parent.id);
+  delete parentRow.cursorConsumed;
+  delete parentRow.toolCallId;
+  const before = JSON.stringify(parentRow);
+  await page(f, "independent-valid-query", { finish: false });
+  assert.equal(f.store.rows.size, 2);
+  assert.ok(!ids(f.store).has(child.id), "valid terminal child can still be reclaimed");
+  assert.equal(
+    JSON.stringify([...f.store.rows.values()].find((row) => row.id === parent.id)),
+    before,
+  );
+});
+
+test("valid finished child still proves legacy consumption and permits bounded admission", async () => {
+  const f = fixture(2);
+  const parent = await page(f, "valid-parent", { more: true });
+  const child = await page(f, "valid-child", { inputCursor: parent.id });
+  assert.equal(
+    Object.hasOwn(
+      [...f.store.rows.values()].find((row) => row.id === child.id),
+      "attempt",
+    ),
+    false,
+    "absent legacy attempt remains valid and defaults to zero",
+  );
+  await f.ledger().getCursor(parent.id);
+  const parentRow = [...f.store.rows.values()].find((row) => row.id === parent.id);
+  delete parentRow.cursorConsumed;
+  await page(f, "different-valid-query", { finish: false });
+  assert.equal(f.store.rows.size, 2);
+  assert.ok(!ids(f.store).has(child.id), "valid old successor is reclaimed");
+  assert.equal([...f.store.rows.values()].find((row) => row.id === parent.id).cursorConsumed, true);
+  assert.equal((await f.ledger().getCursor(parent.id)).backendToken, "PRIVATE:valid-parent");
+});
+
 test("fixed bookkeeping headroom preserves a near-limit legacy checkpoint through child completion", async () => {
   const f = fixture(),
     parent = await page(f, "large-legacy", { more: true });
@@ -236,7 +313,7 @@ test("fixed bookkeeping headroom preserves a near-limit legacy checkpoint throug
       : value && typeof value === "object"
         ? Object.fromEntries(
             Object.keys(value)
-              .sort()
+              .toSorted()
               .map((key) => [key, stable(value[key])]),
           )
         : value;
@@ -263,7 +340,7 @@ test("fixed bookkeeping headroom preserves a near-limit legacy checkpoint throug
     "legacy content uses only the new bookkeeping allowance",
   );
   for (const value of f.store.rows.values()) {
-    const { lastUsedAt, cursorConsumed, ...content } = value;
+    const { lastUsedAt: _lastUsedAt, cursorConsumed: _cursorConsumed, ...content } = value;
     assert.ok(Buffer.byteLength(JSON.stringify(content)) <= 256 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 256 * 1024 + 128);
   }
@@ -272,14 +349,18 @@ test("fixed bookkeeping headroom preserves a near-limit legacy checkpoint throug
 test("eviction and reservation roll back together on failure or final authority revocation", async () => {
   let live = true;
   const guard = () => {
-    if (!live) throw Error("revoked");
+    if (!live) {
+      throw new Error("revoked");
+    }
   };
   const f = fixture(2, context({ assertInvocationCurrent: guard }));
   await page(f, "victim");
   await page(f, "live", { more: true });
   const before = snapshot(f.store);
   f.store.controls.afterMutation = (count) => {
-    if (count === 2) throw Error("injected transaction failure");
+    if (count === 2) {
+      throw new Error("injected transaction failure");
+    }
   };
   await assert.rejects(page(f, "after-failure"), /injected/);
   assert.equal(snapshot(f.store), before, "no victim is lost on failed admission");
@@ -327,15 +408,17 @@ test("child completion settles its parent cursor atomically and cached continuat
     cursorState: {
       id: child.id,
       queryFingerprint: id("query"),
-      query,
       pendingRows: [],
       backendToken: "PRIVATE:child",
+      query: (await f.ledger().getCursor(parent.id)).query,
       projectionTruncated: false,
     },
   };
   const before = snapshot(f.store);
   f.store.controls.afterMutation = (count) => {
-    if (count === 2) throw Error("injected completion failure");
+    if (count === 2) {
+      throw new Error("injected completion failure");
+    }
   };
   await assert.rejects(child.ledger.finishQuery(completion), /injected/);
   assert.equal(snapshot(f.store), before);

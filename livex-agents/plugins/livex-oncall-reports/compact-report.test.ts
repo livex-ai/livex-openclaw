@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildSlackCompleteBlocksFallbackText } from "../blocks-fallback.js";
-import type { SlackThreadSummaryCard } from "../thread-summary-card.js";
-import type { FindingComparison } from "./matching.js";
-import { parseCompletedInvestigations, type CompletedInvestigation } from "./schema.js";
+import { buildSlackCompleteBlocksFallbackText } from "../../../extensions/slack/src/blocks-fallback.js";
+import type { FindingComparison } from "../../../extensions/slack/src/investigations/matching.js";
+import {
+  parseCompletedInvestigations,
+  type CompletedInvestigation,
+} from "../../../extensions/slack/src/investigations/schema.js";
+import type { SlackThreadSummaryCard } from "./legacy-report.js";
 
 const logUrl = "https://logs.example.test/view?id=event-1";
 const priorUrl = "https://sample.slack.com/archives/C1/p1000000000000000";
@@ -69,7 +72,7 @@ function form() {
 
 // Loading in the test body keeps the missing feature an assertion failure during the initial RED run.
 async function prepare() {
-  const module = await import("./report-form.js").catch(() => undefined);
+  const module = await import("./compact-report.js").catch(() => undefined);
   expect(
     module?.prepareCompactReport,
     "The typed compact-report owner must be implemented",
@@ -105,7 +108,7 @@ describe("typed compact investigation report", () => {
     const render = await prepare();
     const value = update();
     const original = render(form(), [value], [finding(value)]);
-    const module = await import("./report-form.js");
+    const module = await import("./compact-report.js");
     expect(
       module.appendCompactReportNotice,
       "The host notice must use the typed report owner",

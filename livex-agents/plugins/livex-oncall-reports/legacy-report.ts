@@ -4,10 +4,12 @@ import type {
   MessageAttachment,
   MrkdwnElement,
   SectionBlock,
+  Block,
+  KnownBlock,
 } from "@slack/types";
-import type { SlackBlock } from "./blocks-render.js";
-import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
-import { escapeSlackMrkdwn } from "./monitor/mrkdwn.js";
+import { SLACK_EDIT_TEXT_MAX_BYTES, escapeSlackMrkdwn } from "./style.js";
+
+type SlackBlock = Block | KnownBlock;
 
 export type SlackThreadSummaryCardOptions = {
   textLimit?: number;

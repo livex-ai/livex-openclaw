@@ -1,9 +1,10 @@
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { projectInvestigationIssue } from "./lookup.js";
 import { compareFindings } from "./matching.js";
-import { compactReportParameters, prepareCompactReport } from "./report-form.js";
+import { reportContext } from "./report-context.js";
 import { sameInvestigationScope, tryGetInvestigationTurnRegistry } from "./runtime.js";
 import { parseCompletedInvestigations } from "./schema.js";
 import { readCatalog } from "./store.js";
@@ -19,12 +20,12 @@ const parameters = {
       maxItems: 20,
       items: { type: "string", minLength: 1, maxLength: 128 },
     },
-    report: compactReportParameters,
+    report: { type: "object" },
     finalText: {
       type: "string",
       minLength: 1,
       maxLength: 32000,
-      description: "Legacy acknowledgement only; compact content derives from typed updates.",
+      description: "Legacy acknowledgement only; report content derives from typed updates.",
     },
     updates: {
       type: "array",
@@ -95,12 +96,28 @@ const parameters = {
 
 /** The definition stays stable; current invocation and channel ownership gate execution. */
 export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>): AnyAgentTool {
+  const schemaBinding = asOptionalRecord(ctx.toolBindings?.slack_investigation);
+  const boundTurn =
+    typeof schemaBinding?.turnId === "string"
+      ? tryGetInvestigationTurnRegistry()?.get(schemaBinding.turnId)
+      : undefined;
+  const profile =
+    boundTurn && boundTurn.scope.agentId === ctx.agentId && boundTurn.sessionKey === ctx.sessionKey
+      ? boundTurn.reportProfile
+      : resolveAgentReportProfile(ctx.agentId ?? "", "slack");
   return {
     name: "slack_investigation_record",
     label: "Investigation record",
     description:
-      "Look up this authorized oncall turn's catalog, or prepare completed findings and a compact report form. prepare_update takes report (Title, Priority, Summary, Next action, Evidence; optional factual badge) plus one update per independent finding. The host validates and renders the final; return exactly the returned finalText without extra prose or markers. Legacy finalText input is an acknowledgement only: content derives from typed updates, never its prose. Supply report OR legacy finalText, not both. The tool stages only; confirmed Slack delivery owns catalog saving. Ownership, recovery and evidence claims require typed support; unknowns stay unknown.",
-    parameters,
+      "Look up the authorized turn's catalog or stage completed updates with the configured report profile. Supply report OR legacy finalText, not both. The tool stages only; confirmed Slack delivery owns catalog saving. " +
+      (profile?.instructions ?? "No report profile is configured for this agent."),
+    parameters: {
+      ...parameters,
+      properties: {
+        ...parameters.properties,
+        report: profile?.inputSchema ?? parameters.properties.report,
+      },
+    },
     async execute(_toolCallId, input, signal) {
       ctx.assertInvocationCurrent();
       signal?.throwIfAborted();
@@ -189,7 +206,10 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
         throw new Error("Slack investigation signature scope does not match this turn");
       }
       const comparisons = compareFindings(turn.snapshot, updates);
-      const prepared = prepareCompactReport(args.report, updates, comparisons);
+      if (!turn.reportProfile) {
+        throw new Error("No report profile is configured for this Slack investigation turn");
+      }
+      const prepared = turn.reportProfile.prepare(args.report, reportContext(updates, comparisons));
       const findings = comparisons.map(
         ({ kind, issueId, canonicalThreadUrl, changes, reason }) => ({
           kind,
@@ -209,7 +229,7 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
         finalText: prepared.text,
         findings,
         instruction:
-          "Return exactly finalText. The host renders the compact report; add no labels, markers or extra prose. Nothing has been sent or recorded yet.",
+          "Return exactly finalText. The configured profile renders the report; add no labels, markers or extra prose. Nothing has been sent or recorded yet.",
       });
     },
   };

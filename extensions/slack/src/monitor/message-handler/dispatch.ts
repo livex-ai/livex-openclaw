@@ -16,15 +16,15 @@ import {
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
+import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { formatSlackError } from "../../errors.js";
+import { formatSlackError, getSlackWebApiErrorData } from "../../errors.js";
 import { normalizeSlackOutboundText } from "../../format.js";
 import { createInvestigationDelivery } from "../../investigations/delivery.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
 import { resolveSlackReplyRenderPlan } from "../../reply-blocks.js";
 import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
-import { buildSlackThreadSummaryCard } from "../../thread-summary-card.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "../../thread-ts.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
@@ -143,7 +143,9 @@ async function dispatchSlackMessageWithSetup(
   const deliverSlackPayloadInner = async (
     incomingPayload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
+    incomingPreparedReport = false,
   ): Promise<LivePreviewDeliveryResult> => {
+    let preparedReport = incomingPreparedReport;
     let payload = incomingPayload;
     if (info.participant && (payload.text || payload.mediaUrl || payload.mediaUrls?.length)) {
       payload = {
@@ -155,18 +157,6 @@ async function dispatchSlackMessageWithSetup(
     if (
       info.kind === "final" &&
       !info.participant &&
-      route.agentId === "oncall" &&
-      ctx.botUserId === "U09JKS5FHUM" &&
-      (prepared.eventScope?.teamId ?? ctx.teamId) === "T04MA1X41CM" &&
-      !prepared.isDirectMessage &&
-      originalThreadTs &&
-      prepared.ctxPayload.MessageThreadId === originalThreadTs &&
-      resolveSlackReplyThreadTs({
-        replyToMode: setup.replyDeliveryMode,
-        replyToId: payload.replyToId,
-        replyToCurrent: payload.replyToCurrent,
-        threadId: originalThreadTs,
-      }) === originalThreadTs &&
       typeof payload.text === "string" &&
       !payload.isReasoning &&
       !payload.isCommentary &&
@@ -180,25 +170,38 @@ async function dispatchSlackMessageWithSetup(
       !payload.interactive &&
       !payload.channelData?.slack
     ) {
-      // The current report contract supplies no verified critical-impact authority.
-      // Do not infer it from priority labels, counts or words in the report.
-      const card = buildSlackThreadSummaryCard(payload.text, { textLimit: ctx.textLimit });
-      if (card) {
+      const profile =
+        prepared.investigationTurn?.reportProfile ??
+        resolveAgentReportProfile(route.agentId, "slack");
+      const projection = profile?.prepareLegacy?.(payload.text, {
+        agentId: route.agentId,
+        botUserId: ctx.botUserId,
+        teamId: prepared.eventScope?.teamId ?? ctx.teamId,
+        isDirectMessage: prepared.isDirectMessage,
+        originalThreadTs,
+        contextThreadTs: prepared.ctxPayload.MessageThreadId,
+        replyThreadTs: resolveSlackReplyThreadTs({
+          replyToMode: setup.replyDeliveryMode,
+          replyToId: payload.replyToId,
+          replyToCurrent: payload.replyToCurrent,
+          threadId: originalThreadTs,
+        }),
+        textLimit: ctx.textLimit,
+      });
+      if (projection) {
+        preparedReport = true;
         payload = {
           ...payload,
-          channelData: {
-            ...payload.channelData,
-            slack: { threadSummaryCard: card },
-          },
+          text: projection.text,
+          channelData: { ...payload.channelData, ...projection.channelData },
         };
       }
     }
     const slackData = payload.channelData?.slack;
     if (
       info.kind === "final" &&
-      slackData &&
-      typeof slackData === "object" &&
-      "threadSummaryCard" in slackData
+      (preparedReport ||
+        (slackData && typeof slackData === "object" && "threadSummaryCard" in slackData))
     ) {
       if (summaryUpdateUnverified) {
         return { visibleReplySent: false };
@@ -309,6 +312,11 @@ async function dispatchSlackMessageWithSetup(
       previewStreamingEnabled &&
       !payload.text?.trim();
 
+    const shouldRetainPreviewAfterError = (error: unknown) =>
+      Boolean(preparedReport || slackAttachments?.length) &&
+      // A missing message cannot contain an accepted edit. Other failures can
+      // hide a successful update, so retain summary custody until reconciled.
+      getSlackWebApiErrorData(error)?.error !== "message_not_found";
     let ttsPreviewFinalization: { threadTs: string | undefined } | undefined;
     const result = await previewLifecycle.deliver({
       kind: info.kind,
@@ -402,9 +410,10 @@ async function dispatchSlackMessageWithSetup(
           }
           return supplementalResult;
         },
-        handlePreviewEditError: () => (slackAttachments?.length ? "retain" : "fallback"),
+        handlePreviewEditError: ({ error }) =>
+          shouldRetainPreviewAfterError(error) ? "retain" : "fallback",
         logPreviewEditFailure: (err) => {
-          if (slackAttachments?.length) {
+          if (shouldRetainPreviewAfterError(err)) {
             const failureMessage =
               "slack: summary final update unverified; retaining existing preview without a duplicate send (" +
               formatSlackError(err) +
@@ -435,7 +444,7 @@ async function dispatchSlackMessageWithSetup(
         });
       },
     });
-    if (slackAttachments?.length && result.kind === "preview-retained") {
+    if ((preparedReport || slackAttachments?.length) && result.kind === "preview-retained") {
       // Hold later summary finals for this turn without claiming a delivery receipt.
       summaryUpdateUnverified = true;
       // Keep custody without asserting a verified final delivery or deleting an uncertain edit.
@@ -458,14 +467,20 @@ async function dispatchSlackMessageWithSetup(
       }
       return response.permalink;
     },
-    annotateAcceptedFinal: async ({ messageId, text, card }) => {
+    annotateAcceptedFinal: async ({ messageId, text, channelData }) => {
+      const projection = channelData
+        ? resolveSlackReplyRenderPlan({ text, channelData })
+        : undefined;
+      if (projection?.mode === "split") {
+        throw new Error("Report warning exceeds a single Slack edit");
+      }
       const client = prepared.eventScope?.writeClient ?? slackClient;
       await client.chat.update({
         channel: message.channel,
         ts: messageId,
-        text,
-        attachments: card ? [card.attachment] : [],
-        blocks: card?.blocks ?? [],
+        text: projection?.text ?? text,
+        attachments: projection?.attachments ?? [],
+        blocks: projection?.blocks ?? [],
       });
     },
     reportError: (errorMessage) => {

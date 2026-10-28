@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  createTestRegistry,
+  setActivePluginRegistry,
+  resetPluginRuntimeStateForTest,
+} from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { oncallReportProfile, withOncallReportProfile } from "./profile.test-support.js";
 import { createInvestigationRecordTool } from "./report-tool.js";
 import { closeInvestigationTurnRegistry, getInvestigationTurnRegistry } from "./runtime.js";
 import {
@@ -51,6 +57,7 @@ function context(extra: Partial<OpenClawPluginToolContext<2>> = {}): OpenClawPlu
     ...extra,
   };
 }
+beforeEach(() => setActivePluginRegistry(withOncallReportProfile(createTestRegistry([]))));
 function register() {
   getInvestigationTurnRegistry().register({
     id: "one",
@@ -58,12 +65,14 @@ function register() {
     sessionKey,
     filePath: "/tmp/synthetic-catalog.md",
     snapshot: { status: "ready", scope, revision: "r", issues: [] },
+    reportProfile: oncallReportProfile,
     assertCurrent() {},
   });
 }
 const roots: string[] = [];
 afterEach(async () => {
   closeInvestigationTurnRegistry();
+  resetPluginRuntimeStateForTest();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 function renderedText(details: unknown): string {
@@ -93,9 +102,9 @@ describe("Slack investigation record tool", () => {
     expect(text).toContain("*Next action:*");
     expect(text).toContain("*Summary:*");
     expect(text).not.toContain("*Finding:*");
-    expect(getInvestigationTurnRegistry().matchFinal("one", text)?.report?.form.title).toBe(
-      typedReport.title,
-    );
+    expect(getInvestigationTurnRegistry().matchFinal("one", text)?.report?.state).toMatchObject({
+      title: typedReport.title,
+    });
   });
   it.each(["Markers: eyes warning verified.", "**Limits:** Some source fields unavailable."])(
     "uses typed facts for legacy acknowledgement without parsing %s",
@@ -220,6 +229,7 @@ describe("Slack investigation record tool", () => {
     const canonical = "https://example.slack.com/archives/C1/p1000000000000000";
     getInvestigationTurnRegistry().register({
       id: "one",
+      reportProfile: oncallReportProfile,
       scope,
       sessionKey,
       filePath: "/tmp/synthetic-catalog.md",
