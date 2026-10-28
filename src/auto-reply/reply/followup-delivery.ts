@@ -571,10 +571,13 @@ async function sendFollowupPayloads(params: {
         }
       } else if (result.delivered) {
         for (const correlation of deliveryCorrelations) {
-          if (correlation.prepareReply && correlation !== projectedBy) {
+          if (
+            !result.acceptedPayload ||
+            (correlation.prepareReply && correlation !== projectedBy)
+          ) {
             continue;
           }
-          await correlation.onReplyDelivered?.(payload, {
+          await correlation.onReplyDelivered?.(result.acceptedPayload, {
             kind: params.kind ?? "final",
             messageId: result.messageId,
             complete: result.ok && !result.ambiguous,

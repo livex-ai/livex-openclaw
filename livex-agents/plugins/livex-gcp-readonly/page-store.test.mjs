@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { transactionMemoryStore } from "./page-lru-test-helpers.mjs";
-
-const implementation = await import("./page-store.mjs").catch((error) => {
-  if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
-  return {};
-});
-const config = { project: "example-prd", allowedSenderId: "U123", allowedChannelId: "*" };
+import * as implementation from "./page-store.mjs";
+const config = {
+  gcloudAccount: "reader@example.test",
+  cloudSdkConfig: "/private/cloud",
+  project: "example-prd",
+  allowedSenderId: "U123",
+  allowedChannelId: "*",
+};
 const context = (overrides = {}) => ({
   messageChannel: "slack",
   nativeChannelId: "C123",
@@ -139,8 +141,9 @@ test("malicious and cross-session cursors cannot access private continuation sta
   ]) {
     await assert.rejects(ledger(store, context(override)).getCursor(id), /cursor/i);
   }
-  for (const bad of ["../cursor", "a".repeat(63), "A".repeat(64), { id }])
+  for (const bad of ["../cursor", "a".repeat(63), "A".repeat(64), { id }]) {
     await assert.rejects(async () => first.getCursor(bad), /cursor/i);
+  }
   await assert.rejects(
     reserve(first, { toolCallId: "bad-cursor", fingerprint: nextId, inputCursor: "d".repeat(64) }),
     /cursor/i,
@@ -150,8 +153,9 @@ test("malicious and cross-session cursors cannot access private continuation sta
     { messageChannel: "discord" },
     { sessionId: undefined },
     { agentAccountId: undefined },
-  ])
+  ]) {
     assert.throws(() => ledger(store, context(override)), /authorized|identity|context/i);
+  }
 });
 
 test("failed and unknown attempts fail closed instead of being silently replayed", async () => {
@@ -167,7 +171,7 @@ test("failed and unknown attempts fail closed instead of being silently replayed
   const unknown = memoryStore();
   unknown.controls.beforeCommit = () => {
     writes++;
-    throw Error("unknown write outcome");
+    throw new Error("unknown write outcome");
   };
   await assert.rejects(reserve(ledger(unknown)), /unknown write/);
   assert.equal(writes, 1);
@@ -176,7 +180,7 @@ test("failed and unknown attempts fail closed instead of being silently replayed
   let acknowledgements = 0;
   lostAcknowledgement.controls.afterCommit = () => {
     acknowledgements++;
-    throw Error("unknown write outcome");
+    throw new Error("unknown write outcome");
   };
   await assert.rejects(reserve(ledger(lostAcknowledgement)), /unknown write/);
   assert.equal(acknowledgements, 1);
@@ -192,7 +196,9 @@ test("failed and unknown attempts fail closed instead of being silently replayed
 test("revocation before or during asynchronous storage prevents effects and disclosure", async () => {
   let current = true;
   const guard = () => {
-    if (!current) throw Error("revoked");
+    if (!current) {
+      throw new Error("revoked");
+    }
   };
   const store = memoryStore(guard),
     first = ledger(store, context({ assertInvocationCurrent: guard }));
@@ -272,7 +278,14 @@ test("protected pending receipts fail closed at capacity without eviction or TTL
   const store = memoryStore(() => {}, 1),
     first = ledger(store);
   await reserve(first);
-  await assert.rejects(reserve(first, { toolCallId: "second", fingerprint: nextId }), /full/);
+  await assert.rejects(
+    reserve(first, {
+      toolCallId: "second",
+      fingerprint: nextId,
+      query: { ...query, insertIds: ["other"] },
+    }),
+    /full/,
+  );
   assert.equal(store.rows.size, 1);
   assert.equal((await reserve(first)).kind, "pending");
 });
@@ -312,7 +325,9 @@ test("native worker errors expose only fixed cache diagnostics and preserve auth
   let current = true,
     lastError;
   const guard = () => {
-    if (!current) throw Error("revoked");
+    if (!current) {
+      throw new Error("revoked");
+    }
   };
   const store = memoryStore(guard, 1),
     native = store.createOperation.bind(store);
@@ -335,14 +350,18 @@ test("native worker errors expose only fixed cache diagnostics and preserve auth
   await assert.rejects(first.getCursor(id), /Unknown, evicted, or cross-session cursor/);
   await reserve(first);
   await assert.rejects(
-    reserve(first, { toolCallId: "full", fingerprint: nextId }),
+    reserve(first, {
+      toolCallId: "full",
+      fingerprint: nextId,
+      query: { ...query, insertIds: ["other"] },
+    }),
     /full of protected checkpoints.*no cloud read was started/,
   );
 
   // Even a near-match must not promote private or arbitrary nested details.
   const blocked = lastError.cause.message;
   store.controls.beforeCommit = () => {
-    throw Error(`${blocked}; PRIVATE_INTERNAL_DETAIL`);
+    throw new Error(`${blocked}; PRIVATE_INTERNAL_DETAIL`);
   };
   await assert.rejects(reserve(first), (error) => {
     assert.equal(error, lastError);
@@ -352,7 +371,7 @@ test("native worker errors expose only fixed cache diagnostics and preserve auth
   });
   store.controls.beforeCommit = () => {
     current = false;
-    throw Error(blocked);
+    throw new Error(blocked);
   };
   await assert.rejects(reserve(first), /revoked/);
 });

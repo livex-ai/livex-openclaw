@@ -18,7 +18,7 @@ import {
 import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { formatSlackError } from "../../errors.js";
+import { formatSlackError, getSlackWebApiErrorData } from "../../errors.js";
 import { normalizeSlackOutboundText } from "../../format.js";
 import { createInvestigationDelivery } from "../../investigations/delivery.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
@@ -312,6 +312,11 @@ async function dispatchSlackMessageWithSetup(
       previewStreamingEnabled &&
       !payload.text?.trim();
 
+    const shouldRetainPreviewAfterError = (error: unknown) =>
+      Boolean(preparedReport || slackAttachments?.length) &&
+      // A missing message cannot contain an accepted edit. Other failures can
+      // hide a successful update, so retain summary custody until reconciled.
+      getSlackWebApiErrorData(error)?.error !== "message_not_found";
     let ttsPreviewFinalization: { threadTs: string | undefined } | undefined;
     const result = await previewLifecycle.deliver({
       kind: info.kind,
@@ -405,10 +410,10 @@ async function dispatchSlackMessageWithSetup(
           }
           return supplementalResult;
         },
-        handlePreviewEditError: () =>
-          preparedReport || slackAttachments?.length ? "retain" : "fallback",
+        handlePreviewEditError: ({ error }) =>
+          shouldRetainPreviewAfterError(error) ? "retain" : "fallback",
         logPreviewEditFailure: (err) => {
-          if (preparedReport || slackAttachments?.length) {
+          if (shouldRetainPreviewAfterError(err)) {
             const failureMessage =
               "slack: summary final update unverified; retaining existing preview without a duplicate send (" +
               formatSlackError(err) +

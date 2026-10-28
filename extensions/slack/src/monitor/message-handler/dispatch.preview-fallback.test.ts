@@ -1090,10 +1090,16 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       if (scenario === "queued-unprepared") {
         expect(registry.get("dispatch-catalog")).toBeDefined();
         const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
-        await correlation?.onReplyDelivered?.(
+        const projected = correlation?.prepareReply?.(
           { text: FINAL_REPLY_TEXT },
-          { kind: "final", messageId: "queued-final", complete: true },
+          { kind: "final" },
         );
+        expect(projected).toBeDefined();
+        await correlation?.onReplyDelivered?.(projected!, {
+          kind: "final",
+          messageId: "queued-final",
+          complete: true,
+        });
         expect(getPermalink).not.toHaveBeenCalled();
         expect(chatUpdateMock).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -3702,10 +3708,40 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(deliverRepliesMock).not.toHaveBeenCalled();
     });
 
-    it("retains an unverified card edit without duplicating the final report", async () => {
+    it("falls back once when Slack confirms the summary preview is missing", async () => {
       const draft = useDraftStream();
       mockedReplyThreadTs = root;
       mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockRejectedValue(createSlackPlatformError("message_not_found"));
+      mockedDispatchSequence = [
+        { kind: "final", payload: { text: report } },
+        { kind: "final", payload: { text: report } },
+      ];
+
+      await dispatch(liveX);
+
+      expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();
+      expect(deliverRepliesMock).toHaveBeenCalledOnce();
+      expect(delivered().replyThreadTs).toBe(root);
+      expect(delivered().replies[0]?.text).toBe(report);
+      expect(delivered().replies[0]?.channelData?.slack).toHaveProperty("threadSummaryCard");
+      expect(draft.clear).toHaveBeenCalled();
+      expect(deliverRepliesMock.mock.invocationCallOrder[0]).toBeLessThan(
+        draft.clear.mock.invocationCallOrder[0],
+      );
+      expect(logVerboseMock.mock.calls.flat().join(" ")).toContain("falling back");
+      expect(logVerboseMock.mock.calls.flat().join(" ")).not.toContain("retaining");
+    });
+
+    it.each([
+      { name: "transport timeout", error: new Error("socket closed") },
+      { name: "possibly partial API failure", error: createSlackPlatformError("internal_error") },
+      { name: "unstructured error text", error: new Error("message_not_found") },
+    ])("retains a card after $name without duplicating the final report", async ({ error }) => {
+      const draft = useDraftStream();
+      mockedReplyThreadTs = root;
+      mockedStatusThreadTs = root;
+      finalizeSlackPreviewEditMock.mockRejectedValue(error);
       mockedDispatchSequence = [{ kind: "final", payload: { text: report } }];
       await dispatch(liveX);
       expect(finalizeSlackPreviewEditMock).toHaveBeenCalledOnce();

@@ -1,6 +1,7 @@
 // Slack tests cover preview finalize plugin behavior.
 import type { WebClient } from "@slack/web-api";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSlackPlatformError } from "./dispatch.preview.test-support.js";
 
 const editSlackMessageMock = vi.fn();
 
@@ -32,6 +33,25 @@ describe("finalizeSlackPreviewEdit", () => {
 
   beforeEach(() => {
     editSlackMessageMock.mockReset();
+  });
+
+  it("preserves a missing-message error after an empty readback", async () => {
+    const error = createSlackPlatformError("message_not_found");
+    editSlackMessageMock.mockRejectedValueOnce(error);
+    const client = createClient();
+
+    await expect(
+      finalizeSlackPreviewEdit({
+        client,
+        token: "xoxb-test",
+        channelId: "C123",
+        messageId: "171234.567",
+        threadTs: "171234.000000",
+        text: "Full report",
+      }),
+    ).rejects.toBe(error);
+    expect(editSlackMessageMock).toHaveBeenCalledOnce();
+    expect(client.conversations.replies).toHaveBeenCalledOnce();
   });
 
   it("does not accept matching text when the colored attachment did not update", async () => {

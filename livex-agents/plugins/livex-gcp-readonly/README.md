@@ -53,12 +53,15 @@ only to the exact filter and time slice at retrieval. Cover each alert-hour
 slice; a page limit does not complete an investigation.
 
 Native V2 storage keeps receipts and opaque backend cursors. Scope includes
-agent, account, thread, session generation, caller, and project. Identical
+agent, Slack account, thread, session generation, caller, project, configured
+Google account, and Cloud SDK configuration path. Identical
 queries reuse retained evidence. Check `retrievedAt`; use `refresh: true` when
-delayed ingestion or new evidence requires another read.
+delayed ingestion or new evidence requires another read. Refresh cannot bypass
+an unresolved attempt for the same query and continuation.
 
 The cache retains at most 200 records. LRU eviction removes completed results
-and consumed continuation pages. Pending and failed attempts, unknown records,
+and consumed continuation pages, plus explicitly retired checkpoints. Pending
+and failed attempts, unknown records,
 and unconsumed checkpoints remain protected. Reservation and eviction are atomic.
 Completing a child page and consuming its parent is also atomic. Existing
 receipts use a committed same-scope successor to establish consumption.
@@ -70,6 +73,59 @@ before a cloud read. Failed or uncertain attempts are not replayed silently.
 The cache bound limits resident evidence, not total investigation pages.
 Conversation history is separate and is not evicted. Codex owns investigation
 planning and completion; the plugin adds no agent loop or case database.
+
+### Recover an unfinished read
+
+Recovery is a direct human text command handled before the LLM. It requires the
+configured Slack sender, current owner authority, the allowed channel, and the
+original canonical Slack thread session. Use it in that thread (mention the bot
+if the channel requires it). Native slash routing, DMs, and custom/shared session
+bindings are rejected because they do not prove the original receipt scope.
+No command starts a cloud read, changes production, or retries a customer operation.
+
+1. `/livex-gcp-recover list` lists up to 20 current-scope receipt IDs and statuses.
+   Continue with `list <nextOffset>`. Use `list legacy` (and `list legacy <nextOffset>`)
+   for receipts created before cloud-identity binding. Lists contain no logs,
+   private cursors, query selectors, or credentials.
+2. `/livex-gcp-recover inspect <receipt>` returns its saved query window, status,
+   and exact `receiptHash`. Use `inspect legacy:<receipt>` for an old-format receipt.
+3. `/livex-gcp-recover retry <receipt> <receiptHash>` explicitly authorizes one
+   new read of that exact current-identity query. **The original outcome may still
+   be unknown; approval accepts a possible repeated Cloud Logging read.** It does
+   not declare the original operation successful or recovered. The next matching
+   tool query (or original cursor continuation) consumes this approval once.
+4. For an old-format receipt, use
+   `/livex-gcp-recover restart-legacy legacy:<receipt> <receiptHash>` instead.
+   This explicitly restarts only its saved bounded query window under the current
+   configured cloud identity. Old logs and private cursor state are not reused.
+   Prior coverage remains uncertain; deduplicate repeated evidence. A legacy
+   continuation restarts from the beginning rather than claiming to resume it.
+
+A changed receipt requires another inspection. Approval and replacement are atomic
+in the same bounded SQLite namespace, so recovery works even when all 200 slots are
+occupied. Each attempt has an owner and counter; a late old completion cannot settle
+the replacement. The latest operator decision retains the previous receipt hash,
+status, and attempt metadata; history does not grow in this cache. A further failure
+needs another explicit approval. There is no automatic retry, arbitrary expiry,
+blanket clear, or fabricated resolution. Conversation history remains separate.
+
+To abandon a finished page's unconsumed continuation, inspect it and use
+`/livex-gcp-recover retire-checkpoint <receipt> <receiptHash>` (or `legacy:<receipt>`).
+This records deliberate abandonment and permits later LRU reclamation. It never
+claims the query was exhausted or the checkpoint consumed. Retirement requires a
+verified completed checkpoint and refuses unresolved or malformed dependent reads;
+settle those exact child receipts first. Old cursors fail visibly;
+no scan restarts automatically. Unknown/malformed records and other threads stay
+protected. Historical same-query attempts are recovered serially: one explicit
+approval permits only its selected read; unselected unknown receipts remain
+protected. A second approval waits while an approved or active retry remains.
+Each legacy attempt gets its own current-identity receipt, so existing results
+and other legacy attempts cannot be overwritten. The bounded prior-attempt audit
+retains its receipt hash/id, owner call ID, reservation time, status, attempt
+counter and bounded failure summary; no growing attempt history is created.
+If cloud credentials/configuration change again, receipts belonging to
+the previous identity remain inaccessible under the new identity; restore that
+configuration for scoped operator recovery rather than adopting its evidence.
 
 Run `node --test *.test.mjs` and `python3 -B -m unittest -v test_logging_page.py`.
 The offline replay covers seven hours, exact early seeds, dense pages, fractional

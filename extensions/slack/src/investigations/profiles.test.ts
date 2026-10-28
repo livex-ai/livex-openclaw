@@ -200,6 +200,72 @@ it("keeps the staged profile through queued projection and records only the conf
   );
 });
 
+it.each(["text", "card", "missing-card", "mutated-card"] as const)(
+  "does not publish or restore a queued report changed by outbound policy (%s)",
+  async (change) => {
+    install();
+    const fixture = await turn("oncall");
+    await createInvestigationRecordTool(fixture.ctx).execute("prepare", {
+      action: "prepare_update",
+      report: { message: "Done" },
+      updates: [fixture.update],
+    });
+    const annotateAcceptedFinal = vi.fn();
+    const reportError = vi.fn();
+    const resolvePermalink = vi.fn(
+      async () => "https://example.slack.com/archives/C1/p1000000000000000",
+    );
+    const owner = createInvestigationDelivery({
+      turn: fixture.value,
+      sourceMessageIds: ["source"],
+      resolvePermalink,
+      annotateAcceptedFinal,
+      reportError,
+      deliver: vi.fn(async () => ({ visibleReplySent: true })),
+    });
+    const projected = owner.queuedCorrelation!.prepareReply!(
+      { text: "compact: Done" },
+      { kind: "final" },
+    )!;
+    if (change === "mutated-card") {
+      const slack = projected.channelData!.slack as { blocks: { text: { text: string } }[] };
+      slack.blocks[0]!.text.text = "Policy replacement";
+    }
+    const accepted =
+      change === "mutated-card"
+        ? projected
+        : change === "text"
+          ? { ...projected, text: "Policy replacement" }
+          : {
+              ...projected,
+              channelData:
+                change === "missing-card"
+                  ? undefined
+                  : {
+                      slack: {
+                        blocks: [
+                          {
+                            type: "section",
+                            text: { type: "plain_text", text: "Policy replacement" },
+                          },
+                        ],
+                      },
+                    },
+            };
+    await owner.queuedCorrelation!.onReplyDelivered!(accepted, {
+      kind: "final",
+      complete: true,
+      messageId: "1000000000.000000",
+    });
+    expect(
+      (await readCatalog({ filePath: fixture.filePath, scope: fixture.scope })).issues,
+    ).toEqual([]);
+    expect(resolvePermalink).not.toHaveBeenCalled();
+    expect(annotateAcceptedFinal).not.toHaveBeenCalled();
+    expect(reportError).toHaveBeenCalledWith(expect.stringContaining("accepted final differs"));
+  },
+);
+
 it("keeps the captured turn schema if selection changes before tool construction", async () => {
   const builder = install();
   const fixture = await turn("oncall");
@@ -259,3 +325,47 @@ it("constructs an unbound discovery tool without an agent or turn", async () => 
     createInvestigationRecordTool({ ...fixture.ctx, agentId: undefined, toolBindings: {} }),
   ).not.toThrow();
 });
+
+it.each(["unchanged", "changed-text", "changed-card"] as const)(
+  "annotates only unchanged accepted content when no queued report was prepared (%s)",
+  async (change) => {
+    install();
+    const fixture = await turn("oncall");
+    const annotateAcceptedFinal = vi.fn();
+    const owner = createInvestigationDelivery({
+      turn: fixture.value,
+      sourceMessageIds: ["source"],
+      resolvePermalink: vi.fn(),
+      annotateAcceptedFinal,
+      reportError: vi.fn(),
+      deliver: vi.fn(async () => ({ visibleReplySent: true })),
+    });
+    const projected = owner.queuedCorrelation?.prepareReply?.(
+      { text: "Unprepared final" },
+      { kind: "final" },
+    );
+    const accepted = structuredClone(projected!);
+    if (change === "changed-text") {
+      accepted.text = "Policy replacement";
+    }
+    if (change === "changed-card") {
+      accepted.channelData = { slack: { blocks: [{ type: "divider" }] } };
+    }
+    await owner.queuedCorrelation?.onReplyDelivered?.(accepted, {
+      kind: "final",
+      complete: true,
+      messageId: "1000000000.000000",
+    });
+    expect(
+      (await readCatalog({ filePath: fixture.filePath, scope: fixture.scope })).issues,
+    ).toEqual([]);
+    if (change === "unchanged") {
+      expect(annotateAcceptedFinal).toHaveBeenCalledExactlyOnceWith({
+        messageId: "1000000000.000000",
+        text: expect.stringContaining("no matching completed record"),
+      });
+    } else {
+      expect(annotateAcceptedFinal).not.toHaveBeenCalled();
+    }
+  },
+);

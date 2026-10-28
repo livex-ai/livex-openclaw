@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { LivePreviewDeliveryResult } from "openclaw/plugin-sdk/channel-outbound";
 import {
   copyReplyPayloadMetadata,
@@ -159,7 +160,8 @@ export function createInvestigationDelivery(params: {
       ? copyReplyPayloadMetadata(payload, {
           ...payload,
           text: prepared.finalText,
-          channelData: { ...payload.channelData, ...prepared.report.channelData },
+          // Outbound hooks may mutate their input; staged facts retain their own copy.
+          channelData: { ...payload.channelData, ...structuredClone(prepared.report.channelData) },
         })
       : payload;
     return { payload: outgoing, prepared };
@@ -282,16 +284,55 @@ export function createInvestigationDelivery(params: {
     }
     return result;
   };
+  let queuedUnpreparedFinal: Pick<ReplyPayload, "text" | "channelData"> | undefined;
   const queuedCorrelation:
     | NonNullable<GetReplyOptions["queuedDeliveryCorrelations"]>[number]
     | undefined = investigationTurn
     ? {
-        begin() {},
+        begin() {
+          queuedUnpreparedFinal = undefined;
+        },
         prepareReply(payload, context) {
-          return prepareFinal(payload, context.kind)?.payload;
+          const projection = prepareFinal(payload, context.kind);
+          queuedUnpreparedFinal = undefined;
+          if (projection && !projection.prepared) {
+            try {
+              // Queued projection and delivery run serially. Preserve the original
+              // unprepared content so policy changes cannot inherit its annotation.
+              queuedUnpreparedFinal = structuredClone({
+                text: projection.payload.text,
+                channelData: projection.payload.channelData,
+              });
+            } catch {
+              // Uncloneable content can still send without a bookkeeping edit.
+            }
+          }
+          return projection?.payload;
         },
         async onReplyDelivered(payload, receipt) {
+          const unpreparedFinal = queuedUnpreparedFinal;
+          queuedUnpreparedFinal = undefined;
           if (!receipt || !isInvestigationFinal(payload, receipt.kind)) {
+            return;
+          }
+          const prepared = investigationTurn.matchFinal(payload.text!);
+          const unchangedUnprepared =
+            unpreparedFinal?.text === payload.text &&
+            isDeepStrictEqual(unpreparedFinal?.channelData?.slack, payload.channelData?.slack);
+          if (
+            receipt.complete &&
+            ((!prepared && !unchangedUnprepared) ||
+              (prepared?.report &&
+                (prepared.finalText !== payload.text ||
+                  !isDeepStrictEqual(
+                    prepared.report.channelData?.slack,
+                    payload.channelData?.slack,
+                  ))))
+          ) {
+            // Never reapply the prepared card after a policy changed accepted content.
+            params.reportError(
+              "Investigation catalog skipped: accepted final differs from the prepared report; delivered content was preserved",
+            );
             return;
           }
           await recordInvestigationDelivery(
