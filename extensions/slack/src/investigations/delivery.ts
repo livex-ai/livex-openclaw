@@ -10,7 +10,7 @@ import type {
   ReplyDispatchRuntimeInfo,
   ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
-import { appendCompactReportNotice, type PreparedCompactReport } from "./report-form.js";
+import { reportContext } from "./report-context.js";
 import type { InvestigationTurn } from "./runtime.js";
 import { commitInvestigations } from "./store.js";
 
@@ -134,12 +134,13 @@ export function createInvestigationDelivery(params: {
   annotateAcceptedFinal: (input: {
     messageId: string;
     text: string;
-    card?: PreparedCompactReport["card"];
+    channelData?: ReplyPayload["channelData"];
   }) => Promise<void>;
   reportError: (message: string) => void;
   deliver: (
     payload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
+    preparedReport?: boolean,
   ) => Promise<LivePreviewDeliveryResult>;
 }) {
   const investigationTurn = params.turn;
@@ -158,10 +159,7 @@ export function createInvestigationDelivery(params: {
       ? copyReplyPayloadMetadata(payload, {
           ...payload,
           text: prepared.finalText,
-          channelData: {
-            ...payload.channelData,
-            slack: { threadSummaryCard: prepared.report.card },
-          },
+          channelData: { ...payload.channelData, ...prepared.report.channelData },
         })
       : payload;
     return { payload: outgoing, prepared };
@@ -227,12 +225,16 @@ export function createInvestigationDelivery(params: {
       }
       const prepared = investigationTurn.matchFinal(payload.text);
       const report = prepared?.report
-        ? appendCompactReportNotice(prepared.report, prepared.updates, warning)
+        ? investigationTurn.reportProfile?.appendNotice(
+            prepared.report,
+            warning,
+            reportContext(prepared.updates, []),
+          )
         : undefined;
       await params.annotateAcceptedFinal({
         messageId,
         text: report?.text ?? addHistoryWarning(payload.text, warning),
-        ...(report ? { card: report.card } : {}),
+        ...(report ? { channelData: report.channelData } : {}),
       });
     } catch {
       params.reportError(
@@ -267,7 +269,9 @@ export function createInvestigationDelivery(params: {
         ),
       });
     }
-    const result = await params.deliver(outgoing, info);
+    const result = projection?.prepared?.report
+      ? await params.deliver(outgoing, info, true)
+      : await params.deliver(outgoing, info);
     if (projection) {
       await recordInvestigationDelivery(
         projection.prepared?.report ? outgoing : payload,

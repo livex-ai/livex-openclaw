@@ -15,6 +15,7 @@ import type {
   PluginRecord,
   PluginTextTransformsRegistration,
 } from "./registry-types.js";
+import type { AgentReportProfile } from "./report-profile.types.js";
 import { validateStorageProviderContract } from "./storage-provider-registry.js";
 import type { CliBackendPlugin, ProviderPlugin } from "./types.js";
 import { validateWorkerProviderContract } from "./worker-provider-registry.js";
@@ -211,6 +212,42 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     );
   };
 
+  const registerReportProfile = (record: PluginRecord, profile: AgentReportProfile) => {
+    const validNames = (values: readonly string[]) =>
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every(
+        (value) => typeof value === "string" && value.length > 0 && value === value.trim(),
+      );
+    if (
+      !profile.id?.trim() ||
+      profile.id !== profile.id.trim() ||
+      !validNames(profile.agentIds) ||
+      !validNames(profile.channels) ||
+      !profile.inputSchema ||
+      typeof profile.inputSchema !== "object" ||
+      !profile.instructions?.trim() ||
+      typeof profile.prepare !== "function" ||
+      typeof profile.appendNotice !== "function" ||
+      (profile.prepareLegacy !== undefined && typeof profile.prepareLegacy !== "function")
+    ) {
+      reportRegistrationError(record, "invalid agent report profile contract");
+      return;
+    }
+    if (
+      registry.reportProfiles.some(
+        (entry) =>
+          entry.profile.id === profile.id ||
+          (entry.profile.agentIds.some((id) => profile.agentIds.includes(id)) &&
+            entry.profile.channels.some((channel) => profile.channels.includes(channel))),
+      )
+    ) {
+      // Retain conflicting claims as diagnostics so resolution cannot depend on load order.
+      reportRegistrationError(record, `report profile already registered: ${profile.id}`);
+    }
+    registry.reportProfiles.push(createRegistration(record, { profile }));
+  };
+
   const registerEmbeddingProvider = (record: PluginRecord, adapter: EmbeddingProviderAdapter) => {
     const id = adapter.id.trim();
     if (!id) {
@@ -331,6 +368,7 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     registerAgentExecutorController,
     registerCliBackend,
     registerTextTransforms,
+    registerReportProfile,
     registerEmbeddingProvider,
     registerWorkerProvider: createContractProviderRegistrar(
       "worker",

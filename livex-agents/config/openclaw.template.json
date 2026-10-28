@@ -5,7 +5,8 @@
       "openai",
       "codex",
       "slack",
-      "livex-gcp-readonly"
+      "livex-gcp-readonly",
+      "livex-oncall-reports"
     ],
     "entries": {
       "openai": {
@@ -47,11 +48,20 @@
           },
           "repositories": []
         }
+      },
+      "livex-oncall-reports": {
+        "enabled": true,
+        "config": {
+          "agentProfiles": {
+            "oncall": "compact-v1"
+          }
+        }
       }
     },
     "load": {
       "paths": [
-        "${PACKAGE_ROOT}/plugins/livex-gcp-readonly"
+        "${PACKAGE_ROOT}/plugins/livex-gcp-readonly",
+        "${PACKAGE_ROOT}/plugins/livex-oncall-reports"
       ]
     }
   },

@@ -57,3 +57,7 @@ References:
 - [Slack secondary attachment color and nested blocks](https://docs.slack.dev/legacy/legacy-messaging/legacy-secondary-message-attachments/).
 - [Slack message text and accessibility fallback](https://docs.slack.dev/reference/methods/chat.postMessage/).
 - [Slack section block limits](https://docs.slack.dev/reference/block-kit/blocks/section-block/).
+
+## Formatting ownership
+
+The `livex-oncall-reports` plugin owns both current report projections. Its trusted `agentProfiles` configuration selects the agent's schema and renderer. Shared Slack code consumes prepared text/blocks, validates fallback consistency and owns previews, native edits, threading and receipts. The catalog delivery owner remains unchanged. See `livex-agents/plugins/livex-oncall-reports/README.md` for configuration and local verification.

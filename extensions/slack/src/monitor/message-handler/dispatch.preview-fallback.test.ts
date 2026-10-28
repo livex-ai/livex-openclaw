@@ -20,9 +20,14 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareCompactReport } from "../../../../../livex-agents/plugins/livex-oncall-reports/compact-report.js";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
-import { prepareCompactReport } from "../../investigations/report-form.js";
+import {
+  preparedFixture,
+  oncallReportProfile,
+  withOncallReportProfile,
+} from "../../investigations/profile.test-support.js";
 import { getInvestigationTurnRegistry } from "../../investigations/runtime.js";
 import {
   serializeCatalog,
@@ -805,7 +810,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
 
   beforeEach(() => {
     setActivePluginRegistry(
-      createTestRegistry([{ pluginId: "slack", source: "test", plugin: slackSetupPlugin }]),
+      withOncallReportProfile(
+        createTestRegistry([{ pluginId: "slack", source: "test", plugin: slackSetupPlugin }]),
+      ),
     );
     createSlackDraftStreamMock.mockReset();
     deliverRepliesMock.mockReset();
@@ -873,16 +880,23 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     "compact-form-alert-compact",
     "compact-form-alert-card",
     "compact-form-unverified",
+    "compact-form-blocks-unverified",
+    "compact-form-blocks-alert",
   ])("settles the investigation catalog through its final receipt (%s)", async (scenario) => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "slack-dispatch-catalog-"));
     const filePath = path.join(root, "investigations.md");
     try {
       await fs.writeFile(filePath, serializeCatalog([]));
       const settledBeforeFinal = scenario.startsWith("settled-");
-      const alertMode = scenario.startsWith("compact-form-alert-")
-        ? scenario.slice("compact-form-alert-".length)
-        : undefined;
-      const unverifiedForm = scenario === "compact-form-unverified";
+      const blockOnlyReport = scenario.startsWith("compact-form-blocks-");
+      const alertMode =
+        scenario === "compact-form-blocks-alert"
+          ? "normal"
+          : scenario.startsWith("compact-form-alert-")
+            ? scenario.slice("compact-form-alert-".length)
+            : undefined;
+      const unverifiedForm =
+        scenario === "compact-form-unverified" || scenario === "compact-form-blocks-unverified";
       const previewWithoutTopBlocks = scenario === "compact-form-preview-no-top-blocks";
       const sourceAlertTs = "171234.111";
       mockedSlackStreamingMode =
@@ -956,6 +970,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       const registry = getInvestigationTurnRegistry();
       prepared.investigationTurn = registry.register({
         id: "dispatch-catalog",
+        reportProfile: oncallReportProfile,
         scope,
         sessionKey: prepared.route.sessionKey,
         filePath,
@@ -985,8 +1000,13 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         evidenceUrls: [],
       };
       const report = scenario.startsWith("compact-form")
-        ? prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }])
+        ? preparedFixture(
+            prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }]),
+          )
         : undefined;
+      if (blockOnlyReport && report) {
+        report.channelData = { slack: { blocks: report.card.attachment.blocks } };
+      }
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];
       }
@@ -1095,7 +1115,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       }
       if (report && !previewWithoutTopBlocks) {
         expect(delivered(0).replies).toEqual([
-          { text: report.text, channelData: { slack: { threadSummaryCard: report.card } } },
+          { text: report.text, channelData: report.channelData },
         ]);
       }
       if (settledBeforeFinal) {

@@ -8,7 +8,9 @@ import {
   createPluginRegistry,
   disposePluginRegistryInstances,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { expect, it } from "vitest";
+import reportEntry from "../../../../livex-agents/plugins/livex-oncall-reports/index.js";
 import slackEntry from "../../index.js";
 import { getInvestigationTurnRegistry, tryGetInvestigationTurnRegistry } from "./runtime.js";
 import type { CompletedInvestigation, HistoryScope } from "./schema.js";
@@ -67,6 +69,18 @@ function createManagedSlackOwner() {
     contracts: manifest.contracts,
   });
   builder.registry.plugins.push(record);
+  const reportRecord = createPluginRecord({
+    id: "livex-oncall-reports",
+    source: "/fixture/reports/index.ts",
+  });
+  builder.registry.plugins.push(reportRecord);
+  reportEntry.register(
+    builder.createApi(reportRecord, {
+      config: {},
+      pluginConfig: { agentProfiles: { oncall: "compact-v1" } },
+      registrationMode: "tool-discovery",
+    }),
+  );
   const api = builder.createApi(record, { config: {}, registrationMode: "tool-discovery" });
   slackEntry.register(api);
   expect(builder.registry.diagnostics).toEqual([]);
@@ -94,6 +108,7 @@ it("hands prepared findings to the exact managed Slack owner and refuses unrelat
         sessionKey,
         filePath: "/synthetic/investigations.md",
         snapshot: { status: "ready", scope, revision: "r", issues: [] },
+        reportProfile: resolveAgentReportProfile("oncall", "slack"),
         assertCurrent() {},
       }),
     );
@@ -102,7 +117,25 @@ it("hands prepared findings to the exact managed Slack owner and refuses unrelat
 
     // This is the actual entry's managed registration/factory. The generic framework
     // tool-registry-adoption suite owns resolver/adoption proof; no resolver is mocked here.
+    const boundProfile = owner.registry.reportProfiles[0]!;
+    owner.registry.reportProfiles[0] = {
+      ...boundProfile,
+      profile: {
+        ...boundProfile.profile,
+        inputSchema: {
+          type: "object",
+          properties: { incompatible: { type: "boolean" } },
+          required: ["incompatible"],
+        },
+      },
+    };
     const tool = owner.registry.tools[0]!.factory(context);
+    assert(tool && !Array.isArray(tool));
+    expect(tool.parameters).toMatchObject({
+      properties: {
+        report: { required: ["title", "priority", "summary", "nextAction", "evidence"] },
+      },
+    });
     const foreignTool = unrelated.registry.tools[0]!.factory(context);
     assert(tool && !Array.isArray(tool));
     assert(foreignTool && !Array.isArray(foreignTool));

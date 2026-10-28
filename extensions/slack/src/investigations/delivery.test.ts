@@ -5,7 +5,7 @@ import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testi
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInvestigationDelivery, createInvestigationPublication } from "./delivery.js";
-import type { PreparedCompactReport } from "./report-form.js";
+import { oncallReportProfile, preparedFixture } from "./profile.test-support.js";
 import { createInvestigationTurnRegistry } from "./runtime.js";
 import { serializeCatalog, type CompletedInvestigation, type HistoryScope } from "./schema.js";
 import { readCatalog } from "./store.js";
@@ -50,6 +50,7 @@ async function setup() {
     sessionKey: "agent:oncall:slack:channel:c1",
     filePath,
     snapshot: { status: "ready", scope, revision: "r", issues: [] },
+    reportProfile: oncallReportProfile,
     assertCurrent() {},
   });
   registry.stage("one", scope, "Final finding", [update]);
@@ -59,9 +60,9 @@ async function setup() {
   const publication = createInvestigationPublication({ turn, resolvePermalink });
   return { filePath, resolvePermalink, publication, registry, turn };
 }
-function compactReport(): PreparedCompactReport {
+function compactReport() {
   const text = "Canonical compact investigation";
-  return {
+  return preparedFixture({
     form: {
       title: "Variant lookup",
       priority: "medium",
@@ -75,7 +76,7 @@ function compactReport(): PreparedCompactReport {
       attachment: { fallback: text },
       fallbackText: text,
     },
-  };
+  });
 }
 
 function deliveryOwner(
@@ -114,6 +115,7 @@ describe("settled Slack investigation publication", () => {
       expect(deliver).toHaveBeenCalledWith(
         { text: report.text, channelData: { slack: { threadSummaryCard: report.card } } },
         { kind: "final" },
+        true,
       );
       expect((await readCatalog({ filePath, scope })).issues).toHaveLength(1);
       expect(resolvePermalink).toHaveBeenCalledOnce();
@@ -276,7 +278,7 @@ describe("settled Slack investigation publication", () => {
       async (_input: {
         messageId: string;
         text: string;
-        card?: PreparedCompactReport["card"];
+        channelData?: ReplyPayload["channelData"];
       }) => {},
     );
     const owner = createInvestigationDelivery({
@@ -290,8 +292,9 @@ describe("settled Slack investigation publication", () => {
     await owner.deliver({ text: report.text }, { kind: "final" });
     expect(annotateAcceptedFinal).toHaveBeenCalledOnce();
     const annotation = annotateAcceptedFinal.mock.calls[0]![0];
-    expect(annotation.card).toBeDefined();
-    expect(annotation.card?.fallbackText).toBe(annotation.text);
+    expect(annotation.channelData).toMatchObject({
+      slack: { threadSummaryCard: { fallbackText: annotation.text } },
+    });
     expect(annotation.text).toContain("saved 1 finding; skipped 1");
     expect(annotation.text).not.toContain("**Uncertainty:**");
     expect(

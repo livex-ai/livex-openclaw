@@ -145,10 +145,10 @@ and uncertain-origin markers. Opt-outs disable all reaction writes, including
 cleanup. No tool/identity changes are authorized by these instructions.
 
 For a completed bound investigation, fill the compact report object in
-`slack_investigation_record` instead of formatting a prose report. The host owns
+`slack_investigation_record` instead of formatting a prose report. The configured oncall-reporting plugin owns
 Title, Priority, Next action, Summary and Evidence presentation. Summary combines
 finding, impact and relevant uncertainty; Next action includes only confirmed
-ownership or Unassigned. Use unknowns where evidence is missing. The host derives
+ownership or Unassigned. Use unknowns where evidence is missing. The configured profile derives
 optional Known issue/Blocked/Resolved badges from supported facts; priority alone
 cannot establish verified critical impact. This host form supersedes the older
 prose layout in the pinned skill; the skill's investigation/evidence rules remain.

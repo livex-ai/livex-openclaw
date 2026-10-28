@@ -40,8 +40,11 @@ Create a private settings JSON alongside the snapshot with these fields:
 - `pathMap`: every absolute source string mapped to its container destination,
   including unchanged absolute paths as explicit identity mappings.
 
-Use `/opt/oncall/plugins/livex-gcp-readonly` for the plugin,
-`/home/node/.openclaw/workspace` for the persistent instruction workspace, `/opt/oncall-skills/skills`
+Use `/opt/oncall/plugins/livex-gcp-readonly` for the GCP plugin and
+`/opt/oncall/plugins/livex-oncall-reports` for the report plugin. Preserve the
+reviewed `plugins.allow`, report plugin `enabled` setting and
+`config.agentProfiles` selection; map both `plugins.load.paths` entries exactly.
+Use `/home/node/.openclaw/workspace` for the persistent instruction workspace, `/opt/oncall-skills/skills`
 for the shared skills root, `/opt/google-cloud-sdk/bin/gcloud` for `gcloudPath`,
 `/opt/google-cloud-sdk` for paging `sdkRoot`, `/usr/bin/python3` for Python,
 `/home/node/.config/gcloud` for SDK config, and `/repos/<name>` for each checkout.
@@ -85,6 +88,14 @@ docker build -f deploy/gcp-vm/Dockerfile --build-arg FORK_IMAGE \
 Select `codex,slack` when building the base. These opt-in plugins and their
 runtime dependencies are otherwise pruned from the image. Include any additional
 opt-in plugins required by the reviewed configuration.
+
+The wrapper copies both LiveX source plugins to `/opt/oncall/plugins`. The
+report plugin's local `node_modules` links to the same base's `/app` package for
+public OpenClaw SDK exports and `/app/node_modules/zod` for its declared runtime
+dependency. No separate dependency install or version substitution occurs.
+The build checks SDK export resolution and the exact declared Zod version; a
+base missing these assets fails the build. Keep the base and wrapper on the
+same reviewed source commit, including the report-profile SDK and registry.
 
 Never build from the working tree or include `.env`, private settings, generated
 runtime files, or local credentials in the context. Review the archive's tracked
@@ -262,6 +273,9 @@ python3 -B -m unittest discover -s livex-agents/plugins/livex-gcp-readonly -p 't
 sh -n deploy/gcp-vm/start.sh
 ```
 
+The package tests preserve both plugin load paths and the report selection,
+check source entrypoints, and exercise the image's dependency-linkage command
+against temporary base-package fixtures (including incompatible-base failures).
 These checks do not build an image or exercise a VM. Before cutover, verify the
 built image, Linux Codex binary, native plugin loading and skill discovery. Then
 run the metadata read check and an authorized Slack pilot: a new alert selects

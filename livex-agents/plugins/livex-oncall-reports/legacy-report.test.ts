@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildSlackCompleteBlocksFallbackText } from "./blocks-fallback.js";
-import { buildSlackThreadSummaryCard } from "./thread-summary-card.js";
+import { buildSlackCompleteBlocksFallbackText } from "../../../extensions/slack/src/blocks-fallback.js";
+import { buildSlackThreadSummaryCard } from "./legacy-report.js";
 
 const evidenceUrl = "https://docs.slack.dev/reference/methods/chat.postMessage/";
 const report = [

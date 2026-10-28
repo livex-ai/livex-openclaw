@@ -88,6 +88,7 @@ import type {
   MemoryPromptSectionBuilder,
   MemoryPromptSectionParams,
 } from "./registry-contribution-types.js";
+import type { AgentReportProfile } from "./report-profile.types.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
 import type {
@@ -314,6 +315,8 @@ export type OpenClawPluginApi = {
   registerCliBackend: (backend: CliBackendPlugin) => void;
   /** Register plugin-owned prompt/message compatibility text transforms. */
   registerTextTransforms: (transforms: PluginTextTransformRegistration) => void;
+  /** Register pure report formatting selected by trusted agent/channel configuration. */
+  registerReportProfile: (profile: AgentReportProfile) => void;
   /** Register a lightweight config migration that can run before plugin runtime loads. */
   registerConfigMigration: (migrate: PluginConfigMigration) => void;
   /** Register an importer for `openclaw migrate` (migration capability). */

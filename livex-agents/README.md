@@ -193,3 +193,7 @@ Restart only when the operator authorizes it and the CLI requires it.
 Use the [VM deployment package](../deploy/gcp-vm/README.md) for a private container
 runtime, attached Google service account, agent-scoped Codex sign-in, configuration
 checks, and state-aware rollback. Deployment is a separate operator action.
+
+## Agent-owned report formatting
+
+The tracked template loads `plugins/livex-oncall-reports` and explicitly assigns `oncall` to its `compact-v1` profile. This supplies its typed report schema and both current deterministic renderers; unconfigured agents retain ordinary output. Slack delivery and the existing catalog publication lifecycle remain shared. Configuration and local checks are documented in [the reporting plugin](plugins/livex-oncall-reports/README.md). Applying this template to a running operator installation remains a separate reviewed action.
