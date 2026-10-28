@@ -30,6 +30,7 @@ import type {
 import { resolvePluginCapabilityCatalogContext } from "./loader-runtime-load.js";
 import type { PluginManifestContracts } from "./manifest-types.js";
 import type { PluginAgentToolResultMiddlewareRegistration } from "./registry-types.js";
+import type { AgentReportProfile } from "./report-profile.types.js";
 import { createPluginRuntime } from "./runtime/index.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
 import { normalizePluginToolMatcher } from "./tool-hook-matcher.js";
@@ -95,6 +96,7 @@ export function createCapturedPluginRegistration(params?: {
     cliRegistrars: new Array<CapturedPluginCliRegistration>(),
     cliBackends: new Array<CliBackendPlugin>(),
     textTransforms: new Array<PluginTextTransformRegistration>(),
+    reportProfiles: new Array<AgentReportProfile>(),
     codexAppServerExtensionFactories: new Array<CodexAppServerExtensionFactory>(),
     agentToolResultMiddlewares: new Array<PluginAgentToolResultMiddlewareRegistration>(),
     embeddingProviders: new Array<EmbeddingProviderAdapter>(),
@@ -230,6 +232,7 @@ export function createCapturedPluginRegistration(params?: {
         },
         registerCliBackend: captureInto(captured.cliBackends),
         registerTextTransforms: captureInto(captured.textTransforms),
+        registerReportProfile: captureInto(captured.reportProfiles),
         registerEmbeddingProvider: captureInto(captured.embeddingProviders),
         registerSpeechProvider: captureCapabilityInto(captured.speechProviders),
         registerRealtimeTranscriptionProvider: captureCapabilityInto(

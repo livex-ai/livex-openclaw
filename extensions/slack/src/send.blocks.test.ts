@@ -564,3 +564,80 @@ describe("sendMessageSlack identity and target fallback", () => {
     expect(client.chat.postMessage).toHaveBeenCalledOnce();
   });
 });
+
+describe("sendMessageSlack colored attachments", () => {
+  it("rejects an oversized attachment fallback before a partial or truncated post", async () => {
+    const attachments = [
+      {
+        color: "#E3B341",
+        blocks: [
+          {
+            type: "section" as const,
+            text: { type: "plain_text" as const, text: "Concise summary" },
+          },
+        ],
+      },
+    ];
+
+    await expect(send("界".repeat(1400), { attachments })).rejects.toThrow(
+      "Slack attachment fallback must be complete and fit one message",
+    );
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "posts a summary once with complete fallback and receipt (attachment only: %s)",
+    async (attachmentOnly) => {
+      const fallback =
+        "**Finding:** Access denied.\n**Action:** Check installation permissions.\nRecovery unverified.";
+      const attachments = [
+        {
+          color: "#E3B341",
+          fallback,
+          blocks: [
+            {
+              type: "section" as const,
+              text: {
+                type: "plain_text" as const,
+                text: "Next action: Check installation permissions.",
+              },
+            },
+          ],
+        },
+      ];
+      const blocks = attachmentOnly
+        ? []
+        : [
+            {
+              type: "context" as const,
+              elements: [
+                {
+                  type: "plain_text" as const,
+                  text: "Action required · Severity unknown · Investigation partial",
+                },
+              ],
+            },
+          ];
+      const onDeliveryResult = vi.fn();
+
+      const result = await send(fallback, {
+        attachments,
+        blocks,
+        threadTs: "171234.000000",
+        onDeliveryResult,
+      });
+
+      expect(client.chat.postMessage).toHaveBeenCalledExactlyOnceWith({
+        channel: "C123",
+        thread_ts: "171234.000000",
+        text: fallback,
+        ...(attachmentOnly ? {} : { blocks }),
+        attachments,
+        unfurl_links: false,
+      });
+      expect(onDeliveryResult).toHaveBeenCalledTimes(1);
+      expect(result.receipt.threadId).toBe("171234.000000");
+      expect(result.receipt.platformMessageIds).toEqual(["171234.567"]);
+    },
+  );
+});

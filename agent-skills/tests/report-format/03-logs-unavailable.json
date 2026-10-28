@@ -1,0 +1,27 @@
+{
+  "id": "03-logs-unavailable",
+  "version": 1,
+  "request": "Investigate the alert and summarize the result and next action.",
+  "as_of": "2026-10-20T13:30:00Z",
+  "investigation_state": "Independent readable evidence exhausted. Log capability unavailable. No remediation or contact occurred.",
+  "evidence": [
+    {
+      "id": "alert",
+      "event_time": "2026-10-20T13:00:00Z",
+      "available_at": "2026-10-20T13:00:05Z",
+      "retrieved_at": "2026-10-20T13:30:00Z",
+      "facts": "Readable alert SYN-A301 reports three payment-sync errors in 13:00\u201313:10 UTC. It provides no operation IDs or terminal outcomes. Three alert errors are not established unique failed operations.",
+      "verified_url": "https://example.test/alerts/SYN-A301"
+    },
+    {
+      "id": "log-read",
+      "event_time": "2026-10-20T13:30:00Z",
+      "available_at": "2026-10-20T13:30:00Z",
+      "retrieved_at": "2026-10-20T13:30:00Z",
+      "action": "Read payment-sync logs for 2026-10-20 13:00\u201313:30 UTC",
+      "failure": "The logs_query tool binding is unavailable; request could not execute. This is not permission denial and returned no log URL or log records.",
+      "effect": "Cannot determine mechanism, unique affected operations, or recovery.",
+      "smallest_remedy": "Restore the logs_query binding and repeat the same bounded read."
+    }
+  ]
+}

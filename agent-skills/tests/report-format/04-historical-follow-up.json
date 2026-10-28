@@ -1,0 +1,36 @@
+{
+  "id": "04-historical-follow-up",
+  "version": 1,
+  "request": "What changed in your understanding since the earlier answer?",
+  "as_of": "2026-10-21T12:00:00Z",
+  "investigation_state": "Follow-up synthesis completed using newly surfaced historical evidence from native history. No new production read was made. No tool/access blocker. No remediation or contact occurred.",
+  "previous_answer": "At 2026-10-20T09:00:00Z, a timeout was a possible explanation for SYN-OP-401; the cause and current status were unknown.",
+  "evidence": [
+    {
+      "id": "validation",
+      "event_time": "2026-10-19T14:03:00Z",
+      "available_at": "2026-10-19T14:03:05Z",
+      "retrieved_at": "2026-10-20T08:55:00Z",
+      "cached": true,
+      "newly_surfaced_in_followup": true,
+      "facts": "Validator rejected original operation SYN-OP-401 because required field region was absent; the rejection preceded dispatch. This establishes rejection mechanism, not why the input omitted region.",
+      "logsExplorerUrl": "https://example.test/logs/SYN-OP-401?from=1400&to=1410"
+    },
+    {
+      "id": "source",
+      "event_time": "2026-10-19T14:03:00Z",
+      "available_at": "2026-10-20T08:50:00Z",
+      "retrieved_at": "2026-10-20T08:56:00Z",
+      "cached": true,
+      "facts": "Verified source snapshot for the investigated revision confirms region is required before dispatch. Production deployment match for today is unknown.",
+      "verified_url": "https://example.test/source/SYN-REV-401/validator"
+    },
+    {
+      "id": "scope",
+      "event_time": "2026-10-20T08:56:00Z",
+      "available_at": "2026-10-20T08:56:00Z",
+      "retrieved_at": "2026-10-20T08:56:00Z",
+      "facts": "Known impact is one historically rejected operation. There is no outcome evidence after 2026-10-19 14:10 UTC. Input-producer ownership unknown. No current status can be inferred from the cached evidence."
+    }
+  ]
+}

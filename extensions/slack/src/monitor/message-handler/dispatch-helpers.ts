@@ -146,6 +146,9 @@ export function buildSlackEventDeliveryKey(
     text: renderedText || reply.trimmedText,
     mediaUrls: reply.mediaUrls,
     blocks: slackBlocks ?? null,
+    ...(renderPlan.mode === "single" && renderPlan.attachments?.length
+      ? { attachments: renderPlan.attachments }
+      : {}),
   });
 }
 

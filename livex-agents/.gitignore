@@ -1,0 +1,7 @@
+config/local.json
+config/local.*.json
+!config/local.example.json
+generated/
+__pycache__/
+*.pyc
+.DS_Store

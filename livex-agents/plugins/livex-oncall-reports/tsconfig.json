@@ -1,0 +1,16 @@
+{
+  "extends": "../../../tsconfig.extensions.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../.artifacts/tsgo-cache/oncall-reports.tsbuildinfo",
+    "rootDir": "../../.."
+  },
+  "include": [
+    "./**/*.ts",
+    "../../../src/**/*.d.ts",
+    "../../../ui/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "node_modules"
+  ]
+}

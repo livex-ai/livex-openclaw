@@ -1,0 +1,9 @@
+{
+  "name": "@livex/local-gcp-readonly",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test *.test.mjs" },
+  "openclaw": { "extensions": ["./index.ts"] },
+  "peerDependencies": { "openclaw": "2026.10.5" }
+}

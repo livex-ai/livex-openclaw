@@ -30,6 +30,7 @@ const noops = {
   registerGatewayDiscoveryService: () => {},
   registerCliBackend: () => {},
   registerTextTransforms: () => {},
+  registerReportProfile: () => {},
   registerConfigMigration: () => {},
   registerMigrationProvider: () => {},
   registerAutoEnableProbe: () => {},

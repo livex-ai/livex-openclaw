@@ -413,6 +413,107 @@ describe("CLI attempt execution", () => {
     return { sessionStore, runCli };
   }
 
+  it.each([
+    {
+      label: "admitted source",
+      admitted: true,
+      conversationId: "CSOURCE",
+      receiver: "CRECEIVER",
+      replyTo: "CREPLY",
+      expected: "CSOURCE",
+    },
+    {
+      label: "missing admitted source",
+      admitted: true,
+      conversationId: undefined,
+      receiver: "CRECEIVER",
+      replyTo: "CREPLY",
+      expected: undefined,
+    },
+    {
+      label: "null admitted source",
+      admitted: true,
+      conversationId: null,
+      receiver: "CRECEIVER",
+      replyTo: "CREPLY",
+      expected: undefined,
+    },
+    {
+      label: "direct receiver",
+      admitted: false,
+      conversationId: undefined,
+      receiver: "CRECEIVER",
+      replyTo: "CREPLY",
+      expected: "CRECEIVER",
+    },
+    {
+      label: "completion reply target",
+      admitted: false,
+      conversationId: undefined,
+      receiver: undefined,
+      replyTo: "CREPLY",
+      expected: "CREPLY",
+    },
+    {
+      label: "completion destination",
+      admitted: false,
+      conversationId: undefined,
+      receiver: undefined,
+      replyTo: undefined,
+      expected: "CTO",
+    },
+  ])(
+    "preserves requester channel authority in CLI composition: $label",
+    async ({ admitted, conversationId, receiver, replyTo, expected }) => {
+      const sessionKey = "agent:main:slack:channel:requester-context";
+      const sessionEntry = makeSessionEntry("cli-requester-channel");
+      const sessionStore = createSubagentAnnounceSessionStore(sessionKey, sessionEntry, {});
+      await writeSessionStoreSeed(sessionStore);
+      runCliAgentMock.mockResolvedValueOnce(makeCliResult("completion delivered"));
+
+      await runStoredAttempt({
+        providerOverride: "claude-cli",
+        modelOverride: "opus",
+        cfg: { session: { store: storePath } },
+        sessionEntry,
+        sessionKey,
+        sessionStore,
+        messageChannel: "slack",
+        runContext: {
+          accountId: "receiver-account",
+          currentChannelId: receiver,
+          chatId: "CRECEIVER",
+          senderId: "URECEIVER",
+        },
+        opts: {
+          ...createSubagentAnnounceHandoffOptions({
+            sourceReplyDeliveryMode: "message_tool_only",
+            requireExplicitMessageTarget: true,
+            targetSessionKey: sessionKey,
+            targetSessionId: sessionEntry.sessionId,
+            provider: "claude-cli",
+            model: "opus",
+          }),
+          replyTo,
+          to: "CTO",
+          requesterOrigin: admitted
+            ? {
+                sessionKey,
+                messageProvider: "slack",
+                accountId: "source-account",
+                conversationId,
+                senderId: "USOURCE",
+                chatType: "channel",
+              }
+            : undefined,
+        },
+      });
+
+      expect(firstRunCliAgentArg().currentChannelId).toBe(expected);
+      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+    },
+  );
+
   registerCommandCliAdmissionTests({
     runStoredAttempt,
     seedSessionStore,

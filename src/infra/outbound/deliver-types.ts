@@ -1,10 +1,11 @@
-// Delivery result types define the normalized channel send contract plus
-// partial-failure metadata for multi-payload outbound sends.
 import type {
   AuditMessageDeliveryKind,
   AuditMessageFailureStage,
   AuditOutboundMessageSuppressedReasonCode,
 } from "../../audit/audit-event-types.js";
+// Delivery result types define the normalized channel send contract plus
+// partial-failure metadata for multi-payload outbound sends.
+import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { MessageReceipt, MessageReceiptSourceResult } from "../../channels/message/types.js";
 import type { ChannelId } from "../../channels/plugins/channel-id.types.js";
 import type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.types.js";
@@ -132,6 +133,8 @@ export type OutboundPayloadDeliveryOutcome =
       index: number;
       status: "sent";
       results: OutboundDeliveryResult[];
+      /** In-process post-hook/render content. Absence never authorizes using the producer's input. */
+      acceptedPayload?: ReplyPayload;
       /** Identified progress exists, but at least one physical result was discarded. */
       incompleteReason?: "adapter_returned_no_send" | "adapter_returned_no_identity";
       /** Immutable union of reported placement before progress reconciliation/callback mutation. */

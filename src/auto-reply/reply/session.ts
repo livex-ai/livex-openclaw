@@ -5,7 +5,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
-import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { resolveAgentConfig, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { clearAllCliSessions } from "../../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-cleanup.js";
@@ -685,6 +685,13 @@ async function initSessionStateAttemptLocked(
     groupActivation: entry?.groupActivation,
     groupActivationNeedsSystemIntro: entry?.groupActivationNeedsSystemIntro,
   };
+  // Persist defaults as session selections without inheriting a parent's permissions.
+  if (sessionEntry.permissionMode === undefined) {
+    const permissionModeDefault = resolveAgentConfig(cfg, agentId)?.permissionModeDefault;
+    if (permissionModeDefault) {
+      sessionEntry.permissionMode = permissionModeDefault;
+    }
+  }
   const metaPatch = deriveSessionMetaPatch({
     ctx: sessionCtxForState,
     sessionKey,

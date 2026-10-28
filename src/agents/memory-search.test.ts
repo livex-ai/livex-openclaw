@@ -86,6 +86,25 @@ describe("memory search config", () => {
     });
   }
 
+  it.each([
+    { defaults: undefined, override: undefined, expected: true },
+    { defaults: false, override: undefined, expected: false },
+    { defaults: false, override: true, expected: true },
+    { defaults: true, override: false, expected: false },
+  ])(
+    "resolves workspace memory selection with $defaults / $override",
+    ({ defaults, override, expected }) => {
+      const resolved = resolveMemorySearchConfig(
+        searchConfig(
+          { includeWorkspace: defaults, provider: "none" },
+          { includeWorkspace: override },
+        ),
+        "main",
+      );
+      expect(resolved?.includeWorkspace).toBe(expected);
+    },
+  );
+
   it("returns null when disabled", () => {
     const cfg = searchConfig({ enabled: true }, { enabled: false });
     const resolved = resolveMemorySearchConfig(cfg, "main");
