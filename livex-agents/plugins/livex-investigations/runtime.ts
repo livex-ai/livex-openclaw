@@ -44,7 +44,7 @@ export function sameInvestigationScope(left: HistoryScope, right: HistoryScope):
   );
 }
 
-/** Request entries belong to one Slack runtime instance; queued custody retains its own entry. */
+/** Request entries belong to one investigation plugin instance; queued custody retains its own entry. */
 export function createInvestigationTurnRegistry() {
   const entries = new Map<string, { turn: InvestigationTurn; staged?: StagedInvestigation }>();
   let active = true;
@@ -175,7 +175,7 @@ export function createInvestigationTurnRegistry() {
 export type InvestigationTurnRegistry = ReturnType<typeof createInvestigationTurnRegistry>;
 
 const store = createPluginRuntimeStore<InvestigationTurnRegistry>({
-  key: "slack:investigation-turns",
+  key: "livex:investigation-turns",
   errorMessage: "Slack investigation runtime is not initialized",
 });
 export function getInvestigationTurnRegistry(): InvestigationTurnRegistry {

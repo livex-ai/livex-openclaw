@@ -15,6 +15,7 @@ import type {
   PluginRecord,
   PluginTextTransformsRegistration,
 } from "./registry-types.js";
+import type { ReplyTurnProvider } from "./reply-turn.types.js";
 import type { AgentReportProfile } from "./report-profile.types.js";
 import { validateStorageProviderContract } from "./storage-provider-registry.js";
 import type { CliBackendPlugin, ProviderPlugin } from "./types.js";
@@ -248,6 +249,55 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     registry.reportProfiles.push(createRegistration(record, { profile }));
   };
 
+  const registerReplyTurnProvider = (record: PluginRecord, provider: ReplyTurnProvider) => {
+    const validNames = (values: readonly string[]) =>
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every(
+        (value) => typeof value === "string" && value.length > 0 && value === value.trim(),
+      );
+    if (
+      !provider.id?.trim() ||
+      provider.id !== provider.id.trim() ||
+      !validNames(provider.agentIds) ||
+      !validNames(provider.channels) ||
+      typeof provider.prepare !== "function"
+    ) {
+      reportRegistrationError(record, "invalid reply turn provider contract");
+      return;
+    }
+    if (
+      registry.replyTurnProviders.some(
+        (entry) =>
+          entry.provider.id === provider.id ||
+          (entry.provider.agentIds.some((id) => provider.agentIds.includes(id)) &&
+            entry.provider.channels.some((channel) => provider.channels.includes(channel))),
+      )
+    ) {
+      // Keep every claim so the resolver fails closed independently of registration order.
+      reportRegistrationError(record, `reply turn provider already registered: ${provider.id}`);
+    }
+    const instance = getPluginInstance(record);
+    const prepare: ReplyTurnProvider["prepare"] = async (input) => {
+      const turn = await provider.prepare(input);
+      if (turn) {
+        // Each returned factory has its own executable result contract. Data remains data.
+        instance?.admitFactory(turn.lifecycle);
+        instance?.admitFactory(turn.createDelivery, ["deliver", "queuedCorrelation"]);
+      }
+      return turn;
+    };
+    instance?.admitFactory(prepare, [
+      "assertCurrent",
+      "lifecycle",
+      "releaseImmediate",
+      "createDelivery",
+    ]);
+    registry.replyTurnProviders.push(
+      createRegistration(record, { provider: { ...provider, prepare } }),
+    );
+  };
+
   const registerEmbeddingProvider = (record: PluginRecord, adapter: EmbeddingProviderAdapter) => {
     const id = adapter.id.trim();
     if (!id) {
@@ -369,6 +419,7 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     registerCliBackend,
     registerTextTransforms,
     registerReportProfile,
+    registerReplyTurnProvider,
     registerEmbeddingProvider,
     registerWorkerProvider: createContractProviderRegistrar(
       "worker",

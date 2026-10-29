@@ -156,6 +156,31 @@ are cancelled when their runtime is retired. A fork does not write a transcript,
 deliver an answer, fire agent-turn lifecycle hooks, or consume queued injections
 or steering. Missing session context and unsupported harnesses produce errors.
 
+## Reply-turn providers
+
+Use `api.registerReplyTurnProvider` for an optional agent/channel-scoped owner
+that contributes bounded context, tool bindings and accepted-delivery bookkeeping.
+Import its contracts from `openclaw/plugin-sdk/reply-turns`. The channel calls
+`prepareAgentReplyTurn` with authenticated route/session facts, a bounded query,
+cancellation and a live-authority check. Exactly one enabled, loaded provider must
+match; ambiguous claims do not select an owner.
+
+The prepared handle supplies context and serializable tool bindings, plus
+`assertCurrent`, `lifecycle`, `releaseImmediate` and `createDelivery`. Lifecycle
+composition uses the existing turn-adoption contract; delivery uses the existing
+queued-delivery correlation contract. Returned factories and nested callbacks
+retain the exact provider instance, including after an awaited preparation.
+Retained callbacks fail after that instance is retired. Release immediate custody
+on preparation/dispatch failure; deferred work releases through its existing
+settlement owner.
+
+Channels compose delivery with `createReplyTurnDelivery`. Host permalink and
+annotation callbacks are limited to that turn's confirmed accepted receipts;
+source-message IDs cannot be annotated. Plugins receive no raw channel client or
+credentials. A provider may prepare a report and record a confirmed outcome, but
+model completion alone is not delivery evidence. Report formatting can continue
+to use an independently registered pure report profile.
+
 ## Storing runtime references
 
 Synchronous storage compatibility calls retain their synchronous return contract.

@@ -1,7 +1,7 @@
 # Local investigation memory and catalog
 
-This optional capability extends the existing Slack plugin and native memory
-owner. It does not create a second investigator. It is disabled unless an operator
+This optional capability belongs to the LiveX investigations plugin and uses
+the existing Slack transport and native memory owner. It does not create a second investigator. It is disabled unless an operator
 selects the agent explicitly, grants its named catalog tool, and reviews activation.
 Creating a catalog file alone does not enable indexing or Slack access.
 
@@ -19,14 +19,15 @@ ID and Issue signature. Link arrays stay separate; the first verified investigat
 link remains canonical. Last updated uses America/Los_Angeles with an offset and
 changes only for a substantive update. Further observations remain in dated history.
 
-1. Slack admission reads and validates the catalog before the investigator runs.
+1. The investigations plugin reads and validates the catalog during admitted Slack
+   reply-turn preparation, before the investigator runs.
 2. Native keyword memory finds candidates from this file only. The catalog owner
    verifies exact signatures, scope, links and meaningful deltas. Search similarity
    and a missing candidate cannot establish incident identity or complete history.
 3. `slack_investigation_record` provides bounded lookup and stages validated
    per-issue facts with the exact final reply text. It cannot send or write directly.
-4. The Slack delivery owner uses the accepted final message's authenticated
-   permalink, then locks, rereads, merges and atomically replaces the catalog.
+4. Slack confirms the accepted final payload and authenticated permalink. The
+   investigations plugin then locks, rereads, merges and atomically replaces the catalog.
    Progress, partial/uncertain delivery and another turn's final cannot publish.
 
 Timestamp-only recurrence means persistence. Different signatures remain independent.
@@ -45,10 +46,14 @@ this fragment. Replace the example absolute path with the selected agent's actua
 ```json5
 {
   plugins: {
-    // Add memory-core to the existing allow list; retain every current entry.
+    // Add livex-investigations and memory-core to the existing allow list.
+    // Retain all current load paths; add the reviewed investigations plugin path.
     slots: { memory: "memory-core" },
     entries: {
-      slack: { config: { investigationCatalog: { enabled: true, agentId: "oncall" } } },
+      "livex-investigations": {
+        enabled: true,
+        config: { investigationCatalog: { enabled: true, agentId: "oncall" } },
+      },
       "memory-core": { enabled: true, config: { dreaming: { enabled: false } } },
     },
   },
@@ -88,6 +93,10 @@ Bounds are 2 MiB, 2,000 issues and 100 dated entries per issue. Reaching a bound
 is visible and preserves retained data; this feature performs no automatic purge.
 Known credential patterns are rejected using the existing SDK redactor. That is
 not a guarantee that arbitrary prose is safe; record concise sanitized facts only.
+
+Existing installations using `plugins.entries.slack.config.investigationCatalog`
+must use the [source-only discovery and Doctor migration](plugins/livex-investigations/README.md#upgrade-from-the-slack-owned-catalog).
+The catalog bytes, path and tool name do not change.
 
 ## Activation prerequisites and rollback
 

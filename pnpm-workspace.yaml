@@ -4,6 +4,7 @@ packages:
   - packages/*
   - extensions/*
   - livex-agents/plugins/livex-oncall-reports
+  - livex-agents/plugins/livex-investigations
   - examples/*
   - tools/solid-lint
 

@@ -58,6 +58,7 @@ import type {
   ResolvedPluginRuntimeArtifact,
   SessionDiscussionProvider,
 } from "./registry-contribution-types.js";
+import type { ReplyTurnProvider } from "./reply-turn.types.js";
 import type { AgentReportProfile } from "./report-profile.types.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
@@ -389,6 +390,7 @@ export type PluginRegistry = {
   cliBackends: PluginCliBackendRegistration[];
   textTransforms: PluginTextTransformsRegistration[];
   reportProfiles: { pluginId: string; profile: AgentReportProfile }[];
+  replyTurnProviders: { pluginId: string; provider: ReplyTurnProvider }[];
   embeddingProviders: PluginOwnedProviderRegistration<EmbeddingProviderAdapter>[];
   speechProviders: PluginOwnedProviderRegistration<SpeechProviderPlugin>[];
   realtimeTranscriptionProviders: PluginOwnedProviderRegistration<RealtimeTranscriptionProviderPlugin>[];

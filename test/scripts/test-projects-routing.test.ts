@@ -72,6 +72,23 @@ function changedPlans(paths: string[]) {
   return buildVitestRunPlans(["--changed=origin/main"], process.cwd(), () => paths);
 }
 
+it.each(["livex-investigations", "livex-oncall-reports"])(
+  "routes extracted %s tests and changed source through the LiveX project",
+  (plugin) => {
+    const root = `livex-agents/plugins/${plugin}`;
+    expect(buildVitestRunPlans([root])).toEqual([
+      expectedPlan("livex-investigations", [`${root}/**/*.test.ts`]),
+    ]);
+    expect(changedPlans([`${root}/index.ts`])).toEqual([
+      expectedPlan("livex-investigations", [`${root}/**/*.test.ts`]),
+    ]);
+    expect(resolveChangedTestTargetPlan([`${root}/index.ts`])).toEqual({
+      mode: "targets",
+      targets: [root],
+    });
+  },
+);
+
 describe("test-projects args", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 

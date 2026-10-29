@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildSlackCompleteBlocksFallbackText } from "../../../extensions/slack/src/blocks-fallback.js";
+import {
+  prepareSlackReply,
+  resolveSlackReplyDeliveryMessages,
+} from "../../../extensions/slack/src/reply-blocks.js";
 import { buildSlackThreadSummaryCard } from "./legacy-report.js";
 
 const evidenceUrl = "https://docs.slack.dev/reference/methods/chat.postMessage/";
@@ -21,6 +25,40 @@ function visible(card: NonNullable<ReturnType<typeof buildSlackThreadSummaryCard
 }
 
 describe("buildSlackThreadSummaryCard", () => {
+  it("keeps legacy reports visible once with their complete original accessibility text", () => {
+    const card = buildSlackThreadSummaryCard(report)!;
+    const expectedVisible = visible(card);
+    const reply = prepareSlackReply({
+      text: report,
+      channelData: { slack: { threadSummaryCard: card } },
+    });
+    const resolution = reply.resolveDelivery();
+    const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text: report });
+    expect(messages).toHaveLength(1);
+    const preview = reply.resolvePreview();
+    expect(preview.mode).toBe("single");
+    if (preview.mode !== "single") {
+      throw new Error("A complete investigation report must remain one message");
+    }
+    for (const message of [messages[0]!, preview]) {
+      // Slack displays top-level text as body unless top-level blocks are present.
+      const visibleText = [
+        message.blocks?.length
+          ? buildSlackCompleteBlocksFallbackText(message.blocks)
+          : message.text,
+        ...(message.attachments ?? []).map((attachment) =>
+          buildSlackCompleteBlocksFallbackText(attachment.blocks ?? []),
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      expect(visibleText).toBe(expectedVisible);
+      expect(message.text).toBe(report);
+      expect(message.attachments?.[0]?.fallback).toBe(report);
+      expect(message.attachments?.[0]?.color).toBe("#D99A00");
+    }
+  });
+
   it("projects the approved order without changing the canonical fallback", () => {
     const card = buildSlackThreadSummaryCard(report);
     expect(card).not.toBeNull();
@@ -40,10 +78,12 @@ describe("buildSlackThreadSummaryCard", () => {
           "|View evidence> · 2026-10-24 00:00–15:00 UTC · inspected revision 9a61f557.",
       ].join("\n\n"),
     );
-    expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+    expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "⚠️ Action required" }] },
     ]);
-    expect(card?.blocks).toEqual([]);
+    expect(card?.blocks).toEqual([
+      { type: "header", text: { type: "plain_text", text: "Menu access denied" } },
+    ]);
     expect(text).not.toContain("*Owner:*");
     expect(text).not.toContain("*Recovery:*");
     expect(text.match(/View evidence/g) ?? []).toHaveLength(1);
@@ -58,7 +98,7 @@ describe("buildSlackThreadSummaryCard", () => {
       );
     const card = buildSlackThreadSummaryCard(text);
     expect(card?.attachment.color).toBe("#2E8B57");
-    expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+    expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "✅ Reviewed—no new action" }] },
     ]);
     expect(visible(card!)).toContain("has not recovered; customer impact remains unverified");
@@ -75,7 +115,7 @@ describe("buildSlackThreadSummaryCard", () => {
     ].join("\n");
     const card = buildSlackThreadSummaryCard(text);
     expect(card?.attachment.color).toBe("#9CA3AF");
-    expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+    expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "❓ Unclassified" }] },
     ]);
     expect(visible(card!)).toContain("*Impact:* Not separately established in this report.");
@@ -99,7 +139,7 @@ describe("buildSlackThreadSummaryCard", () => {
         verifiedActiveCritical: { basis, evidenceUrl },
       });
       expect(card?.attachment.color).toBe("#D92D20");
-      expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+      expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
         {
           type: "context",
           elements: [{ type: "plain_text", text: "🔴 Critical · Reviewed—no new action" }],
@@ -119,7 +159,7 @@ describe("buildSlackThreadSummaryCard", () => {
       );
     const card = buildSlackThreadSummaryCard(text);
     expect(card?.attachment.color).toBe("#D99A00");
-    expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+    expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "⚠️ Action required" }] },
     ]);
     expect(card?.fallbackText).toBe(text);
@@ -162,7 +202,7 @@ describe("buildSlackThreadSummaryCard", () => {
       "**Owner:** Unassigned.",
     ].join("\n");
     const card = buildSlackThreadSummaryCard(text);
-    expect(card?.attachment.blocks?.slice(1, 2)).toEqual([
+    expect(card?.attachment.blocks?.slice(0, 1)).toEqual([
       { type: "context", elements: [{ type: "plain_text", text: "⚠️ Action required" }] },
     ]);
     expect(card?.fallbackText).toBe(text);

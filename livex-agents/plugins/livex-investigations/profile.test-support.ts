@@ -1,10 +1,14 @@
-import type { PluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { createPluginRecord } from "openclaw/plugin-sdk/plugin-test-runtime";
-import type { PreparedCompactReport } from "../../../../livex-agents/plugins/livex-oncall-reports/compact-report.js";
+import {
+  createPluginRecord,
+  type createEmptyPluginRegistry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
+import type { PreparedCompactReport } from "../livex-oncall-reports/test-api.js";
 import {
   createOncallReportProfile,
   projectCompactReport,
-} from "../../../../livex-agents/plugins/livex-oncall-reports/profile.js";
+} from "../livex-oncall-reports/test-api.js";
+type PluginRegistry = ReturnType<typeof createEmptyPluginRegistry>;
+
 export const oncallReportProfile = createOncallReportProfile(["oncall"]);
 export function withOncallReportProfile(registry: PluginRegistry): PluginRegistry {
   const record = createPluginRecord({ id: "fixture-oncall-reports" });

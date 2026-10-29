@@ -196,4 +196,10 @@ checks, and state-aware rollback. Deployment is a separate operator action.
 
 ## Agent-owned report formatting
 
-The tracked template loads `plugins/livex-oncall-reports` and explicitly assigns `oncall` to its `compact-v1` profile. This supplies its typed report schema and both current deterministic renderers; unconfigured agents retain ordinary output. Slack delivery and the existing catalog publication lifecycle remain shared. Configuration and local checks are documented in [the reporting plugin](plugins/livex-oncall-reports/README.md). Applying this template to a running operator installation remains a separate reviewed action.
+The tracked template loads `plugins/livex-oncall-reports` and explicitly assigns `oncall` to its `compact-v1` profile. This supplies its typed report schema and both current deterministic renderers; unconfigured agents retain ordinary output. The separate `plugins/livex-investigations` plugin owns investigation admission, staged facts, report preparation and catalog publication. Slack retains transport admission and confirmed delivery; unconfigured agents retain ordinary output. Configuration and local checks are documented in [the reporting plugin](plugins/livex-oncall-reports/README.md). Applying this template to a running operator installation remains a separate reviewed action.
+
+## Investigation ownership and existing installations
+
+The tracked profile loads and enables `plugins/livex-investigations` alongside the reporting plugin. This preserves the investigation workflow while leaving the optional catalog disabled until its agent is explicitly selected and its named tool is granted. The catalog path and bytes remain under the native agent state directory.
+
+Existing Slack-owned catalog settings require the [discovery bootstrap and Doctor migration](plugins/livex-investigations/README.md#upgrade-from-the-slack-owned-catalog). The bootstrap only writes a new candidate from an explicit source snapshot; it never reads or changes the running installation. Deployment, live configuration changes and Gateway restarts require separate operator authorization.

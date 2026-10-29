@@ -40,10 +40,14 @@ Create a private settings JSON alongside the snapshot with these fields:
 - `pathMap`: every absolute source string mapped to its container destination,
   including unchanged absolute paths as explicit identity mappings.
 
-Use `/opt/oncall/plugins/livex-gcp-readonly` for the GCP plugin and
-`/opt/oncall/plugins/livex-oncall-reports` for the report plugin. Preserve the
-reviewed `plugins.allow`, report plugin `enabled` setting and
-`config.agentProfiles` selection; map both `plugins.load.paths` entries exactly.
+Use `/opt/oncall/plugins/livex-gcp-readonly` for the GCP plugin,
+`/opt/oncall/plugins/livex-oncall-reports` for the report plugin and
+`/opt/oncall/plugins/livex-investigations` for the investigation owner. Preserve
+the reviewed `plugins.allow`, plugin `enabled` settings, `config.agentProfiles`
+selection and optional `config.investigationCatalog` settings; map every
+`plugins.load.paths` entry exactly. Existing Slack-owned catalog settings require
+the [source-only discovery and Doctor migration](../../livex-agents/plugins/livex-investigations/README.md#upgrade-from-the-slack-owned-catalog)
+before native validation. Image packaging does not enable catalog memory.
 Use `/home/node/.openclaw/workspace` for the persistent instruction workspace, `/opt/oncall-skills/skills`
 for the shared skills root, `/opt/google-cloud-sdk/bin/gcloud` for `gcloudPath`,
 `/opt/google-cloud-sdk` for paging `sdkRoot`, `/usr/bin/python3` for Python,

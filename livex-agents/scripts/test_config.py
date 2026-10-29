@@ -95,6 +95,15 @@ class ConfigurationTests(unittest.TestCase):
                          {"agentProfiles": {"oncall": "compact-v1"}})
         self.assertIn(str(root / "plugins/livex-oncall-reports"), plugins["load"]["paths"])
 
+    def test_investigation_owner_is_loaded_without_enabling_optional_catalog(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        plugins = rendered.get("plugins", {})
+        self.assertIn("livex-investigations", plugins.get("allow", []))
+        self.assertEqual(plugins.get("entries", {}).get("livex-investigations"), {"enabled": True})
+        self.assertIn(str(root / "plugins/livex-investigations"), plugins.get("load", {}).get("paths", []))
+        self.assertNotIn("investigationCatalog", plugins.get("entries", {}).get("slack", {}).get("config", {}))
+
     def test_review_profile_limits_message_actions_and_keeps_compact_native_progress(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")

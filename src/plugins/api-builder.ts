@@ -31,6 +31,7 @@ const noops = {
   registerCliBackend: () => {},
   registerTextTransforms: () => {},
   registerReportProfile: () => {},
+  registerReplyTurnProvider: () => {},
   registerConfigMigration: () => {},
   registerMigrationProvider: () => {},
   registerAutoEnableProbe: () => {},

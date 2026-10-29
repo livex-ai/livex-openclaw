@@ -355,9 +355,13 @@ function renderCompactReport(
     form,
     text,
     card: {
-      blocks: [],
+      // Top-level blocks keep the complete text as fallback instead of a second visible body.
+      blocks: blocks.slice(0, 1),
       // Model priority never grants verified active-critical styling.
-      attachment: { color: form.badge?.kind === "resolved" ? "#2E8B57" : "#9CA3AF", blocks },
+      attachment: {
+        color: form.badge?.kind === "resolved" ? "#2E8B57" : "#9CA3AF",
+        blocks: blocks.slice(1),
+      },
       fallbackText: text,
     },
   };

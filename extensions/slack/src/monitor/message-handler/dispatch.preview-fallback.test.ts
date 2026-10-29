@@ -20,21 +20,20 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { prepareCompactReport } from "../../../../../livex-agents/plugins/livex-oncall-reports/compact-report.js";
-import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
-import { slackSetupPlugin } from "../../channel.setup.js";
 import {
-  preparedFixture,
+  createInvestigationDelivery,
+  getInvestigationTurnRegistry,
   oncallReportProfile,
-  withOncallReportProfile,
-} from "../../investigations/profile.test-support.js";
-import { getInvestigationTurnRegistry } from "../../investigations/runtime.js";
-import {
+  preparedFixture,
+  readCatalog,
   serializeCatalog,
+  withOncallReportProfile,
   type CompletedInvestigation,
   type HistoryScope,
-} from "../../investigations/schema.js";
-import { readCatalog } from "../../investigations/store.js";
+} from "../../../../../livex-agents/plugins/livex-investigations/test-api.js";
+import { prepareCompactReport } from "../../../../../livex-agents/plugins/livex-oncall-reports/test-api.js";
+import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
+import { slackSetupPlugin } from "../../channel.setup.js";
 import type { SlackSendResult } from "../../send.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
 import {
@@ -968,7 +967,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         senderId: "U123",
       };
       const registry = getInvestigationTurnRegistry();
-      prepared.investigationTurn = registry.register({
+      const investigationTurn = registry.register({
         id: "dispatch-catalog",
         reportProfile: oncallReportProfile,
         scope,
@@ -977,6 +976,15 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         snapshot: { status: "ready", scope, revision: "r", issues: [] },
         assertCurrent() {},
       });
+      prepared.replyTurn = {
+        context: "",
+        toolBindings: { slack_investigation: { turnId: "dispatch-catalog" } },
+        reportProfile: oncallReportProfile,
+        assertCurrent: investigationTurn.assertCurrent,
+        lifecycle: investigationTurn.lifecycle,
+        releaseImmediate: investigationTurn.releaseImmediate,
+        createDelivery: (host) => createInvestigationDelivery({ ...host, turn: investigationTurn }),
+      };
       const update: CompletedInvestigation = {
         signature: {
           scope,
@@ -1005,7 +1013,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
           )
         : undefined;
       if (blockOnlyReport && report) {
-        report.channelData = { slack: { blocks: report.card.attachment.blocks } };
+        report.channelData = {
+          slack: { blocks: [...report.card.blocks, ...(report.card.attachment.blocks ?? [])] },
+        };
       }
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];

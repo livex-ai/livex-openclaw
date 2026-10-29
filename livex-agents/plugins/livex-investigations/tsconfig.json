@@ -1,0 +1,17 @@
+{
+  "extends": "../../../tsconfig.extensions.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../.artifacts/tsgo-cache/livex-investigations.tsbuildinfo",
+    "rootDir": "../../.."
+  },
+  "include": [
+    "./**/*.ts",
+    "./**/*.mts",
+    "../../../src/**/*.d.ts",
+    "../../../ui/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "node_modules"
+  ]
+}
