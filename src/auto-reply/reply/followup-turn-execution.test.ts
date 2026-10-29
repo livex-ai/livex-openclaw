@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.state.js";
+import type { TemplateContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult, AgentTurnParams } from "./agent-runner-execution.types.js";
+import { buildEmbeddedRunExecutionParams } from "./agent-runner-utils.js";
 import {
   createFollowupTurnTestTypingController,
   createFollowupTurnTestTurn,
@@ -161,6 +163,59 @@ describe("executeFollowupTurn", () => {
       "gateway",
     );
   });
+
+  it.each([
+    { nativeChannelId: "C_NATIVE", chatId: "C_LEGACY", expectedChatId: "C_NATIVE" },
+    { nativeChannelId: undefined, chatId: "C_LEGACY", expectedChatId: "C_LEGACY" },
+    { nativeChannelId: undefined, chatId: undefined, expectedChatId: undefined },
+  ])(
+    "preserves native=$nativeChannelId legacy=$chatId identity through queued runtime preparation",
+    async ({ nativeChannelId, chatId, expectedChatId }) => {
+      const turn = createTurn();
+      turn.queued.originatingChannel = "slack";
+      turn.queued.originatingChatId = nativeChannelId ?? chatId;
+      turn.queued.run.skipProviderRuntimeHints = true;
+      turn.queued.run.thinkingCatalog = [{ provider: "anthropic", id: "claude", input: ["text"] }];
+      turn.queued.run.toolBindings = {
+        slack_investigation: { turnId: "bound-investigation" },
+      };
+      const buildRuntimeParams = (sessionCtx: TemplateContext) =>
+        buildEmbeddedRunExecutionParams({
+          run: turn.queued.run,
+          replyRoute: turn.queued,
+          sessionCtx,
+          hasRepliedRef: undefined,
+          provider: "anthropic",
+          model: "claude",
+          runId: turn.runId,
+        });
+      const expected = {
+        chatId: expectedChatId,
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        messageThreadId: "thread-1",
+        senderId: "user-1",
+        toolBindings: turn.queued.run.toolBindings,
+      };
+      const direct = await buildRuntimeParams({
+        Provider: "slack",
+        NativeChannelId: nativeChannelId,
+        ChatId: chatId,
+        SenderId: "user-1",
+      });
+      expect(direct).toMatchObject(expected);
+      let queuedRuntime: Awaited<ReturnType<typeof buildRuntimeParams>> | undefined;
+      state.execute.mockImplementation(async (params: AgentTurnParams) => {
+        queuedRuntime = await buildRuntimeParams(params.sessionCtx);
+        return { runId: turn.runId, outcome: { kind: "rejected", payload: { text: "done" } } };
+      });
+
+      await executeTestTurn({ turn });
+
+      expect(state.execute).toHaveBeenCalledOnce();
+      expect(queuedRuntime).toMatchObject(expected);
+    },
+  );
 
   it("normalizes queued route facts into the canonical execution call", async () => {
     const turn = createTurn();
