@@ -287,3 +287,30 @@ run the metadata read check and an authorized Slack pilot: a new alert selects
 read GCP logs, and a follow-up resumes the same investigation after restart.
 Compare routing, streaming, disabled background services, repository pins, model,
 permissions, and instruction/skill hashes with the reviewed source snapshot.
+
+## Upgrade the existing livex-openclaw-dev Gateway
+
+From the deployment branch, pass the full lowercase SHA of a reviewed commit
+available in this checkout. The branch supplies the committed deployment helpers.
+The argument selects the application source to package.
+
+```sh
+bash deploy/gcp-vm/deploy.sh "$(git rev-parse HEAD)"
+```
+
+Use Node 24.16.0, pnpm 12.12.1, Git, shasum, and an authenticated gcloud CLI on
+the operator machine. The identity must have SSH, SCP and sudo access to
+`livex-openclaw-dev` in `ai-mvp-dv/us-central1-a`. Set `DEPLOY_WORK_DIR` to an
+existing writable directory with space for a fresh dependency install, build,
+npm cache and package. The script prints the private build directory.
+
+The VM builds a candidate before interrupting service. Cutover requires an idle,
+healthy Gateway and the same running image observed at startup. It backs up
+stopped state, changes only the image assignment in `release.env`, and verifies
+Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
+instructions retain the VM's reaction and read-only session policies.
+
+Success prints `running_verified`. On cutover failure the helper attempts to
+restore the previous image and reports its readiness. Inspect private receipts
+in `/opt/livex-openclaw/releases/<sha>/` before retrying a failed or interrupted
+deployment. Existing candidates and upload directories block an automatic replay.
