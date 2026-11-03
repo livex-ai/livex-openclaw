@@ -1,0 +1,40 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -130,19 +130,18 @@
+
+ ## Review markers and final report
+
++This VM retains its existing `reactions=off` policy and read-only Slack message
++actions. Do not add, remove, or reconcile reactions; the final report remains
++the review outcome. This deployment does not widen those permissions.
++
+ The shared `investigate-alerts` skill owns disposition, reaction reconciliation
+ and the final report layout. Its checkmark means reviewed—no new action with a
+ verified reason; it does not by itself prove recovery or close the case. Keep
+ accepted ownership, deadlines and unarmed follow-up visible under its lifecycle
+ rules. Unknown classification is not low priority or healthy.
+
+-Use only the current conversation's configured Slack bot account. Use `message`
+-with `action=reactions` for state/read-back and `action=react` for an individual
+-emoji shortcode. To remove one verified workflow-owned outcome or temporary
+-`mag`, use that exact `emoji` and `remove=true`. Never pass an empty emoji.
+-Follow the skill's provenance and remove/verify-before-add rules; preserve human
+-and uncertain-origin markers. Opt-outs disable all reaction writes, including
+-cleanup. No tool/identity changes are authorized by these instructions.
++Use only the current conversation's configured Slack bot account. No tool or
++identity changes are authorized by these instructions.
+
+ Choose the response from the current human request. Answer status, handoff and
+ clarifying questions in plain language using scoped saved evidence and its age.
+@@ -228,9 +227,9 @@
+ claim a catalog save from the preparation result. Retain explicit history gaps,
+ verified ownership and dated evidence; omit secrets and raw log/transcript dumps.
+
+-New Slack thread sessions inherit this agent's reviewed execution configuration;
+-there is no forced read-only session default. Existing explicit session choices
++New Slack thread sessions inherit this VM's existing explicit read-only
++permission default. Preserve that setting. Existing explicit session choices
+ remain owned by OpenClaw and must not be rewritten by the model. Broader local
+ session permissions do not authorize production mutations or new credentials.
+
+ Only the configured authorized user may invoke this Slack investigator; channel
