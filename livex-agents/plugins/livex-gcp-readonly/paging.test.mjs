@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildLogFilter, queryArgs } from "./core.mjs";
+import { transactionMemoryStore } from "./page-lru-test-helpers.mjs";
+import { createPageLedger } from "./page-store.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 
 const config = {
@@ -160,6 +162,49 @@ test("duplicate request reuses receipt without another cloud read", async () => 
   const replay = (await tool.execute("second", query)).details;
   assert.equal(calls, 1);
   assert.equal(replay.reusedEvidence, true);
+});
+
+void test("error profiles have separate receipts and retain their filter through cursor continuation", async () => {
+  const calls = [];
+  const tool = createPagedLogsTool(config, context, () => {}, {
+    ledger: createPageLedger(transactionMemoryStore(), context, config),
+    readPage: async (input, token) => {
+      calls.push({ input, token });
+      return input.errorProfile && !token
+        ? { entries: [], nextPageToken: "text-errors-next" }
+        : { entries: [row(input.errorProfile ? "text-error" : "structured")], nextPageToken: null };
+    },
+  });
+  const scoped = {
+    ...query,
+    mode: "errors",
+    resourceType: "k8s_container",
+    resourceLabels: { namespace_name: "service" },
+  };
+  const plain = (await tool.execute("structured", scoped)).details;
+  const text = (await tool.execute("text", { ...scoped, errorProfile: "tab-delimited" })).details;
+  assert.equal(calls.length, 2);
+  assert.equal(text.reusedEvidence, false);
+  assert.equal(text.windowExhausted, false);
+  assert.notEqual(text.logsExplorerUrl, plain.logsExplorerUrl);
+  assert.equal((await tool.execute("structured-replay", scoped)).details.reusedEvidence, true);
+  const replay = (await tool.execute("text-replay", { ...scoped, errorProfile: "tab-delimited" }))
+    .details;
+  assert.equal(replay.reusedEvidence, true);
+  assert.equal(replay.errorProfile, "tab-delimited");
+  assert.equal(calls.length, 2);
+  await assert.rejects(
+    tool.execute("changed", { cursor: text.nextCursor, errorProfile: "tab-delimited" }),
+    /cursor/i,
+  );
+  const last = (await tool.execute("continued", { cursor: text.nextCursor })).details;
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].input.errorProfile, "tab-delimited");
+  assert.equal(calls[2].token, "text-errors-next");
+  assert.equal(last.logsExplorerUrl, text.logsExplorerUrl);
+  assert.equal(last.errorProfile, "tab-delimited");
+  assert.equal(last.windowExhausted, true);
+  assert.equal(last.entries[0].insertId, "seed-text-error");
 });
 
 test("old cached receipts gain links without a cloud read or stored-history mutation", async () => {

@@ -39,12 +39,23 @@ Use `livex_gcp_logs_read` for production logs. The workspace defines the fixed
 project/caller policy. This skill grants no direct cloud CLI, credentials,
 additional repositories, metrics, or remediation access.
 
-| Evidence available | Next read |
-| --- | --- |
-| Observed IDs and time, missing resource selectors | `mode: "discover"`, ID fields, `start`, `end`; no resource type/labels |
-| Returned resource selectors | `mode: "context"`, observed `resourceType`/`resourceLabels`, window, and necessary ID constraints |
-| Specific error-level question after context | `mode: "errors"` in the verified scope |
-| Continuation returned, including an empty page | Pass `{ "cursor": "<returned nextCursor>" }` alone |
+| Evidence available                                | Next read                                                                                         |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Observed IDs and time, missing resource selectors | `mode: "discover"`, ID fields, `start`, `end`; no resource type/labels                            |
+| Returned resource selectors                       | `mode: "context"`, observed `resourceType`/`resourceLabels`, window, and necessary ID constraints |
+| Specific error-level question after context       | `mode: "errors"` in the verified scope                                                            |
+| Continuation returned, including an empty page    | Pass `{ "cursor": "<returned nextCursor>" }` alone                                                |
+
+Match the alert's error definition. When its metric counts tab-delimited
+application levels `ERROR`, `DPANIC`, `PANIC`, or `FATAL`, use `mode: "errors"`
+with `errorProfile: "tab-delimited"` in the observed resource scope and full
+alert window. This fixed profile also includes structured payloads with Cloud
+severity at least ERROR; text matches can have Cloud severity INFO. Omit the
+profile for ordinary severity/structured-level errors. If the tool does not
+advertise this profile, or the alert uses another text format, use all-level
+`context` reads with observed seeds where available and track paging coverage.
+An empty ordinary error query does not rule out application text errors. Supply
+no raw filter or custom regex; keep cursor continuations cursor-only.
 
 Discovery requires one or more of `conversationId`, `jobId`, `roomId`, `traceId`,
 `insertId`, or `insertIds`. It searches Cloud Run (`cloud_run_revision`) and GKE

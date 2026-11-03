@@ -359,7 +359,12 @@ function renderCompactReport(
       blocks: blocks.slice(0, 1),
       // Model priority never grants verified active-critical styling.
       attachment: {
-        color: form.badge?.kind === "resolved" ? "#2E8B57" : "#9CA3AF",
+        color:
+          form.badge?.kind === "resolved"
+            ? "#2E8B57"
+            : form.priority === "medium"
+              ? "#D99A00"
+              : "#9CA3AF",
         blocks: blocks.slice(1),
       },
       fallbackText: text,

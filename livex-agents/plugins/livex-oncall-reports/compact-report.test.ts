@@ -60,39 +60,48 @@ function visible(card: SlackThreadSummaryCard): string {
 }
 
 describe("typed compact investigation report", () => {
-  it("delivers one visible report with complete accessibility text in sends and preview edits", async () => {
-    const render = await prepare();
-    const prepared = render(form(), [update()], [finding()]);
-    const reply = prepareSlackReply({
-      text: prepared.text,
-      channelData: { slack: { threadSummaryCard: prepared.card } },
-    });
-    const resolution = reply.resolveDelivery();
-    const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text: prepared.text });
-    expect(messages).toHaveLength(1);
-    const preview = reply.resolvePreview();
-    expect(preview.mode).toBe("single");
-    if (preview.mode !== "single") {
-      throw new Error("A complete investigation report must remain one message");
-    }
-    for (const message of [messages[0]!, preview]) {
-      // Slack displays top-level text as body unless top-level blocks are present.
-      const visibleText = [
-        message.blocks?.length
-          ? buildSlackCompleteBlocksFallbackText(message.blocks)
-          : message.text,
-        ...(message.attachments ?? []).map((attachment) =>
-          buildSlackCompleteBlocksFallbackText(attachment.blocks ?? []),
-        ),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      expect(visibleText).toBe(prepared.text);
-      expect(message.text).toBe(prepared.text);
-      expect(message.attachments?.[0]?.fallback).toBe(prepared.text);
-      expect(message.attachments?.[0]?.color).toBe("#9CA3AF");
-    }
-  });
+  it.each([
+    ["unknown", "#9CA3AF"],
+    ["low", "#9CA3AF"],
+    ["medium", "#D99A00"],
+    ["high", "#9CA3AF"],
+    ["critical", "#9CA3AF"],
+  ])(
+    "delivers %s reports with the expected accent in sends and preview edits",
+    async (priority, color) => {
+      const render = await prepare();
+      const prepared = render({ ...form(), priority }, [update()], [finding()]);
+      const reply = prepareSlackReply({
+        text: prepared.text,
+        channelData: { slack: { threadSummaryCard: prepared.card } },
+      });
+      const resolution = reply.resolveDelivery();
+      const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text: prepared.text });
+      expect(messages).toHaveLength(1);
+      const preview = reply.resolvePreview();
+      expect(preview.mode).toBe("single");
+      if (preview.mode !== "single") {
+        throw new Error("A complete investigation report must remain one message");
+      }
+      for (const message of [messages[0]!, preview]) {
+        // Slack displays top-level text as body unless top-level blocks are present.
+        const visibleText = [
+          message.blocks?.length
+            ? buildSlackCompleteBlocksFallbackText(message.blocks)
+            : message.text,
+          ...(message.attachments ?? []).map((attachment) =>
+            buildSlackCompleteBlocksFallbackText(attachment.blocks ?? []),
+          ),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        expect(visibleText).toBe(prepared.text);
+        expect(message.text).toBe(prepared.text);
+        expect(message.attachments?.[0]?.fallback).toBe(prepared.text);
+        expect(message.attachments?.[0]?.color).toBe(color);
+      }
+    },
+  );
 
   it("renders the five approved fields in action-first order with matching complete fallback", async () => {
     const render = await prepare();
@@ -236,7 +245,11 @@ describe("typed compact investigation report", () => {
   it("requires cited typed recovery evidence before rendering a resolved badge", async () => {
     const render = await prepare();
     const value = update();
-    const resolved = { ...form(), badge: { kind: "resolved", evidenceUrl: logUrl } };
+    const resolved = {
+      ...form(),
+      priority: "medium",
+      badge: { kind: "resolved", evidenceUrl: logUrl },
+    };
     expect(() => render(resolved, [value], [finding()])).toThrow(/recover/i);
     const recovered = update({
       facts: { ...value.facts, recovery: "No failures in the complete checked window." },
@@ -252,6 +265,7 @@ describe("typed compact investigation report", () => {
       ),
     ).toThrow(/evidence/i);
     expect(render(resolved, [recovered], [finding()]).text).toContain("Resolved");
+    expect(render(resolved, [recovered], [finding()]).card.attachment.color).toBe("#2E8B57");
   });
 
   it.each([

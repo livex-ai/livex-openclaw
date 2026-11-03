@@ -39,12 +39,12 @@
     {
       "name": "debug",
       "path": "skills/debug/SKILL.md",
-      "sha256": "f22c77eed85189317c14102ef0615ea3fc7d8187b943ed6050aef0e2e6f4bf96",
+      "sha256": "d29da1264ec701126ce5455ca27e57a222d969ccb66806be09afd9b652b0779c",
       "importedSha256": "f22c77eed85189317c14102ef0615ea3fc7d8187b943ed6050aef0e2e6f4bf96",
       "adaptation": {
         "scope": "shared-source",
-        "updatedOn": "2026-10-21",
-        "purpose": "Full-window log discovery, pagination, evidence reuse, and pinned repository reads under the configured caller and project rules."
+        "updatedOn": "2026-11-03",
+        "purpose": "Full-window log discovery, fixed tab-delimited application-error selection, pagination, evidence reuse, and pinned repository reads under the configured caller and project rules."
       },
       "source": "Repository-owned adaptation of the local investigation workflow",
       "files": []
