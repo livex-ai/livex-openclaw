@@ -7,15 +7,22 @@ import { projectInvestigationIssue } from "./lookup.js";
 import { compareFindings } from "./matching.js";
 import { reportContext } from "./report-context.js";
 import { sameInvestigationScope, tryGetInvestigationTurnRegistry } from "./runtime.js";
-import { parseCompletedInvestigations } from "./schema.js";
+import { assertNoSensitiveContent, parseCompletedInvestigations } from "./schema.js";
 import { readCatalog } from "./store.js";
+import { measuredTrend } from "./trend-evidence.js";
+import { trendSummary } from "./trend.js";
 
 const boundedText = { type: "string", minLength: 1, maxLength: 8000 } as const;
 const links = { type: "array", maxItems: 30, items: { type: "string", maxLength: 4096 } } as const;
 const parameters = {
   type: "object",
   properties: {
-    action: { type: "string", enum: ["lookup", "prepare_update", "amend_current_report"] },
+    action: {
+      type: "string",
+      enum: ["lookup", "prepare_update", "amend_current_report", "begin_trend", "record_trend"],
+    },
+    earlierEvidenceUrl: { type: "string", maxLength: 2048 },
+    laterEvidenceUrl: { type: "string", maxLength: 2048 },
     changes: {
       type: "object",
       additionalProperties: false,
@@ -128,7 +135,7 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
         report: profile?.inputSchema ?? parameters.properties.report,
       },
     },
-    async execute(_toolCallId, input, signal) {
+    async execute(toolCallId, input, signal) {
       ctx.assertInvocationCurrent();
       signal?.throwIfAborted();
       const binding = asOptionalRecord(ctx.toolBindings?.slack_investigation);
@@ -188,6 +195,66 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
           truncated: issues.length < selected.length,
           totalIssues: snapshot.issues.length,
         });
+      }
+      if (args?.action === "begin_trend" || args?.action === "record_trend") {
+        registry.clearStaged(turnId);
+        const request = turn.amendmentRequest;
+        if (
+          !request ||
+          turn.snapshot.status !== "ready" ||
+          !Array.isArray(args.issueIds) ||
+          args.issueIds.length !== 1
+        )
+          throw new Error(
+            "Trend memory requires one existing scoped case and an authorized thread request",
+          );
+        const [issueId] = args.issueIds;
+        const issue = turn.snapshot.issues.find((item) => item.issueId === issueId);
+        if (!issue) throw new Error("Case not found in this turn");
+        if (args.action === "begin_trend") {
+          turn.trendCapture = {
+            issueId: issue.issueId,
+            signature: issue.signature,
+            startCall: toolCallId,
+            pages: new Map(),
+          };
+          return jsonResult({
+            status: "ready",
+            instruction:
+              "Use livex_gcp_logs_read errors for two disjoint equal-duration UTC windows on the same service and selectors. Exhaust every cursor. Then record_trend with the two tool-returned evidence URLs and this issue ID.",
+          });
+        }
+        if (turn.trendCapture?.issueId !== issue.issueId)
+          throw new Error("Select this case with begin_trend before collecting evidence");
+        const trend = measuredTrend(
+          turn.trendCapture,
+          args.earlierEvidenceUrl,
+          args.laterEvidenceUrl,
+        );
+        assertNoSensitiveContent(trend);
+        const comparison =
+          trendSummary(trend) + " Request volume is needed to compare failure rates.";
+        const evidence =
+          "<" +
+          trend.earlier.evidenceUrl +
+          "|Earlier evidence> · <" +
+          trend.later.evidenceUrl +
+          "|Later evidence>";
+        const finalText =
+          Buffer.byteLength(comparison + " " + evidence) <= 4000
+            ? comparison + " " + evidence
+            : comparison;
+        const reportUrls = [
+          ...new Set(issue.whatWeDidLast.filter((h) => !h.trend).map((h) => h.reportUrl)),
+        ];
+        registry.stageTrend(turnId, {
+          issueId: issue.issueId,
+          trend,
+          finalText,
+          requestId: request.messageId,
+          reportUrls,
+        });
+        return jsonResult({ status: "staged", finalText });
       }
       if (args?.action === "amend_current_report") {
         registry.clearStaged(turnId);

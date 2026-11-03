@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { z } from "zod";
+import { trendSchema, type Trend } from "./trend.js";
 
 export type HistoryScope = {
   agentId: string;
@@ -44,6 +45,8 @@ export type InvestigationHistoryEntry = {
   completedAt: string;
   summary: string;
   kind: FindingKind;
+  trend?: Trend;
+  trendRequest?: string;
   facts: InvestigationFacts;
   evidenceUrls: string[];
   reportUrl: string;
@@ -145,6 +148,11 @@ const historyEntrySchema: z.ZodType<InvestigationHistoryEntry> = z
     completedAt: shortText,
     summary: text,
     kind: z.enum(["new", "known-persistence", "changed", "uncertain"]),
+    trend: trendSchema.optional(),
+    trendRequest: z
+      .string()
+      .regex(/^\d{10}\.\d{6}$/)
+      .optional(),
     facts: factsSchema,
     evidenceUrls: links,
     reportUrl: httpsUrl,

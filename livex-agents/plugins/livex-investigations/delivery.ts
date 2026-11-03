@@ -15,7 +15,7 @@ import type { ReplyTurnDeliveryHost } from "openclaw/plugin-sdk/reply-turns";
 import { applyAmendment, isAmendmentFinal } from "./amendment-delivery.js";
 import { reportContext } from "./report-context.js";
 import type { InvestigationTurn } from "./runtime.js";
-import { commitInvestigations } from "./store.js";
+import { appendTrend, commitInvestigations } from "./store.js";
 
 function isInvestigationFinal(payload: ReplyPayload, kind: "tool" | "block" | "final"): boolean {
   return (
@@ -40,6 +40,7 @@ export type InvestigationPublicationResult =
 /** Catalog publication follows confirmed transport settlement; model completion alone is insufficient. */
 export function createInvestigationPublication(params: {
   turn: InvestigationTurn;
+  verifyTrendSource?: ReplyTurnDeliveryHost["verifyTrendSource"];
   resolvePermalink: (messageId: string) => Promise<string>;
 }) {
   let recorded = false;
@@ -88,6 +89,30 @@ export function createInvestigationPublication(params: {
         ) {
           return { status: "failed", reason: "Slack returned an invalid investigation permalink" };
         }
+        if (prepared.trend) {
+          const sourceReport = await params.verifyTrendSource?.(
+            prepared.trend.reportUrls,
+            messageId,
+            reportUrl,
+            prepared.finalText,
+          );
+          if (!sourceReport)
+            return {
+              status: "failed",
+              reason:
+                "Trend history not saved: the delivered answer or prior report could not be verified in this thread",
+            };
+          await appendTrend({
+            filePath: params.turn.filePath,
+            scope: params.turn.scope,
+            observed: prepared.trend,
+            reportUrl,
+            sourceReport,
+            assertCurrent: params.turn.assertCurrent,
+          });
+          recorded = true;
+          return { status: "recorded" };
+        }
         const result = await commitInvestigations({
           filePath: params.turn.filePath,
           scope: params.turn.scope,
@@ -132,6 +157,7 @@ export function createInvestigationPublication(params: {
 /** Channel wiring stays in dispatch; this owner preserves catalog transport and bookkeeping policy. */
 export function createInvestigationDelivery(params: {
   turn?: InvestigationTurn;
+  verifyTrendSource?: ReplyTurnDeliveryHost["verifyTrendSource"];
   amendOwnReport?: ReplyTurnDeliveryHost["amendOwnReport"];
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
@@ -151,6 +177,7 @@ export function createInvestigationDelivery(params: {
   const investigationPublication = investigationTurn
     ? createInvestigationPublication({
         turn: investigationTurn,
+        verifyTrendSource: params.verifyTrendSource,
         resolvePermalink: params.resolvePermalink,
       })
     : undefined;
@@ -200,6 +227,7 @@ export function createInvestigationDelivery(params: {
       return;
     }
     params.reportError(publication.reason ?? "Investigation catalog publication failed");
+    if (investigationTurn.matchFinal(payload.text)?.trend) return;
     let settled = result;
     try {
       if (result.finalization) {
@@ -237,6 +265,7 @@ export function createInvestigationDelivery(params: {
             reportContext(prepared.updates, []),
           )
         : undefined;
+
       await params.annotateAcceptedFinal({
         messageId,
         text: report?.text ?? addHistoryWarning(payload.text, warning),

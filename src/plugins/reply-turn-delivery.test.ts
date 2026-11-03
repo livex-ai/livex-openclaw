@@ -11,6 +11,7 @@ function fixture(
   const queued = vi.fn();
   const host: ReplyTurnDeliveryHost = {
     sourceMessageIds: ["alert", "root"],
+    verifyTrendSource: vi.fn(async () => "case-report"),
     resolvePermalink: vi.fn(async (id: string) => "https://slack.example/" + id),
     annotateAcceptedFinal: vi.fn(async () => {}),
     reportError: vi.fn(),
@@ -89,6 +90,18 @@ describe("reply turn accepted transport authority", () => {
     expect(() => stillCurrent!()).toThrow("closed");
   });
 
+  it("verifies trend sources only for the active turn's accepted answer", async () => {
+    const f = fixture();
+    const verify = (id: string) =>
+      f.transport().verifyTrendSource!(["case-report"], id, "answer-link", "comparison");
+    await expect(verify("unaccepted")).rejects.toThrow();
+    await f.delivery.deliver({ text: "comparison" }, { kind: "final" });
+    expect(await verify("final")).toBe("case-report");
+    await expect(verify("root")).rejects.toThrow();
+    f.turn.releaseImmediate();
+    await expect(verify("final")).rejects.toThrow();
+    expect(f.host.verifyTrendSource).toHaveBeenCalledTimes(1);
+  });
   it("accepts only this turn's actual final receipt and never source or arbitrary IDs", async () => {
     const f = fixture();
     await expect(f.transport().resolvePermalink("final")).rejects.toThrow(/own accepted final/);

@@ -24,6 +24,7 @@ import {
   type CompletedInvestigation,
   type HistoryScope,
 } from "./schema.js";
+import { trendSummary, type StagedTrend } from "./trend.js";
 
 export type CommitInvestigationsResult = {
   status: "committed" | "unchanged" | Exclude<CatalogStatus, "ready">;
@@ -386,7 +387,6 @@ export async function editCatalogReport(params: {
         issue.waitingOn = facts.nextAction;
       const completedAt = pacificDate(new Date());
       issue.whatWeDidLast.push({
-        ...last,
         facts,
         evidenceUrls: [...new Set([...last.evidenceUrls, receipt])],
         completedAt,
@@ -423,5 +423,66 @@ export async function editCatalogReport(params: {
     } finally {
       await lock.release();
     }
+  }
+}
+
+/** Append to the current record under the same writer locks as reports and amendments. */
+export async function appendTrend(params: {
+  filePath: string;
+  scope: HistoryScope;
+  observed: StagedTrend;
+  reportUrl: string;
+  sourceReport: string;
+  assertCurrent: () => void;
+}) {
+  const { filePath, scope, observed, reportUrl, sourceReport, assertCurrent } = params;
+  const caseLock = await lockCase(filePath, observed.issueId);
+  try {
+    const writer = await acquireFileLock(filePath, catalogLockOptions);
+    try {
+      const doc = await readDocument(filePath);
+      assertCurrent();
+      const issue = doc.issues.find(
+        (i) => i.issueId === observed.issueId && scopeMatches(i.signature.scope, scope),
+      );
+      if (
+        doc.status !== "ready" ||
+        !issue ||
+        !issue.whatWeDidLast.some((h) => !h.trend && h.reportUrl === sourceReport)
+      )
+        throw new Error("Trend case unavailable");
+      if (
+        doc.issues.some(
+          (other) =>
+            other !== issue &&
+            scopeMatches(other.signature.scope, scope) &&
+            other.whatWeDidLast.some((h) => h.trendRequest === observed.requestId),
+        )
+      )
+        throw new Error("Request already recorded for another case");
+      const prior = issue.whatWeDidLast.find((h) => h.trendRequest === observed.requestId);
+      if (prior && JSON.stringify(prior.trend) !== JSON.stringify(observed.trend))
+        throw new Error("Conflicting trend replay");
+      if (prior) return;
+      const completedAt = pacificDate(new Date());
+      issue.whatWeDidLast.push({
+        completedAt,
+        summary: trendSummary(observed.trend),
+        kind: "changed",
+        facts: issue.whatWeDidLast.at(-1)!.facts,
+        reportUrl,
+        trend: observed.trend,
+        trendRequest: observed.requestId,
+        evidenceUrls: [
+          ...new Set([observed.trend.earlier.evidenceUrl, observed.trend.later.evidenceUrl]),
+        ],
+      });
+      issue.lastUpdated = completedAt;
+      await saveCatalog(filePath, serializeCatalog(doc.issues), assertCurrent);
+    } finally {
+      await writer.release();
+    }
+  } finally {
+    await caseLock.release();
   }
 }

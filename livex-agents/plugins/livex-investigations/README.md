@@ -58,3 +58,20 @@ records of the verified change. An ambiguous target, stale case, or conflicting
 replay cannot authorize an edit. Existing catalogs remain readable. Before
 downgrading to a build without the optional priority fact, retain a compatible
 catalog backup.
+
+### Remember a trend comparison
+
+In a bound case thread, a trend question can get one plain reply and a dated
+observation in the existing case. Begin the comparison for that issue, then
+exhaust the authorized errors-mode log queries for two disjoint, equal-duration
+UTC windows. The plugin counts projected entries that contain the saved
+operation and error on the matching service, using complete pages from the
+same run and filter. An unsupported selector, incomplete read, or missing
+case association leaves the comparison unsaved. Counts describe matching
+log entries. They do not measure failed customers, rate or recovery.
+
+After verified delivery the catalog appends both windows, counts, evidence
+links and retrieval times. Scoped lookup exposes the most recent measured
+window even after other case updates. No new investigation report or case is
+created. Retain a catalog backup before a downgrade to a reader that predates
+trend history.

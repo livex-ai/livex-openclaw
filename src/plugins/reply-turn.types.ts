@@ -38,6 +38,12 @@ export type ReplyTurnDeliveryHost = {
     queuedReceipt?: { messageId: string; text: string },
     assertAdmission?: () => void,
   ) => Promise<string>;
+  verifyTrendSource?: (
+    reportUrls: readonly string[],
+    acceptedId: string,
+    answerLink: string,
+    finalText: string,
+  ) => Promise<string | undefined>;
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
   annotateAcceptedFinal: (input: {

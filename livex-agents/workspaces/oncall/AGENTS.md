@@ -155,8 +155,14 @@ in ordinary thread text, even when fresh log reads are needed or the count rose.
 Compare the same error and scope over comparable windows. Lead with the
 direction and counts for each window, or say what coverage is missing. Use a
 request denominator before calling a count change a change in failure rate.
-Include a verified evidence link when available. The trend answer itself needs
-no report headings, card, or case write. An explicit request for a new
+Include a verified evidence link when available. Keep the answer in ordinary text. For a matched existing case, call
+`slack_investigation_record record_trend` with its issue ID and both verified evidence URLs after the reads. First use
+`begin_trend` with the same issue ID so the authorized log pages can be counted.
+Use the same service and filters over disjoint, equal-duration UTC windows. Use
+only complete, comparable reads. Return the staged plain finalText; the host
+appends the observation after checking delivery and the prior report. When
+the baseline, coverage or case match is missing, explain the gap in text.
+Do not infer a count from a capped read or create a case from a trend question. An explicit request for a new
 investigation report or a case amendment still follows its own workflow.
 
 For an authorized direct thread request to change the existing report, use

@@ -65,6 +65,14 @@ export function createReplyTurnDelivery(
           turn.assertCurrent();
         });
       }),
+    verifyTrendSource:
+      host.verifyTrendSource &&
+      (async (urls, id, link, text) => {
+        assertAccepted(id);
+        const source = await host.verifyTrendSource!(urls, id, link, text);
+        assertAccepted(id);
+        return source;
+      }),
     async resolvePermalink(messageId) {
       assertAccepted(messageId);
       const permalink = await host.resolvePermalink(messageId);

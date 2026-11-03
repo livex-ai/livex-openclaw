@@ -38,6 +38,7 @@ import {
   createSlackQueuedFailureNoticePolicy,
 } from "./failure-notice.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
+import { createTrendSourceVerifier, createReportPermalinkResolver } from "./trend-source.js";
 import type { PreparedSlackMessage } from "./types.js";
 
 export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessage) {
@@ -448,19 +449,9 @@ async function dispatchSlackMessageWithSetup(
   };
   const replyTurnDelivery = createReplyTurnDelivery(prepared.replyTurn, {
     amendOwnReport: createReportEditor(setup),
+    verifyTrendSource: createTrendSourceVerifier(prepared, slackClient),
     sourceMessageIds: [message.ts, message.thread_ts],
-    resolvePermalink: async (messageId) => {
-      prepared.replyTurn?.assertCurrent();
-      const response = await slackClient.chat.getPermalink({
-        channel: message.channel,
-        message_ts: messageId,
-      });
-      prepared.replyTurn?.assertCurrent();
-      if (!response.ok || !response.permalink) {
-        throw new Error("Slack reply permalink unavailable");
-      }
-      return response.permalink;
-    },
+    resolvePermalink: createReportPermalinkResolver(prepared, slackClient),
     annotateAcceptedFinal: async ({ messageId, text, channelData }) => {
       const projection = channelData
         ? resolveSlackReplyRenderPlan({ text, channelData })
