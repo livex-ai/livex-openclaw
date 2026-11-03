@@ -1,5 +1,6 @@
 """Validate immutable release identifiers before using them in paths or selectors."""
 
+import json
 import re
 
 
@@ -35,3 +36,34 @@ def verify_base_checkpoint(receipts, command, image_id, log):
         log,
     ):
         raise ValueError("Base image ID does not match the recorded export")
+
+
+def concurrency_limit(value):
+    if type(value) is not int or value < 1:
+        raise ValueError(
+            "Expected a positive integer for agents.defaults.maxConcurrent"
+        )
+    return value
+
+
+def with_concurrency(content, target):
+    """Overlay the one Git-owned field onto the installed VM JSON."""
+    concurrency_limit(target)
+
+    def unique_object(pairs):
+        obj = dict(pairs)
+        if len(obj) != len(pairs):
+            raise ValueError("Ambiguous duplicate keys in VM config")
+        return obj
+
+    config = json.loads(content, object_pairs_hook=unique_object)
+    defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+    if (
+        type(defaults.get("maxConcurrent")) is int
+        and defaults["maxConcurrent"] == target
+    ):
+        return content
+    defaults["maxConcurrent"] = target
+    return (
+        json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    ).encode()

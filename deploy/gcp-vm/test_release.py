@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from activate_image import activate
-from release_inputs import release_arguments, select_image
+from release_inputs import release_arguments, select_image, with_concurrency
 
 SHA = "a" * 40
 OLD = "sha256:" + "b" * 64
@@ -14,6 +14,19 @@ NEW = "sha256:" + "c" * 64
 
 
 class ReleaseTest(unittest.TestCase):
+    def test_concurrency_overlay_is_narrow_and_idempotent(self):
+        same = b'{ "agents": {"defaults": {"maxConcurrent":5}}, "other": 123 }'
+        self.assertEqual(with_concurrency(same, 5), same)
+        self.assertEqual(
+            json.loads(with_concurrency(b'{"other":123}', 3)),
+            {"other": 123, "agents": {"defaults": {"maxConcurrent": 3}}},
+        )
+        for invalid in (True, "5", 0, -1, None):
+            with self.assertRaises(ValueError):
+                with_concurrency(same, invalid)
+        with self.assertRaises(ValueError):
+            with_concurrency(b'{"duplicate":1,"duplicate":2}', 5)
+
     def test_rejects_ref_or_tag(self):
         for args in (["main", OLD], [SHA, "latest"]):
             with self.assertRaises(ValueError):
@@ -35,14 +48,20 @@ class ReleaseTest(unittest.TestCase):
             release = root / "releases" / SHA
             release.mkdir(parents=True)
             (release / "image-receipt.json").write_text(
-                json.dumps({"source": SHA, "previousImage": OLD, "image": NEW})
+                json.dumps(
+                    {
+                        "source": SHA,
+                        "previousImage": OLD,
+                        "image": NEW,
+                        "maxConcurrent": 7,
+                    }
+                )
             )
             (root / "backups").mkdir()
             (root / "gcloud").mkdir()
             (root / "state/workspace").mkdir(parents=True)
             protected = [
                 "state/workspace/AGENTS.md",
-                "state/openclaw.json",
                 "openclaw.sh",
                 "start-gateway.sh",
                 "runtime.env",
@@ -50,6 +69,15 @@ class ReleaseTest(unittest.TestCase):
             ]
             for name in protected:
                 (root / name).write_text("existing operator policy")
+            config = root / "state/openclaw.json"
+            original = {
+                "agents": {
+                    "defaults": {"maxConcurrent": 1, "permissionMode": "read-only"}
+                },
+                "slack": {"reactions": "off"},
+            }
+            original_bytes = json.dumps(original).encode()
+            config.write_bytes(original_bytes)
             selector = root / "release.env"
             selector.write_text(f"OPENCLAW_IMAGE={OLD}\nREPOS_DIR=/repos\n")
             old_content = selector.read_bytes()
@@ -83,6 +111,20 @@ class ReleaseTest(unittest.TestCase):
                                 },
                             }
                         ]
+                    )
+                elif "diagnostics.lanes" in cmd:
+                    actual = json.loads(config.read_bytes())["agents"]["defaults"][
+                        "maxConcurrent"
+                    ]
+                    output = json.dumps(
+                        {
+                            "lanes": [
+                                {
+                                    "lane": "main",
+                                    "maxConcurrent": 1 if failure == "lane" else actual,
+                                }
+                            ]
+                        }
                     )
                 elif "sessions.list" in cmd:
                     count = int(failure == "busy")
@@ -134,6 +176,11 @@ class ReleaseTest(unittest.TestCase):
                         activate(root, SHA, OLD)
                 else:
                     activate(root, SHA, OLD)
+            if failure:
+                self.assertEqual(config.read_bytes(), original_bytes)
+            else:
+                original["agents"]["defaults"]["maxConcurrent"] = 7
+                self.assertEqual(json.loads(config.read_bytes()), original)
             expected = OLD if failure else NEW
             self.assertEqual(state, {"image": expected, "running": True})
             self.assertEqual(
@@ -151,7 +198,7 @@ class ReleaseTest(unittest.TestCase):
                 )
 
     def test_cutover_and_recovery(self):
-        for failure in (None, "busy", "preflight", "receipt"):
+        for failure in (None, "busy", "preflight", "receipt", "lane"):
             with self.subTest(failure=failure):
                 self.exercise(failure)
 

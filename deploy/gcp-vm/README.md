@@ -306,12 +306,14 @@ npm cache and package. The script prints the private build directory.
 
 The VM builds a candidate before interrupting service. Cutover requires an idle,
 healthy Gateway and the same running image observed at startup. It backs up
-stopped state, changes only the image assignment in `release.env`, and verifies
+stopped state, switches the image, and copies only `agents.defaults.maxConcurrent`
+from the selected commit’s `livex-agents/config/openclaw.template.json` into the
+installed JSON config. Cutover verifies the live main-lane limit as well as
 Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
 instructions retain the VM's reaction and read-only session policies.
 
 Success prints `running_verified`. On cutover failure the helper attempts to
-restore the previous image and reports its readiness. Inspect private receipts
+restore the previous image and exact pre-deploy config and reports its readiness. Inspect private receipts
 in `/opt/livex-openclaw/releases/<sha>/` before retrying a failed or interrupted
 deployment. Existing candidates and upload directories block an automatic replay.
 

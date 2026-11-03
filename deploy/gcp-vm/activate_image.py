@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from release_inputs import release_arguments, select_image
+from release_inputs import release_arguments, select_image, with_concurrency
 
 
 def activate(root, source, old_image):
@@ -76,10 +76,9 @@ def activate(root, source, old_image):
                 return value
         raise RuntimeError("Native RPC result could not be verified: " + method)
 
-    def atomic_release(content):
-        path = root / "release.env"
+    def atomic_replace(path, content):
         metadata = path.stat()
-        fd, name = tempfile.mkstemp(prefix=".release.env.", dir=root)
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
             os.fchmod(fd, stat.S_IMODE(metadata.st_mode))
             os.fchown(fd, metadata.st_uid, metadata.st_gid)
@@ -109,6 +108,13 @@ def activate(root, source, old_image):
         raise RuntimeError("Candidate Node label mismatch")
     if not (image["Config"]["User"] == "1000:1000"):
         raise RuntimeError("Unexpected candidate runtime user")
+    config_name = "state/openclaw.json"
+    config_path = root / config_name
+    if config_path.is_symlink():
+        raise RuntimeError("Expected a regular mounted VM config")
+    old_config = config_path.read_bytes()
+    target = candidate["maxConcurrent"]
+    new_config = with_concurrency(old_config, target)
     old_release = (root / "release.env").read_bytes()
     new_release = select_image(old_release, old_image, new_image)
     before = inspect_container()
@@ -138,6 +144,7 @@ def activate(root, source, old_image):
         "start-gateway.sh",
     ]
     protected_hashes = {name: digest(root / name) for name in protected}
+    protected_hashes[config_name] = hashlib.sha256(old_config).hexdigest()
     backup_bytes = sum(
         int(line.split()[0])
         for line in subprocess.check_output(
@@ -284,7 +291,10 @@ def activate(root, source, old_image):
         if not ((root / "release.env").read_bytes() == old_release):
             raise RuntimeError("Image selection changed before cutover")
         unchanged()
-        atomic_release(new_release)
+        atomic_replace(root / "release.env", new_release)
+        if new_config != old_config:
+            atomic_replace(config_path, new_config)
+            protected_hashes[config_name] = hashlib.sha256(new_config).hexdigest()
         cli = compose + ["run", "--rm", "--no-deps", "--pull", "never"]
         checks = [
             (
@@ -337,6 +347,14 @@ def activate(root, source, old_image):
             compose + ["up", "-d", "--no-deps", "--pull", "never", "gateway"],
         )
         receipt["readiness"] = ready(new_image, started)
+        lanes = rpc("diagnostics.lanes", {}, {"lanes"})["lanes"]
+        if [lane["maxConcurrent"] for lane in lanes if lane["lane"] == "main"] != [
+            target
+        ]:
+            raise RuntimeError(
+                "Live Gateway main lane does not match the Git concurrency setting"
+            )
+        receipt["readiness"]["maxConcurrent"] = target
         unchanged()
         receipt["status"] = "running_verified"
         receipt["finishedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -390,7 +408,14 @@ def activate(root, source, old_image):
                         timeout=120,
                         check=True,
                     )
-                    atomic_release(old_release)
+                    current_config = config_path.read_bytes()
+                    if current_config not in (old_config, new_config):
+                        raise RuntimeError(
+                            "VM config changed externally; reconcile before rollback"
+                        )
+                    if current_config != old_config:
+                        atomic_replace(config_path, old_config)
+                    atomic_replace(root / "release.env", old_release)
                 rollback_started = datetime.datetime.now(
                     datetime.timezone.utc
                 ).isoformat()
