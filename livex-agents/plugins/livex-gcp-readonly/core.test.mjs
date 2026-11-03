@@ -38,6 +38,54 @@ const success = (entries = []) => ({
   termination: "exit",
 });
 
+void test("tab-delimited error profile reaches Cloud Logging with fixed scope and INFO text errors", async () => {
+  const calls = [];
+  const tool = createLogsTool(config, ctx(), async (argv) => {
+    calls.push(argv);
+    return success();
+  });
+  const result = await tool.execute("text-errors", { ...args, errorProfile: "tab-delimited" });
+  const filter = calls[0][3];
+  assert.equal(
+    filter,
+    'logName =~ "^projects/example-prd/logs/" AND resource.type="k8s_container" AND resource.labels.cluster_name="prd-cluster" AND resource.labels.location="us-central1" AND resource.labels.namespace_name="sample-worker" AND resource.labels.container_name="sample-worker" AND timestamp>="2026-10-20T18:40:00.000Z" AND timestamp<="2026-10-20T19:00:00.000Z" AND ((jsonPayload:* AND severity>=ERROR) OR textPayload =~ "^[^\\\\t]+\\\\t(ERROR|DPANIC|PANIC|FATAL)\\\\t")',
+  );
+  assert.equal(new URL(result.details.logsExplorerUrl).searchParams.get("query"), filter);
+  assert.equal(result.details.errorProfile, "tab-delimited");
+  const pattern = new RegExp(JSON.parse(filter.match(/textPayload =~ ("(?:\\.|[^"])*")/)[1]));
+  for (const level of ["ERROR", "DPANIC", "PANIC", "FATAL"]) {
+    assert.ok(pattern.test(`2026-10-20T18:45:00Z\t${level}\trequest failed`));
+  }
+  for (const text of [
+    "2026-10-20T18:45:00Z\tINFO\tERROR count is zero",
+    "2026-10-20T18:45:00Z ERROR request failed",
+    "2026-10-20T18:45:00Z\tERROR_CODE\trequest failed",
+  ]) {
+    assert.ok(!pattern.test(text));
+  }
+  await tool.execute("default-errors", args);
+  assert.ok(
+    calls[1][3].endsWith(
+      '(severity>=ERROR OR jsonPayload.level="error" OR jsonPayload.level="ERROR" OR jsonPayload.levelname="ERROR")',
+    ),
+  );
+  for (const invalid of [
+    { ...args, errorProfile: "custom-regex" },
+    { ...args, errorProfile: "tab-delimited", mode: "context" },
+    { ...args, errorProfile: "tab-delimited", resourceLabels: { project_id: "other-prd" } },
+    { ...args, errorProfile: "tab-delimited", limit: 51 },
+    { ...args, errorProfile: "tab-delimited", end: "2026-10-20T20:00:00Z" },
+    { ...args, errorProfile: "tab-delimited", filter: "logName:* OR severity>=INFO" },
+  ]) {
+    await assert.rejects(tool.execute("invalid", invalid), /Invalid/);
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(
+    createLogsTool(config, { ...ctx(), requesterSenderId: "UOTHER" }, () => {}),
+    null,
+  );
+});
+
 const discovery = {
   mode: "discover",
   conversationId: "synthetic-conversation",

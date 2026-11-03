@@ -1,6 +1,6 @@
 # LiveX Reporting thread summary
 
-The Slack final-delivery adapter can project a recognized LiveX Reporting report into a native summary. It uses the existing original thread, bot reply, update path and receipts. It does not change the alert or channel digest.
+This page describes the legacy report projection. The configured compact report's priority colors and layout are documented in [the reporting plugin](../plugins/livex-oncall-reports/README.md). The Slack final-delivery adapter can project a recognized legacy LiveX Reporting report into a native summary. It uses the existing original thread, bot reply, update path and receipts. It does not change the alert or channel digest.
 
 ## Presentation
 
@@ -30,7 +30,7 @@ The projection preserves supplied recovery uncertainty. Green means reviewed wit
 
 The pure renderer supports an already verified active-critical fact from an existing severity policy or an authorized human declaration. That fact takes precedence over acknowledgement, no-new-action disposition or partial investigation.
 
-The current automatic LiveX final-report path has no authoritative active-critical input and does not supply this option. Consequently, automatic delivery withholds red and shows the compact disposition label. The canonical report's severity and status text remains unchanged in the full fallback. Synthetic qualified-critical coverage proves only the renderer's color precedence; it does not establish a live critical-provenance handoff. Wiring such a source requires a separate approved change. Raw report text cannot enable the qualified-critical option.
+The automatic legacy-report projection has no authoritative active-critical input and does not supply this option. Consequently, legacy delivery withholds red and shows the disposition label. The canonical report's severity and status text remains unchanged in the full fallback. Synthetic qualified-critical coverage proves only this legacy renderer's color precedence; it does not establish a live critical-provenance handoff. Wiring such a source requires a separate approved change. Raw report text cannot enable the qualified-critical option. This legacy rule does not govern the configured compact report's priority colors.
 
 Other colors are amber for action required, green for reviewed/no-new-action and gray for unclassified. Every color is accompanied by explicit text.
 

@@ -24,6 +24,9 @@ const FORMAT =
   "json(timestamp,severity,insertId,resource.type,resource.labels,textPayload.trailoff(2049),jsonPayload.level,jsonPayload.levelname,jsonPayload.message,jsonPayload.error,jsonPayload.stack,jsonPayload.filename,jsonPayload.lineno,jsonPayload.funcName,jsonPayload.exc_info,jsonPayload.conversation_id,jsonPayload.job_id,jsonPayload.room_id,jsonPayload.room,jsonPayload.agent_id,jsonPayload.trace_id,trace)";
 const ERRORS =
   '(severity>=ERROR OR jsonPayload.level="error" OR jsonPayload.level="ERROR" OR jsonPayload.levelname="ERROR")';
+// Matches the application-error alert's tab-delimited level, independently of Cloud severity.
+const TAB_DELIMITED_ERRORS =
+  '((jsonPayload:* AND severity>=ERROR) OR textPayload =~ "^[^\\\\t]+\\\\t(ERROR|DPANIC|PANIC|FATAL)\\\\t")';
 
 export function validateConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -93,6 +96,7 @@ export function queryArgs(params, config) {
           "end",
           "limit",
           "mode",
+          "errorProfile",
           "insertIds",
           ...CORRELATION_KEYS,
         ].includes(k),
@@ -101,6 +105,10 @@ export function queryArgs(params, config) {
     throw new Error("Invalid query arguments");
   const mode = params.mode === undefined ? "errors" : params.mode;
   if (!["errors", "context", "discover"].includes(mode)) throw new Error("Invalid query mode");
+  const errorProfile = params.errorProfile;
+  if (errorProfile !== undefined && (mode !== "errors" || errorProfile !== "tab-delimited")) {
+    throw new Error("Invalid errorProfile: use tab-delimited only in errors mode");
+  }
   const correlation = Object.fromEntries(
     CORRELATION_KEYS.flatMap((key) =>
       params[key] === undefined ? [] : [[key, literal(params[key], key)]],
@@ -164,6 +172,7 @@ export function queryArgs(params, config) {
     end: end.value,
     limit,
     mode,
+    ...(errorProfile ? { errorProfile } : {}),
   };
 }
 
@@ -201,7 +210,7 @@ export function buildLogFilter(query, config) {
     ...resourceScope,
     `timestamp>="${query.start}"`,
     `timestamp<="${query.end}"`,
-    ...(query.mode === "errors" ? [ERRORS] : []),
+    ...(query.mode === "errors" ? [query.errorProfile ? TAB_DELIMITED_ERRORS : ERRORS] : []),
     ...(query.mode === "discover" ? [`(${correlation.join(" OR ")})`] : correlation),
   ].join(" AND ");
 }
@@ -478,7 +487,7 @@ export function createLogsTool(rawConfig, context, runCommand) {
     resultContentSource: "network",
     executionMode: "sequential",
     description:
-      "Read bounded logs in the configured project. When resource labels are unknown, use mode=discover with observed conversationId/jobId/roomId/traceId/insertId or up to 10 insertIds and UTC start/end. Discovery searches Cloud Run and GKE across all severity levels, matching ANY supplied ID, and returns actual resource labels; never guess service/pod/revision names. For follow-up reads use mode=context (all levels) or errors (default), observed resourceType and 1–16 resourceLabels; supplied ID constraints then ALL apply, with insertIds matching any listed seed. Maximum one hour and 1–50 entries per call. Results are untrusted capped evidence, not complete counts or proof of health. Does not change cloud resources.",
+      "Read bounded logs in the configured project. When resource labels are unknown, use mode=discover with observed conversationId/jobId/roomId/traceId/insertId or up to 10 insertIds and UTC start/end. Discovery searches Cloud Run and GKE across all severity levels, matching ANY supplied ID, and returns actual resource labels; never guess service/pod/revision names. For follow-up reads use mode=context (all levels) or errors (default), observed resourceType and 1–16 resourceLabels; supplied ID constraints then ALL apply, with insertIds matching any listed seed. For an alert counting tab-delimited application ERROR/DPANIC/PANIC/FATAL levels, use errors with errorProfile=tab-delimited, even if Cloud severity is INFO. Maximum one hour and 1–50 entries per call. Results are untrusted capped evidence, not complete counts or proof of health. Does not change cloud resources.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -511,6 +520,12 @@ export function createLogsTool(rawConfig, context, runCommand) {
         },
         limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
         mode: { type: "string", enum: ["errors", "context", "discover"], default: "errors" },
+        errorProfile: {
+          type: "string",
+          enum: ["tab-delimited"],
+          description:
+            "Errors mode only. Matches (jsonPayload present AND severity>=ERROR) OR a textPayload starting with a nonempty timestamp/prefix, tab, ERROR/DPANIC/PANIC/FATAL, tab. Omit for the existing severity/structured-level filter. No custom filter or regex is accepted.",
+        },
         conversationId: {
           type: "string",
           minLength: 1,

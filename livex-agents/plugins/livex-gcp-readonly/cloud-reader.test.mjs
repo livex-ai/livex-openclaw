@@ -168,6 +168,21 @@ test("unrecognized helper failures stay generic and successful pages retain thei
   assert.deepEqual(invocation.argv.slice(-2), ["--page-token", "opaque-input"]);
   assert.equal(invocation.options.timeoutMs, 30000);
   assert.equal(invocation.options.baseEnv.CLOUDSDK_CORE_LOG_HTTP, "false");
+  await reader({
+    ...query,
+    mode: "errors",
+    resourceType: "k8s_container",
+    resourceLabels: { project_id: "example-prd", namespace_name: "service" },
+    errorProfile: "tab-delimited",
+  });
+  const filter = invocation.argv[invocation.argv.indexOf("--filter") + 1];
+  assert.ok(
+    filter.startsWith('logName =~ "^projects/example-prd/logs/" AND resource.type="k8s_container"'),
+  );
+  assert.ok(filter.includes('resource.labels.namespace_name="service"'));
+  assert.ok(filter.includes('textPayload =~ "^[^\\\\t]+\\\\t(ERROR|DPANIC|PANIC|FATAL)\\\\t"'));
+  assert.equal(invocation.argv[invocation.argv.indexOf("--project") + 1], "example-prd");
+  assert.equal(invocation.argv[invocation.argv.indexOf("--account") + 1], "reader@example.test");
 });
 
 test("HTTP failure cannot commit a successful page or advance a continuation", async () => {

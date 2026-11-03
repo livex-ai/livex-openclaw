@@ -108,7 +108,7 @@ function resultValue(result, retrievedAt) {
         ? result.note.slice(0, 4096)
         : "Stored projected evidence. Window exhaustion applies only to the original filter at retrieval time, not investigation completion.",
   };
-  for (const name of ["project", "start", "end", "mode"]) {
+  for (const name of ["project", "start", "end", "mode", "errorProfile"]) {
     if (typeof result[name] === "string") {
       value[name] = result[name].slice(0, 128);
     }

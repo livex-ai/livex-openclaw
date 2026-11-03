@@ -137,8 +137,8 @@ The `prepare_update` action accepts a bounded typed `report` with `title`, `prio
 `summary`, `nextAction`, and `evidence` (`links`, optional `checkedWindow`/`note`).
 The host validates and renders Title/Priority, Next action, Summary and Evidence;
 there are no expanded repetitive Finding/Impact/Owner/Uncertainty sections. Optional
-Known issue/Blocked/Resolved badges need supporting catalog/fact evidence. Model
-priority never establishes verified-critical styling. Missing ownership, impact or
+Known issue/Blocked/Resolved badges need supporting catalog/fact evidence. Priority
+colors display the selected priority; they do not independently establish impact or recovery. Missing ownership, impact or
 evidence remains unknown; supplied URLs must be grounded in the typed findings.
 
 Legacy finalText input is an acknowledgement, never parsed for report content.
