@@ -154,3 +154,23 @@ class ReleaseTest(unittest.TestCase):
         for failure in (None, "busy", "preflight", "receipt"):
             with self.subTest(failure=failure):
                 self.exercise(failure)
+
+
+class CheckpointTests(unittest.TestCase):
+    def test_requires_successful_exact_base_export(self):
+        from release_inputs import verify_base_checkpoint
+
+        command = ["docker", "buildx", "build", "-t", "base:" + SHA]
+        receipt = {"name": "base", "exit": 0, "command": command}
+        log = f"#33 exporting manifest list {NEW} 0.0s done\n"
+        verify_base_checkpoint([receipt], command, NEW, log)
+        for receipts, expected, image, transcript in [
+            ([], command, NEW, log),
+            ([receipt, receipt], command, NEW, log),
+            ([dict(receipt, exit=1)], command, NEW, log),
+            ([receipt], ["other"], NEW, log),
+            ([receipt], command, OLD, log),
+            ([receipt], command, NEW, f"RUN echo {NEW}"),
+        ]:
+            with self.assertRaises(ValueError):
+                verify_base_checkpoint(receipts, expected, image, transcript)

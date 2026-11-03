@@ -314,3 +314,18 @@ Success prints `running_verified`. On cutover failure the helper attempts to
 restore the previous image and reports its readiness. Inspect private receipts
 in `/opt/livex-openclaw/releases/<sha>/` before retrying a failed or interrupted
 deployment. Existing candidates and upload directories block an automatic replay.
+
+If the base image completed successfully and the disk guard stopped the build
+**before the runtime stage started**, keep both the upload and the printed
+local build directory. Check VM disk usage and free more than 5 GiB on the
+root filesystem. Review Docker build-cache usage first. To continue from that
+specific checkpoint, run from the updated tooling branch:
+
+```sh
+bash deploy/gcp-vm/deploy.sh "$FULL_COMMIT_SHA" --resume-after-base "$LOCAL_BUILD_DIR"
+```
+
+Resume checks the package and source hashes, donor image, base build command
+and exported image digest. It extracts fresh runtime source and retains the
+original receipts. A failed or attempted runtime or Node stage needs separate
+reconciliation.
