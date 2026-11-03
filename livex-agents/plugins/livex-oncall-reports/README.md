@@ -6,7 +6,7 @@ The tracked oncall configuration loads this directory and selects `compact-v1` f
 
 The host binds the selected profile to prepared work. Queued replies and delivery warnings retain that selection. Slack still validates outgoing blocks/fallback, handles previews/readback/threading and returns receipts; its existing investigation owner saves the catalog only after confirmed complete visible delivery and a verified permalink. Catalog schema, file location, matching, locking and lifetime are unchanged.
 
-The compact layout remains Title, Priority, Next action, Summary and Evidence. Both current card forms omit the decorative divider while retaining the attachment accent. Compact Medium-priority reports use a yellow accent; a verified Resolved badge takes precedence with green. Other priorities retain neutral styling, including model-selected Critical without verified impact. The legacy parser preserves its existing LiveX bot/team/oncall/thread gates; ordinary prose and unconfigured agents keep their existing path. This extraction does not change acknowledgement routing.
+The compact layout remains Title, Priority, Next action, Summary and Evidence. Both current card forms omit the decorative divider while retaining the attachment accent. Compact High/Critical reports use a red accent, Medium uses yellow, and Low/Unknown use gray. A verified Resolved badge takes precedence with green for every priority. Written priority remains visible; priority colors do not establish verified impact or recovery. The legacy parser preserves its existing LiveX bot/team/oncall/thread gates; ordinary prose and unconfigured agents keep their existing path. This extraction does not change acknowledgement routing.
 
 ## Local verification
 

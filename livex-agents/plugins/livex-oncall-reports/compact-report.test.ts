@@ -61,16 +61,37 @@ function visible(card: SlackThreadSummaryCard): string {
 
 describe("typed compact investigation report", () => {
   it.each([
-    ["unknown", "#9CA3AF"],
-    ["low", "#9CA3AF"],
-    ["medium", "#D99A00"],
-    ["high", "#9CA3AF"],
-    ["critical", "#9CA3AF"],
-  ])(
-    "delivers %s reports with the expected accent in sends and preview edits",
-    async (priority, color) => {
+    ["unknown", false, "#9CA3AF"],
+    ["low", false, "#9CA3AF"],
+    ["medium", false, "#D99A00"],
+    ["high", false, "#D92D20"],
+    ["critical", false, "#D92D20"],
+    ["unknown", true, "#2E8B57"],
+    ["low", true, "#2E8B57"],
+    ["medium", true, "#2E8B57"],
+    ["high", true, "#2E8B57"],
+    ["critical", true, "#2E8B57"],
+  ] as const)(
+    "delivers %s reports (resolved=%s) with the expected accent in sends and preview edits",
+    async (priority, resolved, color) => {
       const render = await prepare();
-      const prepared = render({ ...form(), priority }, [update()], [finding()]);
+      const value = resolved
+        ? update({
+            facts: { ...update().facts, recovery: "No failures in the complete checked window." },
+          })
+        : update();
+      const prepared = render(
+        {
+          ...form(),
+          priority,
+          ...(resolved ? { badge: { kind: "resolved", evidenceUrl: logUrl } } : {}),
+        },
+        [value],
+        [finding()],
+      );
+      expect(prepared.text).toContain(
+        `*Priority:* ${priority[0].toUpperCase()}${priority.slice(1)}${resolved ? " · Resolved" : ""}`,
+      );
       const reply = prepareSlackReply({
         text: prepared.text,
         channelData: { slack: { threadSummaryCard: prepared.card } },
@@ -304,14 +325,6 @@ describe("typed compact investigation report", () => {
     expect(render(resolved, [parser, jointlySupported], [finding(), finding()]).text).toContain(
       "Resolved",
     );
-  });
-
-  it("never grants verified-critical red styling from the model priority field", async () => {
-    const render = await prepare();
-    const value = update();
-    const prepared = render({ ...form(), priority: "critical" }, [value], [finding()]);
-    expect(prepared.text).toContain("Critical");
-    expect(prepared.card.attachment.color).not.toBe("#D92D20");
   });
 
   it("preserves unknown evidence notes and safely escapes mentions, link labels and URL delimiters", async () => {
