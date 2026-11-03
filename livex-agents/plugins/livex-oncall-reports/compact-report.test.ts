@@ -1,59 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { buildSlackCompleteBlocksFallbackText } from "../../../extensions/slack/src/blocks-fallback.js";
-import type { FindingComparison } from "../../../extensions/slack/src/investigations/matching.js";
 import {
-  parseCompletedInvestigations,
-  type CompletedInvestigation,
-} from "../../../extensions/slack/src/investigations/schema.js";
+  prepareSlackReply,
+  resolveSlackReplyDeliveryMessages,
+} from "../../../extensions/slack/src/reply-blocks.js";
 import type { SlackThreadSummaryCard } from "./legacy-report.js";
+import type { ReportFinding, ReportInvestigation } from "./report-context.js";
 
 const logUrl = "https://logs.example.test/view?id=event-1";
 const priorUrl = "https://sample.slack.com/archives/C1/p1000000000000000";
 const ownerUrl = "https://sample.slack.com/archives/C1/p1000000000000001";
-function update(patch: Partial<CompletedInvestigation> = {}): CompletedInvestigation {
-  return parseCompletedInvestigations([
-    {
-      signature: {
-        scope: {
-          agentId: "oncall",
-          accountId: "default",
-          teamId: "T1",
-          channelId: "C1",
-          senderId: "U1",
-        },
-        service: "parser",
-        environment: "production",
-        operation: "parse",
-        error: "missing variant_name",
-      },
-      task: "Document parsing",
-      status: "Investigated",
-      historySummary: "Confirmed missing field",
-      waitingOn: "Owner unknown",
-      prs: [],
-      slackThreads: [],
-      jiraTickets: [],
-      evidenceUrls: [logUrl],
-      facts: {
-        finding: "Parser rejects a missing field.",
-        impact: "Some documents fail.",
-        nextAction: "Validate field handling.",
-      },
-      ...patch,
+type FixtureInvestigation = ReportInvestigation & { historySummary?: string };
+function update(patch: Partial<FixtureInvestigation> = {}): FixtureInvestigation {
+  return {
+    task: "Document parsing",
+    prs: [],
+    slackThreads: [],
+    jiraTickets: [],
+    evidenceUrls: [logUrl],
+    facts: {
+      finding: "Parser rejects a missing field.",
+      impact: "Some documents fail.",
+      nextAction: "Validate field handling.",
     },
-  ])[0]!;
+    ...patch,
+  };
 }
-function finding(
-  value: CompletedInvestigation,
-  kind: FindingComparison["kind"] = "new",
-): FindingComparison {
+function finding(kind: ReportFinding["kind"] = "new"): ReportFinding {
   return {
     kind,
-    update: value,
-    changes: [],
-    ...(kind === "known-persistence" || kind === "changed"
-      ? { canonicalThreadUrl: priorUrl, issueId: "issue-fixture" }
-      : {}),
+    ...(kind === "known-persistence" || kind === "changed" ? { canonicalThreadUrl: priorUrl } : {}),
   };
 }
 function form() {
@@ -84,10 +60,44 @@ function visible(card: SlackThreadSummaryCard): string {
 }
 
 describe("typed compact investigation report", () => {
+  it("delivers one visible report with complete accessibility text in sends and preview edits", async () => {
+    const render = await prepare();
+    const prepared = render(form(), [update()], [finding()]);
+    const reply = prepareSlackReply({
+      text: prepared.text,
+      channelData: { slack: { threadSummaryCard: prepared.card } },
+    });
+    const resolution = reply.resolveDelivery();
+    const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text: prepared.text });
+    expect(messages).toHaveLength(1);
+    const preview = reply.resolvePreview();
+    expect(preview.mode).toBe("single");
+    if (preview.mode !== "single") {
+      throw new Error("A complete investigation report must remain one message");
+    }
+    for (const message of [messages[0]!, preview]) {
+      // Slack displays top-level text as body unless top-level blocks are present.
+      const visibleText = [
+        message.blocks?.length
+          ? buildSlackCompleteBlocksFallbackText(message.blocks)
+          : message.text,
+        ...(message.attachments ?? []).map((attachment) =>
+          buildSlackCompleteBlocksFallbackText(attachment.blocks ?? []),
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      expect(visibleText).toBe(prepared.text);
+      expect(message.text).toBe(prepared.text);
+      expect(message.attachments?.[0]?.fallback).toBe(prepared.text);
+      expect(message.attachments?.[0]?.color).toBe("#9CA3AF");
+    }
+  });
+
   it("renders the five approved fields in action-first order with matching complete fallback", async () => {
     const render = await prepare();
     const value = update();
-    const prepared = render(form(), [value], [finding(value)]);
+    const prepared = render(form(), [value], [finding()]);
     const expected = [
       "*Title:* Document parsing fails",
       "*Priority:* Unknown",
@@ -98,7 +108,12 @@ describe("typed compact investigation report", () => {
     expect(prepared.text).toBe(expected);
     expect(prepared.card.fallbackText).toBe(expected);
     expect(visible(prepared.card)).toBe(expected);
-    expect(prepared.card.blocks).toEqual([]);
+    expect(prepared.card.blocks).toEqual([
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: "*Title:* Document parsing fails", verbatim: true },
+      },
+    ]);
     expect(prepared.card.attachment.color).toBe("#9CA3AF");
     expect(prepared.text).not.toMatch(/\n\n\*(Finding|Impact|Owner|Uncertainty):/);
     expect(prepared.form).toEqual(form());
@@ -107,7 +122,7 @@ describe("typed compact investigation report", () => {
   it("keeps a host save notice inside the same five-field text and card projection", async () => {
     const render = await prepare();
     const value = update();
-    const original = render(form(), [value], [finding(value)]);
+    const original = render(form(), [value], [finding()]);
     const module = await import("./compact-report.js");
     expect(
       module.appendCompactReportNotice,
@@ -139,7 +154,7 @@ describe("typed compact investigation report", () => {
       },
       evidenceUrls: [],
     });
-    const prepared = render(undefined, [value], [finding(value)]);
+    const prepared = render(undefined, [value], [finding()]);
     expect(prepared.text).toContain("Typed task");
     expect(prepared.text).toContain("Typed finding");
     expect(prepared.text).toContain("Impact unknown");
@@ -163,12 +178,12 @@ describe("typed compact investigation report", () => {
       },
       badge: { kind: "known-issue" },
     };
-    const prepared = render(input, [value], [finding(value, "known-persistence")]);
+    const prepared = render(input, [value], [finding("known-persistence")]);
     expect(prepared.form.evidence.links.map((link) => link.url)).toEqual([logUrl, priorUrl]);
     expect(prepared.text.match(/p1000000000000000/g)).toHaveLength(1);
     expect(prepared.text).toContain("Known issue");
     expect(prepared.text).toContain("Checked window unknown");
-    const appended = render(form(), [value], [finding(value, "known-persistence")]);
+    const appended = render(form(), [value], [finding("known-persistence")]);
     expect(appended.text).toContain(`<${priorUrl}|Prior investigation>`);
   });
 
@@ -177,7 +192,6 @@ describe("typed compact investigation report", () => {
     const known = update();
     const novel = update({
       task: "Embedding",
-      signature: { ...known.signature, error: "embedding delete failed" },
       facts: {
         ...known.facts,
         finding: "Embedding failed.",
@@ -188,14 +202,10 @@ describe("typed compact investigation report", () => {
       render(
         { ...form(), badge: { kind: "known-issue" } },
         [known, novel],
-        [finding(known, "known-persistence"), finding(novel)],
+        [finding("known-persistence"), finding()],
       ),
     ).toThrow(/known.*all|all.*known/i);
-    const prepared = render(
-      undefined,
-      [known, novel],
-      [finding(known, "known-persistence"), finding(novel)],
-    );
+    const prepared = render(undefined, [known, novel], [finding("known-persistence"), finding()]);
     expect(prepared.text).toContain("Embedding failed.");
     expect(prepared.text).toContain(priorUrl);
     expect(prepared.form.badge?.kind).not.toBe("known-issue");
@@ -208,14 +218,13 @@ describe("typed compact investigation report", () => {
     });
     const embedding = update({
       task: "Embedding",
-      signature: { ...parser.signature, error: "embedding delete failed" },
       facts: {
         ...parser.facts,
         nextAction: "Check embedding deletion.",
         owner: { name: "Owen", evidenceUrl: priorUrl },
       },
     });
-    const prepared = render(undefined, [parser, embedding], [finding(parser), finding(embedding)]);
+    const prepared = render(undefined, [parser, embedding], [finding(), finding()]);
     expect(prepared.text).toContain("Document parsing");
     expect(prepared.text).toContain("Maya");
     expect(prepared.text).toContain("Embedding");
@@ -228,7 +237,7 @@ describe("typed compact investigation report", () => {
     const render = await prepare();
     const value = update();
     const resolved = { ...form(), badge: { kind: "resolved", evidenceUrl: logUrl } };
-    expect(() => render(resolved, [value], [finding(value)])).toThrow(/recover/i);
+    expect(() => render(resolved, [value], [finding()])).toThrow(/recover/i);
     const recovered = update({
       facts: { ...value.facts, recovery: "No failures in the complete checked window." },
     });
@@ -239,10 +248,10 @@ describe("typed compact investigation report", () => {
           badge: { kind: "resolved", evidenceUrl: "https://unverified.example/recovery" },
         },
         [recovered],
-        [finding(recovered)],
+        [finding()],
       ),
     ).toThrow(/evidence/i);
-    expect(render(resolved, [recovered], [finding(recovered)]).text).toContain("Resolved");
+    expect(render(resolved, [recovered], [finding()]).text).toContain("Resolved");
   });
 
   it.each([
@@ -258,11 +267,7 @@ describe("typed compact investigation report", () => {
     const render = await prepare();
     const value = update({ facts: { ...update().facts, recovery } });
     expect(() =>
-      render(
-        { ...form(), badge: { kind: "resolved", evidenceUrl: logUrl } },
-        [value],
-        [finding(value)],
-      ),
+      render({ ...form(), badge: { kind: "resolved", evidenceUrl: logUrl } }, [value], [finding()]),
     ).toThrow(/recover/i);
   });
 
@@ -274,25 +279,23 @@ describe("typed compact investigation report", () => {
     const embeddingUrl = "https://logs.example.test/view?id=embedding-recovery";
     const embedding = update({
       task: "Embedding",
-      signature: { ...parser.signature, error: "embedding delete failed" },
       facts: { ...parser.facts, finding: "Embedding deletion recovered." },
       evidenceUrls: [embeddingUrl],
     });
     const resolved = { ...form(), badge: { kind: "resolved", evidenceUrl: logUrl } };
-    expect(() =>
-      render(resolved, [parser, embedding], [finding(parser), finding(embedding)]),
-    ).toThrow(/evidence/i);
+    expect(() => render(resolved, [parser, embedding], [finding(), finding()])).toThrow(
+      /evidence/i,
+    );
     const jointlySupported = { ...embedding, evidenceUrls: [embeddingUrl, logUrl] };
-    expect(
-      render(resolved, [parser, jointlySupported], [finding(parser), finding(jointlySupported)])
-        .text,
-    ).toContain("Resolved");
+    expect(render(resolved, [parser, jointlySupported], [finding(), finding()]).text).toContain(
+      "Resolved",
+    );
   });
 
   it("never grants verified-critical red styling from the model priority field", async () => {
     const render = await prepare();
     const value = update();
-    const prepared = render({ ...form(), priority: "critical" }, [value], [finding(value)]);
+    const prepared = render({ ...form(), priority: "critical" }, [value], [finding()]);
     expect(prepared.text).toContain("Critical");
     expect(prepared.card.attachment.color).not.toBe("#D92D20");
   });
@@ -308,7 +311,7 @@ describe("typed compact investigation report", () => {
       nextAction: "Ask <@U1>",
       evidence: { links: [{ url, label: "Logs <@U1>" }], note: "Recovery unknown." },
     };
-    const prepared = render(input, [value], [finding(value)]);
+    const prepared = render(input, [value], [finding()]);
     expect(prepared.text).not.toContain("<@U1>");
     expect(prepared.text).not.toContain("<!channel>");
     expect(prepared.text).not.toContain("<https://hostile.example|fake>");
@@ -349,7 +352,7 @@ describe("typed compact investigation report", () => {
     const value = update();
     let error: unknown;
     try {
-      render(makeInput(), [value], [finding(value)]);
+      render(makeInput(), [value], [finding()]);
     } catch (caught) {
       error = caught;
     }
@@ -366,7 +369,7 @@ describe("typed compact investigation report", () => {
       render(
         { ...form(), evidence: { links: [{ url: "https://invented.example/proof" }] } },
         [value],
-        [finding(value)],
+        [finding()],
       ),
     ).toThrow(/typed.*evidence|evidence.*typed/i);
   });

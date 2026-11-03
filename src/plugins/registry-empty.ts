@@ -13,6 +13,7 @@ export const pluginArrays = [
   "cliBackends",
   "textTransforms",
   "reportProfiles",
+  "replyTurnProviders",
   "decisionProviders",
   "embeddingProviders",
   "speechProviders",

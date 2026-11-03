@@ -1,0 +1,60 @@
+{
+  "id": "livex-investigations",
+  "name": "LiveX investigations",
+  "description": "Scoped investigation history and confirmed-delivery catalog publication.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "slack_investigation_record"
+    ]
+  },
+  "configContracts": {
+    "compatibilityMigrationPaths": [
+      "plugins.entries.slack.config.investigationCatalog"
+    ]
+  },
+  "setup": {
+    "configMigrations": [
+      "slack-investigation-catalog-owner"
+    ],
+    "requiresRuntime": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "investigationCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "agentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "if": {
+          "properties": {
+            "enabled": {
+              "const": true
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        },
+        "then": {
+          "required": [
+            "agentId"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -687,6 +687,10 @@
       "types": "./dist/plugin-sdk/report-profiles.d.ts",
       "default": "./dist/plugin-sdk/report-profiles.js"
     },
+    "./plugin-sdk/reply-turns": {
+      "types": "./dist/plugin-sdk/reply-turns.d.ts",
+      "default": "./dist/plugin-sdk/reply-turns.js"
+    },
     "./plugin-sdk/agent-media-payload": {
       "types": "./dist/plugin-sdk/agent-media-payload.d.ts",
       "default": "./dist/plugin-sdk/agent-media-payload.js"

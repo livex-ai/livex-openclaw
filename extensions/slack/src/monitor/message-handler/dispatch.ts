@@ -16,11 +16,11 @@ import {
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
+import { createReplyTurnDelivery } from "openclaw/plugin-sdk/reply-turns";
 import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { formatSlackError, getSlackWebApiErrorData } from "../../errors.js";
 import { normalizeSlackOutboundText } from "../../format.js";
-import { createInvestigationDelivery } from "../../investigations/delivery.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
 import { resolveSlackReplyRenderPlan } from "../../reply-blocks.js";
@@ -61,8 +61,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       },
     );
   const upstreamLifecycle =
-    prepared.investigationTurn?.lifecycle(prepared.turnAdoptionLifecycle) ??
-    prepared.turnAdoptionLifecycle;
+    prepared.replyTurn?.lifecycle(prepared.turnAdoptionLifecycle) ?? prepared.turnAdoptionLifecycle;
   let releaseDeferred: (() => void) | undefined;
   const turnAdoptionLifecycle = upstreamLifecycle && {
     ...upstreamLifecycle,
@@ -81,7 +80,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const release = beginSessionRun();
   await dispatchSlackMessageWithSetup(setup, beginSessionRun, turnAdoptionLifecycle).finally(() => {
     release();
-    prepared.investigationTurn?.releaseImmediate();
+    prepared.replyTurn?.releaseImmediate();
   });
 }
 
@@ -171,8 +170,7 @@ async function dispatchSlackMessageWithSetup(
       !payload.channelData?.slack
     ) {
       const profile =
-        prepared.investigationTurn?.reportProfile ??
-        resolveAgentReportProfile(route.agentId, "slack");
+        prepared.replyTurn?.reportProfile ?? resolveAgentReportProfile(route.agentId, "slack");
       const projection = profile?.prepareLegacy?.(payload.text, {
         agentId: route.agentId,
         botUserId: ctx.botUserId,
@@ -452,18 +450,17 @@ async function dispatchSlackMessageWithSetup(
     }
     return result.deliveryResult ?? { visibleReplySent: false };
   };
-  const investigationDelivery = createInvestigationDelivery({
-    turn: prepared.investigationTurn,
+  const replyTurnDelivery = createReplyTurnDelivery(prepared.replyTurn, {
     sourceMessageIds: [message.ts, message.thread_ts],
     resolvePermalink: async (messageId) => {
-      prepared.investigationTurn?.assertCurrent();
+      prepared.replyTurn?.assertCurrent();
       const response = await slackClient.chat.getPermalink({
         channel: message.channel,
         message_ts: messageId,
       });
-      prepared.investigationTurn?.assertCurrent();
+      prepared.replyTurn?.assertCurrent();
       if (!response.ok || !response.permalink) {
-        throw new Error("Slack investigation permalink unavailable");
+        throw new Error("Slack reply permalink unavailable");
       }
       return response.permalink;
     },
@@ -474,6 +471,7 @@ async function dispatchSlackMessageWithSetup(
       if (projection?.mode === "split") {
         throw new Error("Report warning exceeds a single Slack edit");
       }
+      prepared.replyTurn?.assertCurrent();
       const client = prepared.eventScope?.writeClient ?? slackClient;
       await client.chat.update({
         channel: message.channel,
@@ -488,8 +486,8 @@ async function dispatchSlackMessageWithSetup(
     },
     deliver: deliverSlackPayloadInner,
   });
-  const deliverSlackPayload = investigationDelivery.deliver;
-  const queuedInvestigationCorrelation = investigationDelivery.queuedCorrelation;
+  const deliverSlackPayload = replyTurnDelivery.deliver;
+  const queuedReplyTurnCorrelation = replyTurnDelivery.queuedCorrelation;
 
   let agentRunFailed = false;
   let settledDispatchResult: Parameters<typeof hasVisibleInboundReplyDispatch>[0];
@@ -529,7 +527,7 @@ async function dispatchSlackMessageWithSetup(
         // Followups can outlive this dispatch and retain their own source address.
         queuedDeliveryCorrelations: [
           createSlackQueuedFailureNoticePolicy(failurePolicyParams, beginSessionRun),
-          ...(queuedInvestigationCorrelation ? [queuedInvestigationCorrelation] : []),
+          ...(queuedReplyTurnCorrelation ? [queuedReplyTurnCorrelation] : []),
         ],
         ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
         skillFilter: prepared.channelConfig?.skills,

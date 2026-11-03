@@ -276,10 +276,11 @@ export function buildSlackThreadSummaryCard(
     return null;
   }
   return {
-    blocks: [],
+    // Top-level blocks keep the complete text as fallback instead of a second visible body.
+    blocks: body.slice(0, 1),
     attachment: {
       color: qualifiedCritical ? COLORS.critical : COLORS[disposition],
-      blocks: body,
+      blocks: body.slice(1),
     },
     fallbackText: text,
   };

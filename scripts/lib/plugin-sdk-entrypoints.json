@@ -53,6 +53,7 @@
   "reply-chunking",
   "reply-payload",
   "report-profiles",
+  "reply-turns",
   "reply-payload-testing",
   "agent-media-payload",
   "inbound-reply-dispatch",
