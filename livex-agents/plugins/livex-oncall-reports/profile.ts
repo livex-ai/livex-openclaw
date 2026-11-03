@@ -36,7 +36,7 @@ export function createOncallReportProfile(agentIds: readonly string[]): AgentRep
     channels: ["slack"],
     inputSchema: compactReportParameters,
     instructions:
-      "Fill Title, Priority, Summary, Next action and Evidence; optional factual badge. Return exactly the prepared finalText without extra prose or markers. Ownership, recovery and evidence claims require typed support; unknowns stay unknown.",
+      "Only when staging a completed investigation report, fill Title, Priority, Summary, Next action and Evidence; optional factual badge. Return exactly the prepared finalText without extra prose or markers. Ownership, recovery and evidence claims require typed support; unknowns stay unknown.",
     prepare(input, context) {
       const { updates, findings } = readReportContext(context);
       return projectCompactReport(prepareCompactReport(input, updates, findings));

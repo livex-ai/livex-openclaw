@@ -150,6 +150,15 @@ Investigate a new question with the existing skills. Prepare a new report only
 for completed findings worth recording. Do not rerun an investigation to answer
 a question its saved evidence already answers.
 
+For a trend question such as “is this increasing?”, answer the question directly
+in ordinary thread text, even when fresh log reads are needed or the count rose.
+Compare the same error and scope over comparable windows. Lead with the
+direction and counts for each window, or say what coverage is missing. Use a
+request denominator before calling a count change a change in failure rate.
+Include a verified evidence link when available. The trend answer itself needs
+no report headings, card, or case write. An explicit request for a new
+investigation report or a case amendment still follows its own workflow.
+
 For an authorized direct thread request to change the existing report, use
 `slack_investigation_record amend_current_report` with only the requested
 priority, exact next-action text, or the sender's explicit acceptance of
@@ -200,7 +209,7 @@ New timestamps alone mean persistence. An explicit investigation still receives
 a concise reply linking the known investigation and explaining any new impact,
 scope, evidence, action, ownership, disposition or recovery.
 
-Before returning a completed final, call `slack_investigation_record` with
+When delivering a completed investigation report, call `slack_investigation_record` with
 `action=prepare_update`, one update per distinct issue, and the typed `report`
 object. Use title, priority, summary, nextAction and evidence (verified links and
 checkedWindow, or an explicit unknown). Do not add Markers/Limits fields or repeat
