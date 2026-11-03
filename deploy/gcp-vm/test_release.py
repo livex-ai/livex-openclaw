@@ -141,7 +141,16 @@ class ReleaseTest(unittest.TestCase):
                 elif cmd[1] == "logs":
                     output = "socket mode connected"
                 elif "run" in cmd:
-                    code = int(failure == "preflight" and "validate" in cmd)
+                    is_seed = any("initializeOncallCatalog();" in arg for arg in cmd)
+                    if is_seed:
+                        self.assertTrue(
+                            list((root / "backups").glob("*/installation.tar.gz"))
+                        )
+                        self.assertFalse(state["running"])
+                    code = int(
+                        (failure == "preflight" and "validate" in cmd)
+                        or (failure == "seed" and is_seed)
+                    )
                 else:
                     self.fail(f"Unexpected subprocess {cmd}")
                 return subprocess.CompletedProcess(cmd, code, output, "")
@@ -198,7 +207,7 @@ class ReleaseTest(unittest.TestCase):
                 )
 
     def test_cutover_and_recovery(self):
-        for failure in (None, "busy", "preflight", "receipt", "lane"):
+        for failure in (None, "busy", "preflight", "receipt", "lane", "seed"):
             with self.subTest(failure=failure):
                 self.exercise(failure)
 
