@@ -288,20 +288,21 @@ read GCP logs, and a follow-up resumes the same investigation after restart.
 Compare routing, streaming, disabled background services, repository pins, model,
 permissions, and instruction/skill hashes with the reviewed source snapshot.
 
-## Apply the five-investigation limit to an existing oncall VM
+## Five concurrent investigations on the installed VM
 
-The oncall profile sets `agents.defaults.maxConcurrent` to 5. An image upgrade
-preserves the VM's mounted config, so an older installation can still use 1.
-From a checkout of this branch, inspect the configured value and live main lane:
+The [oncall profile](../../livex-agents/README.md#investigation-concurrency) already selects five.
+To apply it to the existing VM, run this in its SSH shell. Check that the
+`main` lane reports `maxConcurrent: 5` after the config reloads.
 
 ```sh
-gcloud compute ssh livex-openclaw-dev --project=ai-mvp-dv --zone=us-central1-a \
-  --ssh-flag=-4 --ssh-flag=-T --command='sudo python3 -' < deploy/gcp-vm/oncall_concurrency.py
+(
+  set -eu
+  oc() { sudo docker exec livex-openclaw-dev-gateway-1 node /app/openclaw.mjs "$@"; }
+  backup=$(sudo mktemp -d /opt/livex-openclaw/backups/pre-concurrency-XXXXXX)
+  sudo cp -p /opt/livex-openclaw/state/openclaw.json "$backup/"
+  oc config set agents.defaults.maxConcurrent 5 --strict-json --dry-run
+  oc config set agents.defaults.maxConcurrent 5 --strict-json
+  oc config validate
+  oc gateway call diagnostics.lanes --params '{}' --json
+)
 ```
-
-For a separately approved live change, run the same command with
-`--command='sudo python3 - --apply'`. It checks the existing setting, backs up
-the installed config, writes only the concurrency key via the native CLI and
-verifies that the Gateway reports five main-lane slots. The change can admit
-waiting runs immediately. Five independent sessions share that capacity; turns
-within a session remain serialized. See [investigation concurrency](../../livex-agents/README.md#investigation-concurrency).
