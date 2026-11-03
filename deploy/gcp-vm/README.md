@@ -287,3 +287,21 @@ run the metadata read check and an authorized Slack pilot: a new alert selects
 read GCP logs, and a follow-up resumes the same investigation after restart.
 Compare routing, streaming, disabled background services, repository pins, model,
 permissions, and instruction/skill hashes with the reviewed source snapshot.
+
+## Apply the five-investigation limit to an existing oncall VM
+
+The oncall profile sets `agents.defaults.maxConcurrent` to 5. An image upgrade
+preserves the VM's mounted config, so an older installation can still use 1.
+From a checkout of this branch, inspect the configured value and live main lane:
+
+```sh
+gcloud compute ssh livex-openclaw-dev --project=ai-mvp-dv --zone=us-central1-a \
+  --ssh-flag=-4 --ssh-flag=-T --command='sudo python3 -' < deploy/gcp-vm/oncall_concurrency.py
+```
+
+For a separately approved live change, run the same command with
+`--command='sudo python3 - --apply'`. It checks the existing setting, backs up
+the installed config, writes only the concurrency key via the native CLI and
+verifies that the Gateway reports five main-lane slots. The change can admit
+waiting runs immediately. Five independent sessions share that capacity; turns
+within a session remain serialized. See [investigation concurrency](../../livex-agents/README.md#investigation-concurrency).
