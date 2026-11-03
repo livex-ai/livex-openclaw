@@ -86,6 +86,7 @@ export function projectInvestigationIssue(issue: CatalogIssue) {
       completedAt: latest.completedAt,
       summary: clip(latest.summary, 500),
       facts: {
+        priority: latest.facts.priority,
         finding: clip(latest.facts.finding),
         impact: clip(latest.facts.impact),
         nextAction: clip(latest.facts.nextAction),

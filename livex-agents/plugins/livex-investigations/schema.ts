@@ -18,6 +18,7 @@ export type IssueSignature = {
   resource?: string;
 };
 export type InvestigationFacts = {
+  priority?: "Unknown" | "Low" | "Medium" | "High" | "Critical";
   finding: string;
   impact: string;
   nextAction: string;
@@ -109,6 +110,7 @@ export const issueSignatureSchema: z.ZodType<IssueSignature> = z
   .strict();
 const factsSchema: z.ZodType<InvestigationFacts> = z
   .object({
+    priority: z.enum(["Unknown", "Low", "Medium", "High", "Critical"]).optional(),
     finding: text,
     impact: text,
     nextAction: text,
@@ -131,7 +133,10 @@ export const completedInvestigationSchema: z.ZodType<CompletedInvestigation> = z
     prs: links,
     slackThreads: links,
     jiraTickets: links,
-    facts: factsSchema,
+    facts: factsSchema.refine(
+      (facts) => facts.priority === undefined,
+      "Set human priority through an amendment",
+    ),
     evidenceUrls: links,
   })
   .strict();

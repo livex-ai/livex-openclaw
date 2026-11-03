@@ -51,7 +51,11 @@ describe("plugin reply-turn preparation", () => {
     });
     expect(lookup).toHaveBeenCalledWith(
       expect.objectContaining({
-        priorityEdit: { priority: "Medium", threadId: "200.000", messageId: "201.000" },
+        amendmentRequest: {
+          text: "update the above one to Medium priority",
+          threadId: "200.000",
+          messageId: "201.000",
+        },
       }),
     );
     expect(prepared?.ctxPayload.CommandAuthorized).toBe(true);

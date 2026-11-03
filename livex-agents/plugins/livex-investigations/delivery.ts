@@ -11,6 +11,8 @@ import type {
   ReplyDispatchRuntimeInfo,
   ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
+import type { ReplyTurnDeliveryHost } from "openclaw/plugin-sdk/reply-turns";
+import { applyAmendment, isAmendmentFinal } from "./amendment-delivery.js";
 import { reportContext } from "./report-context.js";
 import type { InvestigationTurn } from "./runtime.js";
 import { commitInvestigations } from "./store.js";
@@ -130,6 +132,7 @@ export function createInvestigationPublication(params: {
 /** Channel wiring stays in dispatch; this owner preserves catalog transport and bookkeeping policy. */
 export function createInvestigationDelivery(params: {
   turn?: InvestigationTurn;
+  amendOwnReport?: ReplyTurnDeliveryHost["amendOwnReport"];
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
   annotateAcceptedFinal: (input: {
@@ -156,6 +159,7 @@ export function createInvestigationDelivery(params: {
       return undefined;
     }
     const prepared = investigationTurn.matchFinal(payload.text!);
+    if (!prepared && !investigationTurn.reportExpected) return undefined;
     const outgoing = prepared?.report
       ? copyReplyPayloadMetadata(payload, {
           ...payload,
@@ -244,10 +248,25 @@ export function createInvestigationDelivery(params: {
       );
     }
   };
+  let amendmentAttempted = false;
+  const failure =
+    "Could not confirm the report update and case history. Check the original report before retrying.";
   const deliver = async (
     payload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
   ): Promise<LivePreviewDeliveryResult> => {
+    if (investigationTurn && isAmendmentFinal(investigationTurn, payload, info.kind)) {
+      if (amendmentAttempted) return { visibleReplySent: false };
+      amendmentAttempted = true;
+      try {
+        const ts = await applyAmendment(investigationTurn, params.amendOwnReport);
+        return ts ? { visibleReplySent: true, messageIds: [ts] } : { visibleReplySent: false };
+      } catch {
+        investigationTurn.assertCurrent();
+        params.reportError(failure);
+        return params.deliver({ text: failure }, info);
+      }
+    }
     const projection = prepareFinal(payload, info.kind);
     let outgoing = projection?.payload ?? payload;
     if (projection && !projection.prepared) {
@@ -284,15 +303,22 @@ export function createInvestigationDelivery(params: {
     }
     return result;
   };
+  let queuedAmendment: string | undefined;
   let queuedUnpreparedFinal: Pick<ReplyPayload, "text" | "channelData"> | undefined;
   const queuedCorrelation:
     | NonNullable<GetReplyOptions["queuedDeliveryCorrelations"]>[number]
     | undefined = investigationTurn
     ? {
         begin() {
+          queuedAmendment = undefined;
           queuedUnpreparedFinal = undefined;
         },
         prepareReply(payload, context) {
+          queuedAmendment = undefined;
+          if (isAmendmentFinal(investigationTurn, payload, context.kind)) {
+            queuedAmendment = payload.text;
+            return payload;
+          }
           const projection = prepareFinal(payload, context.kind);
           queuedUnpreparedFinal = undefined;
           if (projection && !projection.prepared) {
@@ -310,12 +336,33 @@ export function createInvestigationDelivery(params: {
           return projection?.payload;
         },
         async onReplyDelivered(payload, receipt) {
+          const ack = queuedAmendment;
+          queuedAmendment = undefined;
+          if (
+            ack &&
+            receipt?.complete &&
+            receipt.messageId &&
+            ack === payload.text &&
+            isAmendmentFinal(investigationTurn, payload, receipt.kind)
+          ) {
+            if (amendmentAttempted || params.sourceMessageIds.includes(receipt.messageId)) return;
+            amendmentAttempted = true;
+            try {
+              await applyAmendment(investigationTurn, params.amendOwnReport);
+            } catch {
+              params.reportError(failure);
+              investigationTurn.assertCurrent();
+              // Readback may have rejected the acknowledgment identity; never edit it on failure.
+            }
+            return;
+          }
           const unpreparedFinal = queuedUnpreparedFinal;
           queuedUnpreparedFinal = undefined;
           if (!receipt || !isInvestigationFinal(payload, receipt.kind)) {
             return;
           }
           const prepared = investigationTurn.matchFinal(payload.text!);
+          if (!prepared && !unpreparedFinal && !investigationTurn.reportExpected) return;
           const unchangedUnprepared =
             unpreparedFinal?.text === payload.text &&
             isDeepStrictEqual(unpreparedFinal?.channelData?.slack, payload.channelData?.slack);

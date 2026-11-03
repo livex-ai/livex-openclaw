@@ -1,7 +1,20 @@
+import { isDeepStrictEqual } from "node:util";
 import type { MessageAttachment } from "@slack/types";
 import type { Block, WebClient } from "@slack/web-api";
+import type { ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
 import { didSlackReplyEditApply } from "./preview-finalize.js";
-import { updatePriority, type Priority } from "./priority-card.js";
+import { updateReportCard } from "./priority-card.js";
+
+function matchesAckBlocks(blocks: unknown, text: string) {
+  if (blocks === undefined || (Array.isArray(blocks) && blocks.length === 0)) return true;
+  if (!Array.isArray(blocks) || blocks.length !== 1) return false;
+  const { block_id: _id, ...block } = blocks[0] ?? {};
+  // Slack may generate this exact rich-text representation for a plain reply.
+  return isDeepStrictEqual(block, {
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  });
+}
 
 export function editOwnThreadReply(params: {
   client: WebClient;
@@ -9,7 +22,9 @@ export function editOwnThreadReply(params: {
   channel: string;
   thread: string;
   requestId: string;
-  priority: Priority;
+  changes: ReportAmendment;
+  sender: string;
+  queuedReceipt?: { messageId: string; text: string };
   team: string;
   botUser: string;
   assertCurrent: () => void;
@@ -38,6 +53,34 @@ export function editOwnThreadReply(params: {
       !auth.bot_id
     )
       throw new Error("Reply editor identity mismatch");
+    const receipt = params.queuedReceipt;
+    if (receipt) {
+      const id = receipt.messageId;
+      if (!/^\d{10}\.\d{6}$/.test(id) || id <= requestId)
+        throw new Error("Invalid queued acknowledgment");
+      const read = await client.conversations.replies({
+        token,
+        channel,
+        ts: thread,
+        oldest: id,
+        latest: id,
+        inclusive: true,
+        limit: 2,
+      });
+      const ack = read.messages?.find((m) => m.ts === id);
+      if (
+        !read.ok ||
+        !ack ||
+        ack.user !== auth.user_id ||
+        ack.bot_id !== auth.bot_id ||
+        ack.thread_ts !== thread ||
+        ack.text !== receipt.text ||
+        !matchesAckBlocks(ack.blocks, receipt.text) ||
+        ack.attachments?.length ||
+        ack.files?.length
+      )
+        throw new Error("Queued acknowledgment does not match the bound thread");
+    }
     const link = await client.chat.getPermalink({ token, channel, message_ts: ts });
     if (
       !link.ok ||
@@ -65,9 +108,10 @@ export function editOwnThreadReply(params: {
       typeof message.text !== "string"
     )
       throw new Error("Expected own report in the bound thread");
-    const next = updatePriority(
+    const next = updateReportCard(
       { text: message.text, blocks: message.blocks ?? [], attachments: message.attachments ?? [] },
-      params.priority,
+      params.changes,
+      params.sender,
     );
     const blocks = next.blocks as Block[];
     const attachments = next.attachments as MessageAttachment[];
@@ -82,8 +126,14 @@ export function editOwnThreadReply(params: {
       attachments,
     };
     assertCurrent();
+    // Recover a prior confirmed Slack edit whose catalog commit was interrupted.
+    if (await didSlackReplyEditApply(expected, message)) {
+      assertCurrent();
+      return ts;
+    }
     // Slack can accept the edit even if the HTTP response is lost. Verify the exact
     // target after either outcome; never turn an uncertain edit into a new post.
+    assertCurrent();
     try {
       const response = await client.chat.update({
         token,

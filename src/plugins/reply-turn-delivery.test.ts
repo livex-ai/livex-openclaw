@@ -48,6 +48,47 @@ describe("reply turn accepted transport authority", () => {
     expect(ordinary.queuedCorrelation).toBeUndefined();
   });
 
+  it("grants the editor only during policy-admitted finals and revokes it after settlement", async () => {
+    const f = fixture();
+    const writer = vi.fn(async () => "updated");
+    let bound: ReplyTurnDeliveryHost | undefined;
+    let stillCurrent: (() => void) | undefined;
+    const persisted = {
+      ...f.host,
+      amendOwnReport: vi.fn(async (_url, _patch, _receipt, check) => {
+        stillCurrent = check;
+        return writer();
+      }),
+    };
+    const owner = createReplyTurnDelivery(
+      {
+        ...f.turn,
+        createDelivery: (host) => {
+          bound = host;
+          return {
+            deliver: async () => {
+              await host.amendOwnReport!("target", { priority: "Low" });
+              await expect(host.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
+                "admitted final",
+              );
+              return { visibleReplySent: true };
+            },
+          };
+        },
+      },
+      persisted,
+    );
+    await expect(bound!.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
+      "admitted final",
+    );
+    await expect(owner.deliver({ text: "progress" }, { kind: "block" })).rejects.toThrow(
+      "admitted final",
+    );
+    await owner.deliver({ text: "request" }, { kind: "final" });
+    expect(writer).toHaveBeenCalledOnce();
+    expect(() => stillCurrent!()).toThrow("closed");
+  });
+
   it("accepts only this turn's actual final receipt and never source or arbitrary IDs", async () => {
     const f = fixture();
     await expect(f.transport().resolvePermalink("final")).rejects.toThrow(/own accepted final/);

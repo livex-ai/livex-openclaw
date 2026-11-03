@@ -1,29 +1,8 @@
+import type { ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
 import type { SlackMessageEvent } from "../../types.js";
 export type ReplyTurnEditContent = { text: string; blocks: unknown[]; attachments: unknown[] };
 
-const priorities = {
-  unknown: "Unknown",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  critical: "Critical",
-} as const;
-export type Priority = (typeof priorities)[keyof typeof priorities];
-
-export function requestedPriority(text: string): Priority | undefined {
-  const match =
-    /^(?:please\s+)?(?:update|set|change)\s+(?:(?:the\s+)?(?:above\s+(?:one|report)|this\s+report|report)\s+to\s+(unknown|low|medium|high|critical)\s+priority|(?:the\s+)?priority\s+to\s+(unknown|low|medium|high|critical))[.!]?$/i.exec(
-      text.trim(),
-    );
-  const value = match?.[1] ?? match?.[2];
-  return value ? priorities[value.toLowerCase() as keyof typeof priorities] : undefined;
-}
-
-export function explicitPriorityEdit(
-  message: SlackMessageEvent,
-  botUser: string,
-  authorized: boolean,
-) {
+export function editRequest(message: SlackMessageEvent, botUser: string, authorized: boolean) {
   const prefix = `<@${botUser}>`;
   const text = message.text?.trim();
   if (
@@ -37,8 +16,10 @@ export function explicitPriorityEdit(
     !text?.startsWith(prefix)
   )
     return undefined;
-  const priority = requestedPriority(text.slice(prefix.length));
-  return priority && { priority, threadId: message.thread_ts, messageId: message.ts };
+  const body = text.slice(prefix.length).trim();
+  return body && body.length <= 2000
+    ? { text: body, threadId: message.thread_ts, messageId: message.ts }
+    : undefined;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -62,9 +43,10 @@ function section(value: unknown, prefix: string) {
 }
 
 /** Only alter the priority display and its color. Keep the accepted report as the source of truth. */
-export function updatePriority(
+export function updateReportCard(
   original: ReplyTurnEditContent,
-  priority: Priority,
+  changes: ReportAmendment,
+  sender: string,
 ): ReplyTurnEditContent {
   const result = structuredClone(original);
   if (result.blocks.length !== 1 || result.attachments.length !== 1)
@@ -85,13 +67,32 @@ export function updatePriority(
       previous,
     );
   if (!parsed) throw new Error("Unknown priority display");
-  section(blocks[1], "*Next action:* ");
+  const action = section(blocks[1], "*Next action:* ");
+  const priority = changes.priority ?? parsed[1];
+  let newAction = action;
+  if (changes.nextAction || changes.acceptOwnership) {
+    const parts = /^(\*Next action:\* )(.+) · Owner: (.+)$/u.exec(action);
+    if (!parts || action.includes(" · Owners: ") || action.split(" · Owner: ").length !== 2)
+      throw new Error("Cannot amend ambiguous ownership");
+    const escaped = changes.nextAction
+      ?.replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+    newAction =
+      "*Next action:* " +
+      (escaped ?? parts[2]!) +
+      " · Owner: " +
+      (changes.acceptOwnership ? sender : parts[3]);
+    if (newAction.length > 3000) throw new Error("Next action exceeds Slack section limit");
+    object(object(blocks[1]).text).text = newAction;
+  }
   section(blocks[2], "*Summary:* ");
   section(blocks[3], "*Evidence:* ");
   const next = `*Priority:* ${priority}${parsed[2] ?? ""}`;
   object(object(blocks[0]).text).text = next;
   // Slack may collapse the top-level fallback's newlines to spaces. Locate the
   // priority immediately before Next action; never touch a quotation in evidence.
+  const actionLine = action;
   const updateFallback = (text: string) => {
     if (text === section(result.blocks[0], "*Title:* ")) return text;
     const action = text.indexOf("*Next action:*");
@@ -106,19 +107,28 @@ export function updatePriority(
     ) {
       throw new Error("Unrecognized report fallback");
     }
-    return text.slice(0, start) + next + text.slice(end);
+    if (!text.startsWith(actionLine, action)) throw new Error("Unrecognized action fallback");
+    const fallback =
+      text.slice(0, start) +
+      next +
+      text.slice(end, action) +
+      newAction +
+      text.slice(action + actionLine.length);
+    if (Buffer.byteLength(fallback) > 4000) throw new Error("Edited report exceeds fallback limit");
+    return fallback;
   };
   result.text = updateFallback(result.text);
   if (typeof attachment.fallback === "string")
     attachment.fallback = updateFallback(attachment.fallback);
-  attachment.color =
-    parsed[2] === " · Resolved"
-      ? "#2E8B57"
-      : priority === "Critical" || priority === "High"
-        ? "#D92D20"
-        : priority === "Medium"
-          ? "#D99A00"
-          : "#9CA3AF";
+  if (changes.priority)
+    attachment.color =
+      parsed[2] === " · Resolved"
+        ? "#2E8B57"
+        : priority === "Critical" || priority === "High"
+          ? "#D92D20"
+          : priority === "Medium"
+            ? "#D99A00"
+            : "#9CA3AF";
   return result;
 }
 

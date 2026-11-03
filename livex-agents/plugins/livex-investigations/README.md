@@ -42,16 +42,19 @@ python3 -B -m unittest discover -s deploy/gcp-vm -p 'test_prepare.py'
 
 The native fixture uses the actual bootstrap CLI, manifest loader, setup entry, Doctor compatibility sequence and strict configuration validator. It checks conflicting and disabled settings, policy and catalog-path preservation, idempotence, private output, refusal to overwrite and exact source-byte preservation. Container package fixtures exercise the Dockerfile's dependency links and reject an incompatible base without building or deploying an image.
 
-### Update a report's priority in Slack
+### Follow up in an investigation thread
 
-In the original alert thread, an authorized sender can mention the bot and write
-`set priority to Medium`. The bot edits the priority on the existing compact
-report and keeps its permalink, findings, next action, and evidence. Supported
-priorities are Unknown, Low, Medium, High, and Critical. The change records the
-sender's requested priority, independently of any technical assessment.
+Ask for status to get an ordinary answer from the known evidence. Ask for a
+deeper investigation to use the existing oncall skills. For explicit changes,
+mention the bot in the original thread. Examples include “I’ll own this; make
+it Medium” and “set next action to check retry logs only after approval.”
+The model proposes the fields together. A scoped writer verifies the current
+request, canonical case, Slack authorship and edited card. Unclear values or
+unsupported wording require clarification. Ownership is accepted by the sender.
 
-The edit requires one identifiable case and a report authored by this bot in
-the same thread. Case history records the change after Slack readback confirms
-the edit. If several older reports have bare permalinks and the catalog cannot
-identify one target, the edit is refused. If confirmation fails, check the
-original report before retrying.
+A queued update can show a short request acknowledgment before verification.
+It does not assert success. The original report and case history are the
+records of the verified change. An ambiguous target, stale case, or conflicting
+replay cannot authorize an edit. Existing catalogs remain readable. Before
+downgrading to a build without the optional priority fact, retain a compatible
+catalog backup.

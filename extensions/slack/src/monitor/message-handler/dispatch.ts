@@ -28,8 +28,8 @@ import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "../../thread-ts.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
+import { createReportEditor } from "./amend-own-report.js";
 import { resolveSlackBotLoopProtection, formatSlackGroupThreadReply } from "./dispatch-helpers.js";
-import { dispatchPriorityEdit } from "./dispatch-priority-edit.js";
 import { createSlackProgressRuntime } from "./dispatch-progress.js";
 import { createSlackDispatchSetup, type SlackDispatchSetup } from "./dispatch-setup.js";
 import { createSlackStreamingDeliveryRuntime } from "./dispatch-streaming.js";
@@ -108,7 +108,6 @@ async function dispatchSlackMessageWithSetup(
     suppressRoomEventTyping,
     useStreaming,
   } = setup;
-  if (await dispatchPriorityEdit(setup, turnAdoptionLifecycle)) return;
   let dispatchError: unknown;
   let summaryUpdateUnverified = false;
   const delivery = createSlackStreamingDeliveryRuntime(setup);
@@ -448,6 +447,7 @@ async function dispatchSlackMessageWithSetup(
     return result.deliveryResult ?? { visibleReplySent: false };
   };
   const replyTurnDelivery = createReplyTurnDelivery(prepared.replyTurn, {
+    amendOwnReport: createReportEditor(setup),
     sourceMessageIds: [message.ts, message.thread_ts],
     resolvePermalink: async (messageId) => {
       prepared.replyTurn?.assertCurrent();

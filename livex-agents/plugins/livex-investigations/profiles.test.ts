@@ -15,7 +15,7 @@ import { createInvestigationDelivery } from "./delivery.js";
 import { createInvestigationRecordTool } from "./report-tool.js";
 import { closeInvestigationTurnRegistry, getInvestigationTurnRegistry } from "./runtime.js";
 import { serializeCatalog, type CompletedInvestigation } from "./schema.js";
-import { readCatalog } from "./store.js";
+import { commitInvestigations, readCatalog } from "./store.js";
 
 const rootPaths: string[] = [];
 function profile(id: string, agentId: string): AgentReportProfile {
@@ -331,6 +331,7 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
   async (change) => {
     install();
     const fixture = await turn("oncall");
+    fixture.value.reportExpected = true;
     const annotateAcceptedFinal = vi.fn();
     const owner = createInvestigationDelivery({
       turn: fixture.value,
@@ -341,7 +342,7 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
       deliver: vi.fn(async () => ({ visibleReplySent: true })),
     });
     const projected = owner.queuedCorrelation?.prepareReply?.(
-      { text: "Unprepared final" },
+      { text: "**Finding:** Unprepared final" },
       { kind: "final" },
     );
     const accepted = structuredClone(projected!);
@@ -369,3 +370,84 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
     }
   },
 );
+
+it.each(["immediate", "queued", "changed", "partial"] as const)(
+  "amends one existing case through %s delivery",
+  async (mode) => {
+    install();
+    const f = await turn("oncall");
+    const root = "1793000000.000001",
+      ts = "1793000001.000001";
+    const url = "https://example.slack.com/archives/C1/p1793000001000001?thread_ts=" + root;
+    const req = {
+      threadId: root,
+      messageId: "1793000002.000001",
+      text: "I'll own this; make it Medium.",
+    };
+    await commitInvestigations({
+      filePath: f.filePath,
+      scope: f.scope,
+      updates: [f.update],
+      reportUrl: url,
+      now: new Date(),
+      assertCurrent() {},
+    });
+    f.value.snapshot = await readCatalog({ filePath: f.filePath, scope: f.scope });
+    f.value.amendmentRequest = req;
+    const tool = createInvestigationRecordTool(f.ctx);
+    await tool.execute("stage", {
+      action: "amend_current_report",
+      changes: { priority: "Medium", acceptOwnership: true },
+    });
+    const payload = { text: f.value.amendment!.finalText };
+    const amendOwnReport = vi.fn(async () => ts);
+    const send = vi.fn(async () => ({ visibleReplySent: true }));
+    const owner = createInvestigationDelivery({
+      turn: f.value,
+      sourceMessageIds: [root, req.messageId],
+      amendOwnReport,
+      resolvePermalink: vi.fn(),
+      reportError: vi.fn(),
+      annotateAcceptedFinal: vi.fn(),
+      deliver: send,
+    });
+    if (mode === "immediate") {
+      await owner.deliver(payload, { kind: "final" });
+      expect(send).not.toHaveBeenCalled();
+    } else {
+      owner.queuedCorrelation!.prepareReply!(payload, { kind: "final" });
+      await owner.queuedCorrelation!.onReplyDelivered!(
+        mode === "changed" ? { text: "Policy replacement" } : payload,
+        { kind: "final", complete: mode !== "partial", messageId: "1793000003.000001" },
+      );
+    }
+    const applied = mode === "immediate" || mode === "queued";
+    expect(amendOwnReport).toHaveBeenCalledTimes(applied ? 1 : 0);
+    const issue = (await readCatalog({ filePath: f.filePath, scope: f.scope })).issues[0]!;
+    expect(issue.whatWeDidLast).toHaveLength(applied ? 2 : 1);
+    if (applied)
+      expect(issue.whatWeDidLast.at(-1)!.facts).toMatchObject({
+        priority: "Medium",
+        owner: { name: "U1" },
+      });
+  },
+);
+
+it("answers a status question without a report, warning, or write", async () => {
+  install();
+  const f = await turn("oncall");
+  const send = vi.fn(async () => ({ visibleReplySent: true }));
+  const owner = createInvestigationDelivery({
+    turn: f.value,
+    sourceMessageIds: [],
+    resolvePermalink: vi.fn(),
+    annotateAcceptedFinal: vi.fn(),
+    reportError: vi.fn(),
+    deliver: send,
+  });
+  const payload = { text: "The last check found one blocked job." };
+  await owner.deliver(payload, { kind: "final" });
+  expect(send).toHaveBeenCalledWith(payload, { kind: "final" });
+  expect(owner.queuedCorrelation?.prepareReply?.(payload, { kind: "final" })).toBeUndefined();
+  expect((await readCatalog({ filePath: f.filePath, scope: f.scope })).issues).toHaveLength(0);
+});

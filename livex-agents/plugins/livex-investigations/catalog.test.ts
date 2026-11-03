@@ -488,7 +488,8 @@ describe("priority update history", () => {
       scope,
       threadId: root,
       messageId: "1793000002.000001",
-      priority: "Medium",
+      changes: { priority: "Medium", nextAction: "Review logs", acceptOwnership: true } as const,
+      snapshot: await readCatalog({ filePath, scope }),
       assertCurrent: () => {},
       edit: async (target: string) => {
         expect(target).toBe(url);
@@ -519,9 +520,46 @@ describe("priority update history", () => {
     expect(updated.slackThreads).toEqual([url]);
     expect(updated.whatWeDidLast).toHaveLength(2);
     expect(updated.whatWeDidLast[1]).toMatchObject({
-      facts: before.whatWeDidLast[0].facts,
+      facts: {
+        ...before.whatWeDidLast[0].facts,
+        priority: "Medium",
+        nextAction: "Review logs",
+        owner: { name: scope.senderId, evidenceUrl: expect.stringContaining("1793000002000001") },
+      },
       reportUrl: url,
     });
+  });
+  it("serializes a same-case publication across slow Slack confirmation and rejects an older amendment", async () => {
+    const filePath = await catalogPath(),
+      threadId = "1793000000.000001",
+      url = firstUrl + "?thread_ts=" + threadId;
+    await record(filePath, [finding()], url);
+    const snapshot = await readCatalog({ filePath, scope });
+    let publishing: ReturnType<typeof record> | undefined;
+    const args = {
+      filePath,
+      scope,
+      threadId,
+      messageId: "1793000004.000001",
+      changes: { priority: "High" as const, acceptOwnership: true as const },
+      snapshot,
+      assertCurrent() {},
+      edit: async () => {
+        publishing = record(filePath, [finding()], secondUrl);
+        await new Promise((r) => setTimeout(r, 1100));
+      },
+    };
+    await editCatalogReport(args);
+    expect((await publishing)?.status).toBe("committed");
+    const after = await readCatalog({ filePath, scope });
+    expect(after.issues[0]!.whatWeDidLast).toHaveLength(3);
+    expect(after.issues[0]!.whatWeDidLast.at(-1)?.facts.priority).toBe("High");
+    expect(after.issues[0]!.waitingOn).toBe(finding().facts.nextAction);
+    const write = vi.fn();
+    await expect(
+      editCatalogReport({ ...args, messageId: "1793000003.000001", snapshot: after, edit: write }),
+    ).rejects.toThrow("supersedes");
+    expect(write).not.toHaveBeenCalled();
   });
   it("refuses multiple matching cases and a different sender", async () => {
     const filePath = await catalogPath(),
@@ -537,7 +575,12 @@ describe("priority update history", () => {
           scope: { ...scope, senderId },
           threadId: root,
           messageId: "1793000002.000004",
-          priority: "Medium",
+          changes: {
+            priority: "Medium",
+            nextAction: "Review logs",
+            acceptOwnership: true,
+          } as const,
+          snapshot: await readCatalog({ filePath, scope }),
           assertCurrent: () => {},
           edit,
         }),

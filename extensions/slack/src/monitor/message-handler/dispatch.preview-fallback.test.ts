@@ -943,6 +943,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];
       }
+      if (scenario === "queued-unprepared") investigationTurn.reportExpected = true;
       if (scenario !== "queued-unprepared") {
         registry.stage(
           "dispatch-catalog",
@@ -1024,7 +1025,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         expect(registry.get("dispatch-catalog")).toBeDefined();
         const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
         const projected = correlation?.prepareReply?.(
-          { text: FINAL_REPLY_TEXT },
+          { text: "**Finding:** Missing mapping" },
           { kind: "final" },
         );
         expect(projected).toBeDefined();
@@ -1096,15 +1097,14 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       useRealChannelInboundTurn = true;
       const adopted = vi.fn();
       const releaseImmediate = vi.fn();
-      const handleExplicitEdit = vi.fn(async () => {});
+      const applyFinal = vi.fn(async () => ({ visibleReplySent: true }));
       const dispatchReplyFromConfig: NonNullable<
         PreparedSlackMessage["ctx"]["dispatchReplyFromConfig"]
-      > = async ({ ctx, dispatcher, replyResolver, replyOptions }) => {
-        if (!replyResolver) throw new Error("Missing deterministic priority resolver");
-        const reply = await replyResolver(ctx, replyOptions);
-        if (!reply || Array.isArray(reply)) throw new Error("Expected one priority edit");
+      > = async ({ dispatcher, replyResolver, replyOptions }) => {
+        expect(replyResolver).toBeUndefined();
+        await replyOptions?.turnAdoptionLifecycle?.onAdopted();
         return {
-          queuedFinal: deliver && dispatcher.sendFinalReply(reply),
+          queuedFinal: deliver && dispatcher.sendFinalReply({ text: "requested amendment" }),
           counts: dispatcher.getQueuedCounts(),
         };
       };
@@ -1132,11 +1132,11 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
           lifecycle: () => ({ onAdopted: adopted }),
           releaseImmediate,
           assertCurrent: () => {},
-          handleExplicitEdit,
+          createDelivery: () => ({ deliver: applyFinal }),
         },
         dispatchReplyFromConfig,
       });
-      expect(handleExplicitEdit).toHaveBeenCalledTimes(deliver ? 1 : 0);
+      expect(applyFinal).toHaveBeenCalledTimes(deliver ? 1 : 0);
       expect(adopted).toHaveBeenCalledOnce();
       expect(releaseImmediate).toHaveBeenCalledOnce();
       expect(postMessageMock).not.toHaveBeenCalled();

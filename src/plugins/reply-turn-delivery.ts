@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
 import type {
   PreparedReplyTurn,
@@ -32,8 +33,38 @@ export function createReplyTurnDelivery(
       throw new Error("Reply turn transport requires its own accepted final message");
     }
   };
+  // An editor is usable only inside one policy-admitted final delivery.
+  const admission = new AsyncLocalStorage<{
+    open: boolean;
+    used: boolean;
+    queuedReceipt?: { messageId: string; text: string };
+  }>();
+  async function withAdmission<T>(
+    run: () => Promise<T>,
+    queuedReceipt?: { messageId: string; text: string },
+  ) {
+    const lease = { open: true, used: false, queuedReceipt };
+    try {
+      return await admission.run(lease, run);
+    } finally {
+      lease.open = false;
+    }
+  }
   const delivery = turn.createDelivery({
     ...host,
+    amendOwnReport:
+      host.amendOwnReport &&
+      (async (url, changes) => {
+        const permit = admission.getStore();
+        if (!permit?.open || permit.used)
+          throw new Error("Report edit requires its own admitted final");
+        turn.assertCurrent();
+        permit.used = true;
+        return host.amendOwnReport!(url, changes, permit.queuedReceipt, () => {
+          if (!permit.open) throw new Error("Report edit admission closed");
+          turn.assertCurrent();
+        });
+      }),
     async resolvePermalink(messageId) {
       assertAccepted(messageId);
       const permalink = await host.resolvePermalink(messageId);
@@ -65,7 +96,10 @@ export function createReplyTurnDelivery(
   });
   const correlation = delivery.queuedCorrelation;
   return {
-    deliver: delivery.deliver,
+    deliver: (payload, info) =>
+      info.kind === "final" && host.amendOwnReport
+        ? withAdmission(() => delivery.deliver(payload, info))
+        : delivery.deliver(payload, info),
     ...(correlation
       ? {
           queuedCorrelation: {
@@ -74,7 +108,21 @@ export function createReplyTurnDelivery(
               if (receipt?.complete && receipt.kind === "final" && receipt.messageId) {
                 remember({ visibleReplySent: true, messageIds: [receipt.messageId] });
               }
-              await correlation.onReplyDelivered?.(payload, receipt);
+              if (
+                host.amendOwnReport &&
+                receipt?.complete &&
+                receipt.kind === "final" &&
+                receipt.messageId &&
+                !host.sourceMessageIds.includes(receipt.messageId) &&
+                payload.text
+              ) {
+                await withAdmission(async () => correlation.onReplyDelivered?.(payload, receipt), {
+                  messageId: receipt.messageId,
+                  text: payload.text,
+                });
+              } else {
+                await correlation.onReplyDelivered?.(payload, receipt);
+              }
             },
           },
         }

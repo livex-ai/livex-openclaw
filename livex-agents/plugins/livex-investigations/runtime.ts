@@ -1,9 +1,10 @@
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import type { AgentReportProfile, PreparedAgentReport } from "openclaw/plugin-sdk/report-profiles";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import type { AmendmentRequest, StagedAmendment } from "./amendment.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
-
 export type InvestigationTurnInput = {
+  amendmentRequest?: AmendmentRequest;
   id: string;
   scope: HistoryScope;
   sessionKey: string;
@@ -31,6 +32,8 @@ export type InvestigationTurn = InvestigationTurnInput & {
     upstream?: GetReplyOptions["turnAdoptionLifecycle"],
   ) => NonNullable<GetReplyOptions["turnAdoptionLifecycle"]>;
   releaseImmediate: () => void;
+  reportExpected?: boolean;
+  amendment?: StagedAmendment;
   matchFinal: (finalText: string) => StagedInvestigation | undefined;
 };
 
@@ -127,6 +130,8 @@ export function createInvestigationTurnRegistry() {
     clearStaged(id: string): void {
       const entry = requireTurn(id);
       delete entry.staged;
+      delete entry.turn.amendment;
+      delete entry.turn.reportExpected;
     },
     stage(
       id: string,
@@ -155,6 +160,7 @@ export function createInvestigationTurnRegistry() {
         throw new Error("Stage one to twenty investigations with a bounded exact final reply");
       }
       // Model input crosses the boundary once; later model mutations cannot change prepared facts.
+      entry.turn.reportExpected = true;
       entry.staged = structuredClone({
         finalText: finalText.trim(),
         updates,

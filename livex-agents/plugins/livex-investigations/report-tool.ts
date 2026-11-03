@@ -2,6 +2,7 @@ import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sd
 import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
+import { prepareAmendment } from "./amendment.js";
 import { projectInvestigationIssue } from "./lookup.js";
 import { compareFindings } from "./matching.js";
 import { reportContext } from "./report-context.js";
@@ -14,7 +15,16 @@ const links = { type: "array", maxItems: 30, items: { type: "string", maxLength:
 const parameters = {
   type: "object",
   properties: {
-    action: { type: "string", enum: ["lookup", "prepare_update"] },
+    action: { type: "string", enum: ["lookup", "prepare_update", "amend_current_report"] },
+    changes: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        priority: { type: "string", enum: ["Unknown", "Low", "Medium", "High", "Critical"] },
+        nextAction: { type: "string", minLength: 1, maxLength: 2000 },
+        acceptOwnership: { type: "boolean", enum: [true] },
+      },
+    },
     issueIds: {
       type: "array",
       maxItems: 20,
@@ -179,11 +189,22 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
           totalIssues: snapshot.issues.length,
         });
       }
+      if (args?.action === "amend_current_report") {
+        registry.clearStaged(turnId);
+        if (Object.keys(args).some((k) => k !== "action" && k !== "changes"))
+          throw new Error("Supply only the proposed changes");
+        const amendment = prepareAmendment(args.changes, turn.amendmentRequest, turn.snapshot);
+        if ("clarification" in amendment)
+          return jsonResult({ status: "clarification_required", message: amendment.clarification });
+        turn.amendment = amendment;
+        return jsonResult({ status: "staged", finalText: amendment.finalText });
+      }
       if (args?.action !== "prepare_update") {
-        throw new Error("Use lookup or prepare_update");
+        throw new Error("Use lookup, prepare_update or amend_current_report");
       }
       // A failed later attempt must not leave an older final eligible for publication.
       registry.clearStaged(turnId);
+      turn.reportExpected = true;
       const legacyText = typeof args.finalText === "string" ? args.finalText.trim() : undefined;
       if (
         !Array.isArray(args.updates) ||

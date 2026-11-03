@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { acquireFileLock } from "openclaw/plugin-sdk/file-lock";
+import type { ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
 import {
   extractErrorCode,
   readRegularFile,
@@ -103,6 +104,17 @@ function pacificDate(now: Date): string {
 
 const unique = (values: string[]) => [...new Set(values)];
 
+const catalogLockOptions = {
+  retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
+  stale: 30_000,
+  staleRecovery: "remove-if-definitely-stale" as const,
+};
+const lockCase = (path: string, id: string) =>
+  acquireFileLock(path + ".case-" + id, {
+    ...catalogLockOptions,
+    retries: { retries: 65, factor: 1.4, minTimeout: 20, maxTimeout: 500 },
+  });
+
 export async function commitInvestigations(params: {
   filePath: string;
   scope: HistoryScope;
@@ -122,12 +134,12 @@ export async function commitInvestigations(params: {
     }
   };
   let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined;
+  const cases: Awaited<ReturnType<typeof lockCase>>[] = [];
   try {
-    lock = await acquireFileLock(params.filePath, {
-      retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
-      stale: 30_000,
-      staleRecovery: "remove-if-definitely-stale",
-    });
+    for (const id of [...new Set(params.updates.map((u) => createIssueId(u.signature)))].sort()) {
+      cases.push(await lockCase(params.filePath, id));
+    }
+    lock = await acquireFileLock(params.filePath, catalogLockOptions);
     const document = await readDocument(params.filePath);
     assertCurrent();
     if (document.status !== "ready") {
@@ -241,7 +253,11 @@ export async function commitInvestigations(params: {
           : "Catalog update failed; publication is not confirmed",
     };
   } finally {
-    await lock?.release();
+    try {
+      await lock?.release();
+    } finally {
+      await Promise.all(cases.map((c) => c.release()));
+    }
   }
 }
 
@@ -267,22 +283,19 @@ export async function editCatalogReport(params: {
   scope: HistoryScope;
   threadId: string;
   messageId: string;
-  priority: string;
+  changes: ReportAmendment;
+  snapshot: CatalogSnapshot;
   assertCurrent: () => void;
   edit: (url: string) => Promise<void>;
 }) {
-  const { filePath, scope, threadId, messageId, priority, assertCurrent } = params;
+  const { filePath, scope, threadId, messageId, changes, assertCurrent } = params;
   assertCurrent();
-  const lockOptions = {
-    retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
-    stale: 30_000,
-    staleRecovery: "remove-if-definitely-stale" as const,
-  };
   // Serialize edits to this thread without blocking saves for independent cases during Slack I/O.
   const threadKey = createHash("sha256")
     .update(JSON.stringify([scope.teamId, scope.channelId, threadId]))
     .digest("hex");
-  const lock = await acquireFileLock(filePath + ".edit-" + threadKey, lockOptions);
+  const lock = await acquireFileLock(filePath + ".edit-" + threadKey, catalogLockOptions);
+  let caseLock: Awaited<ReturnType<typeof lockCase>> | undefined;
   try {
     const stage = async () => {
       const doc = await readDocument(filePath);
@@ -329,12 +342,53 @@ export async function editCatalogReport(params: {
         )
       )
         throw new Error("Ambiguous canonical report");
-      const summary = `Priority set to ${priority} at the sender's request (Slack ${messageId}).`;
-      if (issue.whatWeDidLast.some((entry) => entry.summary === summary))
+      const requestUrl = new URL(url);
+      requestUrl.pathname = "/archives/" + scope.channelId + "/p" + messageId.replace(".", "");
+      requestUrl.search = "";
+      const receipt = requestUrl.href;
+      const summary =
+        "Report amended by " +
+        scope.senderId +
+        ": " +
+        JSON.stringify(changes) +
+        " (Slack " +
+        messageId +
+        ").";
+      const previous = issue.whatWeDidLast.find(
+        (entry) =>
+          entry.evidenceUrls.includes(receipt) &&
+          entry.summary.endsWith("(Slack " + messageId + ")."),
+      );
+      if (previous) {
+        if (previous.summary !== summary) throw new Error("Conflicting replay of report amendment");
         return { url, id: issue.issueId };
+      }
+      if (
+        issue.whatWeDidLast.some((entry) => {
+          const newer = /\(Slack (\d{10}\.\d{6})\)\.$/.exec(entry.summary)?.[1];
+          return newer && newer > messageId && entry.summary.startsWith("Report amended by ");
+        })
+      )
+        throw new Error("A later report change already supersedes this request");
+      const observed = params.snapshot.issues.find((i) => i.issueId === issue.issueId);
+      if (!observed || JSON.stringify(observed) !== JSON.stringify(issue))
+        throw new Error("Case changed since request preparation");
+      const last = issue.whatWeDidLast.at(-1)!;
+      const facts = { ...last.facts };
+      if (changes.priority) facts.priority = changes.priority;
+      if (changes.nextAction) facts.nextAction = changes.nextAction;
+      if (changes.acceptOwnership) facts.owner = { name: scope.senderId, evidenceUrl: receipt };
+      if (issue.waitingOn === last.facts.nextAction) issue.waitingOn = facts.nextAction;
+      else if (
+        changes.acceptOwnership &&
+        /^(?:unassigned|owner (?:unknown|acceptance unknown))$/i.test(issue.waitingOn)
+      )
+        issue.waitingOn = facts.nextAction;
       const completedAt = pacificDate(new Date());
       issue.whatWeDidLast.push({
-        ...issue.whatWeDidLast.at(-1)!,
+        ...last,
+        facts,
+        evidenceUrls: [...new Set([...last.evidenceUrls, receipt])],
         completedAt,
         kind: "changed",
         summary,
@@ -346,9 +400,15 @@ export async function editCatalogReport(params: {
     const before = await stage();
     assertCurrent();
     if (!before.content) return;
+    caseLock = await lockCase(filePath, before.id);
+    const current = await stage();
+    if (!current.content) return;
+    if (current.id !== before.id || current.url !== before.url)
+      throw new Error("Canonical case changed");
+    assertCurrent();
     await params.edit(before.url);
     assertCurrent();
-    const writer = await acquireFileLock(filePath, lockOptions);
+    const writer = await acquireFileLock(filePath, catalogLockOptions);
     try {
       const after = await stage();
       if (after.id !== before.id || after.url !== before.url)
@@ -358,6 +418,10 @@ export async function editCatalogReport(params: {
       await writer.release();
     }
   } finally {
-    await lock.release();
+    try {
+      await caseLock?.release();
+    } finally {
+      await lock.release();
+    }
   }
 }
