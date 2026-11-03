@@ -312,6 +312,12 @@ installed JSON config. Cutover verifies the live main-lane limit as well as
 Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
 instructions retain the VM's reaction and read-only session policies.
 
+After backup and preflight, an enabled oncall investigation catalog is initialized
+once in the mounted agent directory. The release’s `init-catalog.log` reports
+`initialized`, `preserved`, or `disabled`. Existing records survive redeployment
+and rollback. Initialization starts with an empty catalog; verify saving and
+cross-thread lookup separately on fresh investigations.
+
 Success prints `running_verified`. On cutover failure the helper attempts to
 restore the previous image and exact pre-deploy config and reports its readiness. Inspect private receipts
 in `/opt/livex-openclaw/releases/<sha>/` before retrying a failed or interrupted

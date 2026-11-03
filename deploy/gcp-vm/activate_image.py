@@ -341,6 +341,19 @@ def activate(root, source, old_image):
         unchanged()
         if not ((root / "release.env").read_bytes() == new_release):
             raise RuntimeError("Candidate selector changed before start")
+        # Use the candidate runtime's agent-directory resolver and filesystem identity.
+        seed = pathlib.Path(__file__).with_name("init_catalog.cjs").read_text()
+        logged(
+            "init-catalog",
+            cli
+            + [
+                "--entrypoint",
+                "node",
+                "cli",
+                "-e",
+                seed + "\ninitializeOncallCatalog();",
+            ],
+        )
         started = datetime.datetime.now(datetime.timezone.utc).isoformat()
         logged(
             "start-candidate",

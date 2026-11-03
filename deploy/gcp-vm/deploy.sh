@@ -11,6 +11,12 @@ sha=$1
 helpers=$(cd "$(dirname "$0")" && pwd -P)
 repo=$(git -C "$helpers" rev-parse --show-toplevel)
 tooling=$(git -C "$repo" rev-parse HEAD)
+stage_helpers() {
+  local dest=$1 helper
+  for helper in build_candidate.py activate_image.py release_inputs.py init_catalog.cjs; do
+    git -C "$repo" show "$tooling:deploy/gcp-vm/$helper" > "$dest/$helper"
+  done
+}
 git -C "$repo" diff --exit-code --quiet "$tooling" -- deploy/gcp-vm/deploy.sh || { echo "Use the committed deployment script." >&2; exit 1; }
 [[ $(git -C "$repo" cat-file -t "$sha") == commit ]]
 
@@ -42,9 +48,7 @@ else
   work=$(cd "$work" && pwd -P)
   echo "Private build artifacts: $work"
   mkdir "$work/tmp" "$work/package" "$work/helpers"
-  for helper in build_candidate.py activate_image.py release_inputs.py; do
-    git -C "$repo" show "$tooling:deploy/gcp-vm/$helper" > "$work/helpers/$helper"
-  done
+  stage_helpers "$work/helpers"
   export TMPDIR="$work/tmp" npm_config_cache="$work/npm-cache"
   export OPENCLAW_TSDOWN_MAX_OLD_SPACE_MB=4608 OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB=4608
   git init -q "$work/src"
@@ -67,17 +71,15 @@ pkg_hash=$(shasum -a 256 "$work/package-context/openclaw-current.tgz" | cut -d '
 if [[ -n $resume_flag ]]; then
   # Never overwrite existing helpers, receipts or inputs during reconciliation.
   repair=$(mktemp -d "$work/resume.XXXXXX")
-  for helper in build_candidate.py release_inputs.py activate_image.py; do
-    git -C "$repo" show "$tooling:deploy/gcp-vm/$helper" > "$repair/$helper"
-  done
+  stage_helpers "$repair"
   stage="$upload/$(basename "$repair")"
   remote "umask 077 && mkdir '$stage' && ln -s ../package-context '$stage/package-context' && ln -s ../source.tar.gz '$stage/source.tar.gz'"
-  gcloud compute scp "${location[@]}" --scp-flag=-4 "$repair/"*.py "$vm:$stage/"
+  gcloud compute scp "${location[@]}" --scp-flag=-4 "$repair/"*.py "$repair/init_catalog.cjs" "$vm:$stage/"
 else
   stage="$upload"
   remote "umask 077 && mkdir '$upload'"
   gcloud compute scp "${location[@]}" --scp-flag=-4 --recurse "$work/source.tar.gz" \
     "$work/package-context" "$work/helpers/build_candidate.py" "$work/helpers/activate_image.py" \
-    "$work/helpers/release_inputs.py" "$vm:$upload/"
+    "$work/helpers/release_inputs.py" "$work/helpers/init_catalog.cjs" "$vm:$upload/"
 fi
 remote "sudo flock -n /opt/livex-openclaw/deploy.lock sh -ec 'python3 -E $stage/build_candidate.py $sha $old $archive_hash $pkg_hash $resume_flag && python3 -E $stage/activate_image.py $sha $old'"
