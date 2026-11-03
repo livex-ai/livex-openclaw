@@ -11,6 +11,7 @@ import {
   type CompletedInvestigation,
   type HistoryScope,
 } from "./schema.js";
+import { editCatalogReport } from "./store.js";
 import { commitInvestigations, readCatalog } from "./store.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -471,5 +472,77 @@ describe("completed investigation catalog", () => {
       }),
     ).rejects.toThrow("invocation closed");
     expect(await fs.readFile(filePath, "utf8")).toBe(before);
+  });
+});
+
+describe("priority update history", () => {
+  it("appends once on canonical readback, retaining independent writes and original facts", async () => {
+    const filePath = await catalogPath();
+    const root = "1793000000.000000",
+      url = firstUrl + "?thread_ts=" + root;
+    await record(filePath, [finding()], url);
+    const before = (await readCatalog({ filePath, scope })).issues[0];
+    let edits = 0;
+    const args = {
+      filePath,
+      scope,
+      threadId: root,
+      messageId: "1793000002.000001",
+      priority: "Medium",
+      assertCurrent: () => {},
+      edit: async (target: string) => {
+        expect(target).toBe(url);
+        edits++;
+        // A different case may finish while Slack is being verified.
+        await record(
+          filePath,
+          [finding("other failure")],
+          secondUrl + "?thread_ts=1793000001.000000",
+        );
+      },
+    };
+    await expect(
+      editCatalogReport({
+        ...args,
+        edit: async () => {
+          throw Error("unconfirmed");
+        },
+      }),
+    ).rejects.toThrow();
+    expect((await readCatalog({ filePath, scope })).issues[0]).toEqual(before);
+    await editCatalogReport(args);
+    await editCatalogReport(args);
+    const issues = (await readCatalog({ filePath, scope })).issues;
+    expect(edits).toBe(1);
+    expect(issues).toHaveLength(2);
+    const updated = issues.find((i) => i.issueId === before.issueId)!;
+    expect(updated.slackThreads).toEqual([url]);
+    expect(updated.whatWeDidLast).toHaveLength(2);
+    expect(updated.whatWeDidLast[1]).toMatchObject({
+      facts: before.whatWeDidLast[0].facts,
+      reportUrl: url,
+    });
+  });
+  it("refuses multiple matching cases and a different sender", async () => {
+    const filePath = await catalogPath(),
+      root = "1793000000.000000",
+      url = firstUrl + "?thread_ts=" + root;
+    await record(filePath, [finding()], url);
+    await record(filePath, [finding("different failure")], firstUrl);
+    const edit = vi.fn();
+    for (const senderId of [scope.senderId, "U-other"]) {
+      await expect(
+        editCatalogReport({
+          filePath,
+          scope: { ...scope, senderId },
+          threadId: root,
+          messageId: "1793000002.000004",
+          priority: "Medium",
+          assertCurrent: () => {},
+          edit,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(edit).not.toHaveBeenCalled();
   });
 });

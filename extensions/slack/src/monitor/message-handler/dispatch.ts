@@ -28,7 +28,8 @@ import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "../../thread-ts.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
-import { resolveSlackBotLoopProtection } from "./dispatch-helpers.js";
+import { resolveSlackBotLoopProtection, formatSlackGroupThreadReply } from "./dispatch-helpers.js";
+import { dispatchPriorityEdit } from "./dispatch-priority-edit.js";
 import { createSlackProgressRuntime } from "./dispatch-progress.js";
 import { createSlackDispatchSetup, type SlackDispatchSetup } from "./dispatch-setup.js";
 import { createSlackStreamingDeliveryRuntime } from "./dispatch-streaming.js";
@@ -38,11 +39,6 @@ import {
 } from "./failure-notice.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
 import type { PreparedSlackMessage } from "./types.js";
-
-function formatSlackGroupThreadReply(text: string, participant: { name: string }): string {
-  const name = participant.name.replace(/[\\`*_{}[\]()<>#!|]/g, "\\$&").replace(/\s+/g, " ");
-  return `**${name}**\n${text}`;
-}
 
 export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessage) {
   const setup = await createSlackDispatchSetup(prepared);
@@ -112,6 +108,7 @@ async function dispatchSlackMessageWithSetup(
     suppressRoomEventTyping,
     useStreaming,
   } = setup;
+  if (await dispatchPriorityEdit(setup, turnAdoptionLifecycle)) return;
   let dispatchError: unknown;
   let summaryUpdateUnverified = false;
   const delivery = createSlackStreamingDeliveryRuntime(setup);

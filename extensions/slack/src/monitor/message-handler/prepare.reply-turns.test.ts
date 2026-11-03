@@ -24,6 +24,39 @@ function turn(context: string) {
 }
 describe("plugin reply-turn preparation", () => {
   const fixture = createSlackSessionStoreFixture("slack-investigation-prepare-");
+  it("binds the current authorized priority request to the exact thread and event", async () => {
+    const { storePath } = fixture.makeTmpStorePath();
+    const ctx = createInboundSlackTestContext({
+      cfg: {
+        agents: { entries: { oncall: {} } },
+        session: { store: storePath },
+        channels: { slack: { enabled: true, groupPolicy: "open" } },
+      },
+    });
+    ctx.allowFrom = ["U1"];
+    lookup.mockResolvedValue(turn("Scoped history"));
+    const prepared = await prepareSlackMessage({
+      ctx,
+      account: createSlackTestAccount(),
+      message: {
+        type: "message",
+        channel: "C1",
+        channel_type: "channel",
+        user: "U1",
+        text: "<@B1> update the above one to Medium priority",
+        ts: "201.000",
+        thread_ts: "200.000",
+      },
+      opts: { source: "app_mention" },
+    });
+    expect(lookup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priorityEdit: { priority: "Medium", threadId: "200.000", messageId: "201.000" },
+      }),
+    );
+    expect(prepared?.ctxPayload.CommandAuthorized).toBe(true);
+    prepared?.replyTurn?.releaseImmediate();
+  });
   it("uses the hydrated alert symptom when the new thread reply only says investigate", async () => {
     const { storePath } = fixture.makeTmpStorePath();
     const cfg: OpenClawConfig = {

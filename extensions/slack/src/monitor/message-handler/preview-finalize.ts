@@ -136,7 +136,7 @@ async function readSlackMessageAfterEditError(params: {
   return message?.ts && message.ts === params.messageId ? message : null;
 }
 
-async function didSlackPreviewEditApplyAfterError(params: {
+export async function didSlackReplyEditApply(params: {
   client: WebClient;
   token: string;
   channelId: string;
@@ -211,7 +211,7 @@ export async function finalizeSlackPreviewEdit(params: {
     });
   } catch (err) {
     try {
-      const applied = await didSlackPreviewEditApplyAfterError(params);
+      const applied = await didSlackReplyEditApply(params);
       if (applied) {
         logVerbose(
           `slack: preview final edit response failed but readback matched message ${params.channelId}/${params.messageId}; suppressing duplicate fallback send`,

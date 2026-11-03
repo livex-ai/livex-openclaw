@@ -41,3 +41,17 @@ python3 -B -m unittest discover -s deploy/gcp-vm -p 'test_prepare.py'
 ```
 
 The native fixture uses the actual bootstrap CLI, manifest loader, setup entry, Doctor compatibility sequence and strict configuration validator. It checks conflicting and disabled settings, policy and catalog-path preservation, idempotence, private output, refusal to overwrite and exact source-byte preservation. Container package fixtures exercise the Dockerfile's dependency links and reject an incompatible base without building or deploying an image.
+
+### Update a report's priority in Slack
+
+In the original alert thread, an authorized sender can mention the bot and write
+`set priority to Medium`. The bot edits the priority on the existing compact
+report and keeps its permalink, findings, next action, and evidence. Supported
+priorities are Unknown, Low, Medium, High, and Critical. The change records the
+sender's requested priority, independently of any technical assessment.
+
+The edit requires one identifiable case and a report authored by this bot in
+the same thread. Case history records the change after Slack readback confirms
+the edit. If several older reports have bare permalinks and the catalog cannot
+identify one target, the edit is refused. If confirmation fails, check the
+original report before retrying.

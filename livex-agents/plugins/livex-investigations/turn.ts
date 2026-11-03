@@ -6,6 +6,7 @@ import { createInvestigationDelivery } from "./delivery.js";
 import { lookupInvestigationHistory } from "./lookup.js";
 import { getInvestigationTurnRegistry } from "./runtime.js";
 import type { HistoryScope } from "./schema.js";
+import { editCatalogReport } from "./store.js";
 
 /** Policy belongs to this plugin; the channel supplies only authenticated turn facts. */
 export async function prepareInvestigationReplyTurn(
@@ -48,7 +49,23 @@ export async function prepareInvestigationReplyTurn(
     reportProfile,
     assertCurrent,
   });
+  const request = input.priorityEdit;
   return {
+    ...(request
+      ? {
+          handleExplicitEdit: async (edit) => {
+            await editCatalogReport({
+              filePath,
+              scope,
+              threadId: request.threadId,
+              messageId: request.messageId,
+              priority: request.priority,
+              assertCurrent: turn.assertCurrent,
+              edit,
+            });
+          },
+        }
+      : {}),
     context: `\n\n${lookup.context}\nBefore your final reply call slack_investigation_record prepare_update with per-issue facts and the exact finalText. Never treat missing or partial history as a successful empty check.`,
     toolBindings: { slack_investigation: { turnId: turn.id } },
     reportProfile,

@@ -216,18 +216,7 @@ export async function commitInvestigations(params: {
     }
     const content = serializeCatalog(issues);
     assertCurrent();
-    await replaceFileAtomic({
-      filePath: params.filePath,
-      content,
-      mode: 0o600,
-      preserveExistingMode: false,
-      tempPrefix: `${path.basename(params.filePath)}.write`,
-      syncTempFile: true,
-      syncParentDir: true,
-      beforeRename: async () => {
-        assertCurrent();
-      },
-    });
+    await saveCatalog(params.filePath, content, assertCurrent);
     return {
       status: skipped ? "partial" : "committed",
       revision: revisionOf(content),
@@ -253,5 +242,122 @@ export async function commitInvestigations(params: {
     };
   } finally {
     await lock?.release();
+  }
+}
+
+async function saveCatalog(filePath: string, content: string, assertCurrent: () => void) {
+  await replaceFileAtomic({
+    filePath: filePath,
+    content,
+    mode: 0o600,
+    preserveExistingMode: false,
+    tempPrefix: `${path.basename(filePath)}.write`,
+    syncTempFile: true,
+    syncParentDir: true,
+    beforeRename: async () => {
+      assertCurrent();
+    },
+  });
+}
+
+/** Serialize edits against case publication. Stage valid history before the Slack write;
+ * publish it only when the transport confirms the canonical edited message. */
+export async function editCatalogReport(params: {
+  filePath: string;
+  scope: HistoryScope;
+  threadId: string;
+  messageId: string;
+  priority: string;
+  assertCurrent: () => void;
+  edit: (url: string) => Promise<void>;
+}) {
+  const { filePath, scope, threadId, messageId, priority, assertCurrent } = params;
+  assertCurrent();
+  const lockOptions = {
+    retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
+    stale: 30_000,
+    staleRecovery: "remove-if-definitely-stale" as const,
+  };
+  // Serialize edits to this thread without blocking saves for independent cases during Slack I/O.
+  const threadKey = createHash("sha256")
+    .update(JSON.stringify([scope.teamId, scope.channelId, threadId]))
+    .digest("hex");
+  const lock = await acquireFileLock(filePath + ".edit-" + threadKey, lockOptions);
+  try {
+    const stage = async () => {
+      const doc = await readDocument(filePath);
+      if (doc.status !== "ready") throw new Error("Case history unavailable");
+      const scoped = doc.issues.filter((issue) => scopeMatches(issue.signature.scope, scope));
+      const scopeOf = (raw: string | undefined) => {
+        if (!raw) return "other";
+        const url = new URL(raw);
+        if (
+          url.protocol !== "https:" ||
+          !url.hostname.endsWith(".slack.com") ||
+          !url.pathname.startsWith(`/archives/${scope.channelId}/p`)
+        )
+          return "other";
+        const root = url.searchParams.get("thread_ts");
+        return root === threadId ? "same" : root === null ? "unknown" : "other";
+      };
+      const exact = scoped.filter((issue) =>
+        issue.slackThreads.some((raw) => scopeOf(raw) === "same"),
+      );
+      // Older Slack permalinks can be bare. A single candidate is still subject
+      // to exact thread membership verification by the authenticated transport.
+      const matches = exact.length
+        ? exact
+        : scoped.filter((issue) => scopeOf(issue.slackThreads[0]) === "unknown");
+      const [issue] = matches;
+      if (!issue || matches.length !== 1) {
+        throw new Error("Cannot identify one case in this thread");
+      }
+      const url = issue.slackThreads[0];
+      // Slack may supply a bare permalink or add thread_ts/cid to the same message.
+      const messageKey = (link: string) => {
+        const parsed = new URL(link);
+        return parsed.origin + parsed.pathname;
+      };
+      if (
+        !url ||
+        scopeOf(url) === "other" ||
+        issue.whatWeDidLast[0]?.reportUrl !== url ||
+        doc.issues.some(
+          (other) =>
+            other !== issue &&
+            other.slackThreads.some((link) => messageKey(link) === messageKey(url)),
+        )
+      )
+        throw new Error("Ambiguous canonical report");
+      const summary = `Priority set to ${priority} at the sender's request (Slack ${messageId}).`;
+      if (issue.whatWeDidLast.some((entry) => entry.summary === summary))
+        return { url, id: issue.issueId };
+      const completedAt = pacificDate(new Date());
+      issue.whatWeDidLast.push({
+        ...issue.whatWeDidLast.at(-1)!,
+        completedAt,
+        kind: "changed",
+        summary,
+        reportUrl: url,
+      });
+      issue.lastUpdated = completedAt;
+      return { url, id: issue.issueId, content: serializeCatalog(doc.issues) };
+    };
+    const before = await stage();
+    assertCurrent();
+    if (!before.content) return;
+    await params.edit(before.url);
+    assertCurrent();
+    const writer = await acquireFileLock(filePath, lockOptions);
+    try {
+      const after = await stage();
+      if (after.id !== before.id || after.url !== before.url)
+        throw new Error("Canonical case changed during edit");
+      if (after.content) await saveCatalog(filePath, after.content, assertCurrent);
+    } finally {
+      await writer.release();
+    }
+  } finally {
+    await lock.release();
   }
 }

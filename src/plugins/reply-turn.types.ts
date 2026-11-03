@@ -18,6 +18,8 @@ export type ReplyTurnInput = {
   sessionKey: string;
   isDirectMessage: boolean;
   query: string;
+  /** Current directly addressed, authorized human reply, excluding thread history. */
+  priorityEdit?: { priority: string; threadId: string; messageId: string };
   signal?: AbortSignal;
   assertCurrent: () => void;
 };
@@ -50,6 +52,7 @@ export type ReplyTurnDelivery = {
 /** One plugin-owned contribution, retaining the existing reply ownership contracts. */
 export type PreparedReplyTurn = {
   context: string;
+  handleExplicitEdit?: (edit: (permalink: string) => Promise<void>) => Promise<void>;
   toolBindings: NonNullable<MsgContext["GatewayRunToolBindings"]>;
   reportProfile?: AgentReportProfile;
   assertCurrent: () => void;
