@@ -1,7 +1,7 @@
 # Shared agent skills
 
 This folder is the source of truth for reviewed skills in this repository.
-Agents consume a selected profile from a pinned Git commit. Edit skills here;
+Agents consume a selected profile or an explicit skill list from a pinned Git commit. Edit skills here;
 do not edit installed copies. A skill update does not grant tools or permissions.
 
 ## Profiles
@@ -46,6 +46,30 @@ commit, whether the library has uncommitted changes, and exported file hashes. I
 not execute bundled helpers, install dependencies, change configuration, or
 contact a provider. A source outside Git is recorded without a commit; use a
 clean pinned checkout for a release.
+
+## Export an explicit selection
+
+Native agent packaging may select the union of the configured agents' explicit
+skill lists without creating another named profile:
+
+```sh
+python3 -B agent-skills/scripts/library.py export \
+  --skill systematic-debugging \
+  --skill verification-before-completion \
+  --target "$HOME/.local/share/livex-skills/$SKILL_REVISION-selected"
+```
+
+Repeat `--skill` for each distinct known skill; it cannot be combined with
+`--profile`. Both paths use the same manifest, hash, complete-bundle, dependency
+and fresh-target checks. A linked skill must be selected explicitly; shared
+supporting files are included transitively when referenced.
+
+Python consumers can call `export_selection(root, selection, target)` with a
+list of distinct skill names. `[]` is valid for an agent package with no selected
+skills and produces only `skills-lock.json`. Explicit-selection locks retain the
+version-1 structure with `profile: null` and the supplied ordered `skills` list.
+`export_profile` and its named-profile locks retain their existing contract.
+Neither API activates an agent or changes an installed skill directory.
 
 ## Connect an agent
 

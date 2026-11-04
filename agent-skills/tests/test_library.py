@@ -85,6 +85,53 @@ class LibraryTests(unittest.TestCase):
         self.library.export_profile(self.root, "all", target)
         self.assertEqual({p.name for p in (target / "skills").iterdir()}, {"alpha", "beta"})
 
+    def test_explicit_selection_exports_bundles_and_records_order(self):
+        target = self.base / "selection"
+        self.library.export_selection(self.root, ["beta", "alpha"], target)
+        lock = json.loads((target / "skills-lock.json").read_text())
+        self.assertIsNone(lock["profile"])
+        self.assertEqual(lock["skills"], ["beta", "alpha"])
+        self.assertEqual((target / "skills/alpha/LICENSE").read_bytes(),
+                         (self.root / "skills/alpha/LICENSE").read_bytes())
+        self.assertTrue((target / "tests/replay-template.md").is_file())
+        self.assertTrue((target / "skills/beta/SKILL.md").is_file())
+        self.assertEqual({entry["path"]: entry["sha256"] for entry in lock["files"]},
+                         {p.relative_to(target).as_posix(): digest(p) for p in target.rglob("*")
+                          if p.is_file() and p.name != "skills-lock.json"})
+
+    def test_empty_explicit_selection_exports_only_lock(self):
+        target = self.base / "empty-selection"
+        self.library.export_selection(self.root, [], target)
+        self.assertEqual([p.name for p in target.iterdir()], ["skills-lock.json"])
+        lock = json.loads((target / "skills-lock.json").read_text())
+        self.assertEqual(lock["skills"], [])
+        self.assertEqual(lock["files"], [])
+
+    def test_invalid_explicit_selection_leaves_no_target(self):
+        target = self.base / "selection"
+        for selection in (None, "alpha", ("alpha",), ["missing"], ["alpha", "alpha"], [None], [{}]):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                self.library.export_selection(self.root, selection, target)
+            self.assertFalse(target.exists())
+
+    def test_explicit_selection_preserves_target_and_validates_dependencies(self):
+        target = self.base / "selection"
+        self.library.export_selection(self.root, ["beta"], target)
+        before = (target / "skills-lock.json").read_bytes()
+        with self.assertRaises(FileExistsError):
+            self.library.export_selection(self.root, ["alpha"], target)
+        self.assertEqual((target / "skills-lock.json").read_bytes(), before)
+        self.write("skills/alpha/references/guide.md", "[Other skill](../../beta/SKILL.md)\n")
+        self.refresh_alpha()
+        with self.assertRaisesRegex(ValueError, "dependenc"):
+            self.library.export_selection(self.root, ["alpha"], self.base / "incomplete")
+        self.assertFalse((self.base / "incomplete").exists())
+
+    def test_explicit_selection_validates_unselected_files(self):
+        self.write("skills/alpha/LICENSE", "changed")
+        with self.assertRaisesRegex(ValueError, "sha256"):
+            self.library.export_selection(self.root, [], self.base / "empty-selection")
+
     def test_tampered_main_or_support_or_shared_file_rejected(self):
         for relative in ("skills/alpha/SKILL.md", "skills/alpha/LICENSE", "tests/replay-template.md"):
             with self.subTest(relative=relative):
@@ -275,6 +322,23 @@ class LibraryTests(unittest.TestCase):
         exported = subprocess.run(["python3", str(script), "export", "--profile", "focused", "--target", str(target)], capture_output=True, text=True)
         self.assertEqual(exported.returncode, 0, exported.stderr)
         self.assertTrue((target / "skills-lock.json").is_file())
+
+
+    def test_cli_explicit_selection_and_profile_are_mutually_exclusive(self):
+        script = self.root / "scripts/library.py"
+        script.parent.mkdir()
+        shutil.copy2(SCRIPT, script)
+        target = self.base / "selection"
+        command = ["python3", str(script), "export", "--target", str(target)]
+        exported = subprocess.run(command + ["--skill", "beta", "--skill", "alpha"],
+                                  capture_output=True, text=True)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertEqual(json.loads((target / "skills-lock.json").read_text())["skills"],
+                         ["beta", "alpha"])
+        for options in ([], ["--profile", "focused", "--skill", "alpha"]):
+            with self.subTest(options=options):
+                invalid = subprocess.run(command + options, capture_output=True, text=True)
+                self.assertEqual(invalid.returncode, 2, invalid.stderr)
 
 
 if __name__ == "__main__":

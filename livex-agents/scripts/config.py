@@ -55,7 +55,6 @@ def render(root, local_path):
         "GCLOUD_SDK_ROOT": settings["gcloudSdkRoot"],
         "GCP_PROJECT": project,
         "SLACK_SENDER_ID": sender,
-        "INVESTIGATOR_PROMPT": (root / "prompts/investigator.md").read_text(encoding="utf-8").strip(),
     }
 
     def substitute(match):

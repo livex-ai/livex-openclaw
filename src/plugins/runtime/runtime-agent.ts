@@ -317,6 +317,13 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
     patchSessionEntry,
     prepareSessionEntryPatch,
     upsertSessionEntry,
+    withDescendantSessionRead: async <T>(
+      params: Parameters<RuntimeSession["withDescendantSessionRead"]>[0],
+      run: (
+        selected: import("./runtime-agent-session-lineage.js").DescendantSessionRead,
+      ) => Promise<T>,
+    ) =>
+      (await import("./runtime-agent-session-lineage.js")).withDescendantSessionRead(params, run),
     runWithWorkAdmission: runWithSessionWorkAdmission,
     updateSessionStoreEntry,
   }));

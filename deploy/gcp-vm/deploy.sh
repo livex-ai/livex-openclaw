@@ -13,7 +13,7 @@ repo=$(git -C "$helpers" rev-parse --show-toplevel)
 tooling=$(git -C "$repo" rev-parse HEAD)
 stage_helpers() {
   local dest=$1 helper
-  for helper in build_candidate.py activate_image.py release_inputs.py vm_prompt.py init_catalog.cjs; do
+  for helper in build_candidate.py activate_image.py release_inputs.py vm_prompt.py agent_bundle.py init_catalog.cjs; do
     git -C "$repo" show "$tooling:deploy/gcp-vm/$helper" > "$dest/$helper"
   done
 }
@@ -80,6 +80,6 @@ else
   remote "umask 077 && mkdir '$upload'"
   gcloud compute scp "${location[@]}" --scp-flag=-4 --recurse "$work/source.tar.gz" \
     "$work/package-context" "$work/helpers/build_candidate.py" "$work/helpers/activate_image.py" \
-    "$work/helpers/release_inputs.py" "$work/helpers/vm_prompt.py" "$work/helpers/init_catalog.cjs" "$vm:$upload/"
+    "$work/helpers/release_inputs.py" "$work/helpers/vm_prompt.py" "$work/helpers/agent_bundle.py" "$work/helpers/init_catalog.cjs" "$vm:$upload/"
 fi
 remote "sudo flock -n /opt/livex-openclaw/deploy.lock sh -ec 'python3 -E $stage/build_candidate.py $sha $old $archive_hash $pkg_hash $resume_flag && python3 -E $stage/activate_image.py $sha $old'"

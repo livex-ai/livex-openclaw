@@ -116,3 +116,33 @@ class PromptTest(unittest.TestCase):
                     require_vm_policies(json.dumps(config))
                 mapping.clear()
                 mapping.update(old)
+
+class AdditionalPromptTests(unittest.TestCase):
+    def test_new_agent_install_and_rollback_preserve_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / 'state').mkdir()
+            self.assertIsNone(read_prompt(root, 'debugger'))
+            install_prompt(root, None, b'checked instructions', 'debugger')
+            directory = root / 'state/workspaces/debugger'
+            (directory / 'notes.md').write_text('operator notes')
+            self.assertEqual(read_prompt(root, 'debugger'), b'checked instructions')
+            install_prompt(root, b'checked instructions', None, 'debugger')
+            self.assertIsNone(read_prompt(root, 'debugger'))
+            self.assertEqual((directory / 'notes.md').read_text(), 'operator notes')
+
+    def test_additional_agent_rejects_symlink_and_foreign_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / 'state/workspaces').mkdir(parents=True)
+            outside = root / 'outside'
+            outside.mkdir()
+            (root / 'state/workspaces/debugger').symlink_to(outside)
+            with self.assertRaises(OSError):
+                install_prompt(root, None, b'prompt', 'debugger')
+            (root / 'state/workspaces/debugger').unlink()
+            install_prompt(root, None, b'operator', 'debugger')
+            with self.assertRaises(RuntimeError):
+                install_prompt(root, None, b'candidate', 'debugger')
+            with self.assertRaises(ValueError):
+                read_prompt(root, '../outside')

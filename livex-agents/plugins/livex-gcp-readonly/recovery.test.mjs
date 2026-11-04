@@ -598,3 +598,78 @@ test("active retries serialize operator approval without changing sibling receip
   await f.command(`retry ${sibling.id} ${b.receiptHash}`);
   assert.equal(f.reads(), 0, "synthetic ledger and operator commands never invoke cloud reads");
 });
+
+test("original-thread owner recovers one explicitly selected descendant without changing receipt scope", async () => {
+  const f = fixture();
+  const child = {
+    ...context,
+    agentId: "debugger",
+    sessionKey: "agent:debugger:subagent:child",
+    sessionId: "child-generation",
+  };
+  const childLedger = f.ledger(child);
+  const first = await childLedger.reserveQuery({
+    toolCallId: "child-original",
+    fingerprint: id("child"),
+    query: queryArgs(query, config),
+  });
+  await childLedger.failQuery({
+    toolCallId: "child-original",
+    receiptId: first.receipt.id,
+    reason: "Unknown outcome",
+  });
+  const originalScope = [...f.store.rows.values()][0].scope;
+  let current = true;
+  const withDescendantSessionRead = async (input, run) => {
+    assert.deepEqual(input.ancestor, {
+      sessionKey: context.sessionKey,
+      sessionId: context.sessionId,
+    });
+    assert.deepEqual(input.descendant, {
+      sessionKey: child.sessionKey,
+      sessionId: child.sessionId,
+    });
+    const assertCurrent = () => {
+      input.assertCurrent();
+      assert.ok(current, "descendant lineage revoked");
+    };
+    assertCurrent();
+    const output = await run({ agentId: child.agentId, ...input.descendant, assertCurrent });
+    assertCurrent();
+    return output;
+  };
+  const command = recovery.createRecoveryCommand(config, () => f.store, withDescendantSessionRead);
+  const invoke = (args) =>
+    command.handler(
+      commandContext({
+        args: `child ${child.sessionKey} ${child.sessionId} ${args}`,
+      }),
+    );
+  assert.equal(JSON.parse((await f.command("list")).text).total, 0);
+  const info = JSON.parse((await invoke(`inspect ${first.receipt.id}`)).text);
+  assert.equal(info.status, "failed");
+  f.store.controls.beforeCommit = () => {
+    current = false;
+  };
+  await assert.rejects(invoke(`retry ${first.receipt.id} ${info.receiptHash}`), /revoked/);
+  assert.equal([...f.store.rows.values()][0].status, "failed");
+  current = true;
+  f.store.controls.beforeCommit = undefined;
+  await invoke(`retry ${first.receipt.id} ${info.receiptHash}`);
+  assert.equal(f.reads(), 0, "recovery command cannot launch a cloud read");
+  assert.equal([...f.store.rows.values()][0].scope, originalScope);
+  const claimed = await childLedger.reserveQuery({
+    toolCallId: "child-retry",
+    fingerprint: first.receipt.id,
+    query: queryArgs(query, config),
+  });
+  assert.equal(claimed.kind, "reserved");
+  assert.equal(claimed.receipt.attempt, 1);
+  const duplicate = await childLedger.reserveQuery({
+    toolCallId: "child-duplicate",
+    fingerprint: first.receipt.id,
+    query: queryArgs(query, config),
+  });
+  assert.equal(duplicate.kind, "pending");
+  await assert.rejects(f.command(`inspect ${first.receipt.id}`), /invalid|missing/i);
+});

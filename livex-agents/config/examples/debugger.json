@@ -1,0 +1,35 @@
+{
+  "agents": {
+    "entries": {
+      "debugger": {
+        "name": "LiveX Debugger",
+        "description": "Read-only diagnosis from admitted evidence and verified repository revisions.",
+        "workspace": "${PACKAGE_ROOT}/workspaces/debugger",
+        "skills": [
+          "debug",
+          "systematic-debugging",
+          "verification-before-completion"
+        ],
+        "permissionModeDefault": "read-only",
+        "tools": {
+          "profile": "full",
+          "exec": {
+            "mode": "deny"
+          },
+          "elevated": {
+            "enabled": false
+          },
+          "fs": {
+            "workspaceOnly": true
+          },
+          "allow": [
+            "read",
+            "skills_read",
+            "livex_gcp_logs_read",
+            "livex_repository_read"
+          ]
+        }
+      }
+    }
+  }
+}

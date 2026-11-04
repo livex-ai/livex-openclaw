@@ -20,6 +20,7 @@ export default definePluginEntry({
           options: Parameters<typeof api.runtime.state.openKeyedStoreV2>[0],
           authority: Parameters<typeof api.runtime.state.openKeyedStoreV2>[1],
         ) => api.runtime.state.openKeyedStoreV2(options, authority),
+        api.runtime.agent.session.withDescendantSessionRead,
       ),
     );
     api.registerTool(

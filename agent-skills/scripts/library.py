@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and copy a pinned skill profile; never activate or execute skills."""
+"""Validate and copy a pinned skill profile or explicit selection; never activate or execute skills."""
 
 from __future__ import annotations
 
@@ -210,21 +210,37 @@ def _source_state(root: Path) -> dict:
 
 
 def export_profile(root: Path | str, profile: str, target: Path | str) -> Path:
+    """Export a known profile without changing its version-1 lock contract."""
+    root, profiles, skills, shared, files = _validated(Path(root))
+    if profile not in profiles:
+        raise ValueError(f"unknown profile: {profile}")
+    return _export(root, profiles[profile], target, skills, shared, files, profile=profile)
+
+
+def export_selection(root: Path | str, selection: list[str], target: Path | str) -> Path:
+    """Export an explicit skill list; an empty list produces only the lock."""
+    root, _, skills, shared, files = _validated(Path(root))
+    selected = _list(selection, "skill selection")
+    if any(not isinstance(name, str) or name not in skills for name in selected):
+        raise ValueError("skill selection must select known skills")
+    if len(selected) != len(set(selected)):
+        raise ValueError("duplicate skill in selection")
+    return _export(root, selected, target, skills, shared, files, profile=None)
+
+
+def _export(root, selection, target, skills, shared, files, *, profile):
     """Stage checked copies, then reserve a fresh target. Never replace a target.
 
     Publication uses exclusive mkdir, not a whole-directory transaction. An I/O
     failure during final moves may leave an incomplete new target for inspection.
     """
-    root, profiles, skills, shared, files = _validated(Path(root))
-    if profile not in profiles:
-        raise ValueError(f"unknown profile: {profile}")
     target = Path(target).expanduser().absolute()
     resolved_target = target.resolve()
     if resolved_target.is_relative_to(root) or root.is_relative_to(resolved_target):
         raise ValueError(f"target overlaps source library: {target}")
     if target.exists() or target.is_symlink():
         raise FileExistsError(f"target already exists: {target}")
-    selected = {relative: files[relative] for name in profiles[profile] for relative in skills[name]}
+    selected = {relative: files[relative] for name in selection for relative in skills[name]}
     pending = list(selected)
     for relative in pending:
         for dependency in _dependencies(root, relative):
@@ -242,7 +258,7 @@ def export_profile(root: Path | str, profile: str, target: Path | str) -> Path:
             shutil.copy2(source, destination, follow_symlinks=False)
             if destination.is_symlink() or _hash(destination) != expected:
                 raise ValueError(f"source changed during export: {relative}")
-        lock = {"version": 1, "profile": profile, "skills": profiles[profile],
+        lock = {"version": 1, "profile": profile, "skills": selection,
                 "source": _source_state(root),
                 "files": [{"path": path, "sha256": sha} for path, sha in sorted(selected.items())]}
         (staged / "skills-lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
@@ -256,8 +272,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("validate", help="verify manifests and complete skill bundles")
-    export = commands.add_parser("export", help="copy a profile into a fresh directory")
-    export.add_argument("--profile", required=True)
+    export = commands.add_parser("export", help="copy selected skills into a fresh directory")
+    selection = export.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--profile")
+    selection.add_argument("--skill", action="append", help="explicit skill name; repeat for each skill")
     export.add_argument("--target", required=True)
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
@@ -266,8 +284,13 @@ def main(argv: list[str] | None = None) -> int:
             validate(root)
             print("Skill library validated.")
         else:
-            target = export_profile(root, args.profile, args.target)
-            print(f"Exported {args.profile} to {target}")
+            if args.profile is not None:
+                target = export_profile(root, args.profile, args.target)
+                label = args.profile
+            else:
+                target = export_selection(root, args.skill, args.target)
+                label = ", ".join(args.skill)
+            print(f"Exported {label} to {target}")
     except (ValueError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

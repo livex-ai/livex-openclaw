@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+from agent_bundle import BUNDLED, validate_bundle
+
 from release_inputs import concurrency_limit, release_arguments, reviewed_prompt_hash
 
 os.umask(0o077)
@@ -160,6 +162,7 @@ for name, cmd, cwd in steps:
     if not (shutil.disk_usage("/").free > 3 * 1024**3):
         raise RuntimeError("insufficient remaining build disk")
     if name == "runtime":
+        bundled_agents = (cwd / "deploy/gcp-vm/agent_bundle.py").is_file()
         prompt_sha = reviewed_prompt_hash(
             (cwd / "deploy/gcp-vm/oncall-vm-prompt.sha256").read_text()
         )
@@ -204,5 +207,18 @@ receipt = {
     "maxConcurrent": desired_concurrency,
     "oncallPromptSha256": prompt_sha,
 }
+# The helper revision and selected source SHA can differ during upgrades/resume.
+# Pre-bundle sources retain their existing Oncall-only receipt contract.
+if bundled_agents:
+    bundle_bytes = subprocess.check_output(
+        ["docker", "run", "--rm", "--network", "none", "--read-only",
+         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+         "--entrypoint", "cat", d.get("Id"), BUNDLED], timeout=30,
+    )
+    bundle = validate_bundle(json.loads(bundle_bytes))
+    receipt["agentBundleSha256"] = hashlib.sha256(bundle_bytes).hexdigest()
+    receipt["agentPromptSha256"] = {
+        key: value.get("sha256") for key, value in bundle.get("agents").items()
+    }
 (root / "image-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 print(json.dumps(receipt), flush=True)
