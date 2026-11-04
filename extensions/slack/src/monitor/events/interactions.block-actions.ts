@@ -37,10 +37,6 @@ import {
   isSlackApprovalActionId,
   isSlackCallbackActionId,
   isSlackQuestionActionId,
-  SLACK_REPLY_BUTTON_ACTION_ID,
-  SLACK_REPLY_LINK_ACTION_ID,
-  SLACK_REPLY_SELECT_ACTION_ID,
-  SLACK_SESSION_LINK_ACTION_ID,
 } from "../../reply-action-ids.js";
 import { truncateSlackText } from "../../truncate.js";
 import {
@@ -55,6 +51,11 @@ import { resolveSlackMonitorEventScope, type SlackEventScope } from "../event-sc
 import { escapeSlackMrkdwn } from "../mrkdwn.js";
 import { enqueueSlackInteractionEvent } from "./interaction-event.js";
 import { resolveSlackPluginApprovalSender } from "./interactions.approval-sender.js";
+import {
+  isSlackNavigationButton,
+  isSlackReplyActionId,
+  isSlackReplyLinkAction,
+} from "./interactions.navigation.js";
 import {
   formatInteractionSelectionLabel,
   summarizeAction,
@@ -124,29 +125,6 @@ function buildSlackPluginInteractionData(params: {
     return payload || null;
   }
   return payload ? `${actionId}:${payload}` : actionId;
-}
-
-function isSlackReplyActionId(actionId: string): boolean {
-  return (
-    actionId === SLACK_REPLY_BUTTON_ACTION_ID ||
-    actionId === SLACK_REPLY_SELECT_ACTION_ID ||
-    actionId.startsWith(`${SLACK_REPLY_BUTTON_ACTION_ID}:`) ||
-    actionId.startsWith(`${SLACK_REPLY_SELECT_ACTION_ID}:`)
-  );
-}
-
-function isSlackReplyLinkAction(parsed: ParsedSlackBlockAction): boolean {
-  if (parsed.actionId.replace(/:\d+$/u, "") === SLACK_SESSION_LINK_ACTION_ID) {
-    return true;
-  }
-  if (
-    parsed.actionId === SLACK_REPLY_LINK_ACTION_ID ||
-    parsed.actionId.startsWith(`${SLACK_REPLY_LINK_ACTION_ID}:`)
-  ) {
-    return true;
-  }
-  const legacyUrl = normalizeOptionalString((parsed.typedAction as { url?: unknown }).url);
-  return Boolean(legacyUrl && isSlackReplyActionId(parsed.actionId));
 }
 
 function buildSlackPluginInteractionId(parsed: ParsedSlackBlockAction): string {
@@ -839,6 +817,10 @@ export function registerSlackBlockActionHandler(params: {
       if (handled) {
         return;
       }
+    }
+    // Unhandled URL buttons navigate without consuming the row or waking an agent.
+    if (isSlackNavigationButton(parsed)) {
+      return;
     }
     await enqueueSlackBlockActionEvent({
       ...actionContext,
