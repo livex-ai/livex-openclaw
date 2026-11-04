@@ -13,7 +13,20 @@ import sys
 import tempfile
 import time
 
-from release_inputs import release_arguments, select_image, with_concurrency
+from release_inputs import (
+    release_arguments,
+    require_vm_policies,
+    select_image,
+    with_concurrency,
+)
+from vm_prompt import (
+    BUNDLED,
+    install_prompt,
+    prior_hash,
+    read_prompt,
+    sha,
+    verify_active,
+)
 
 
 def activate(root, source, old_image):
@@ -44,13 +57,28 @@ def activate(root, source, old_image):
         )
         return json.loads(p.stdout)[0]
 
+    def verify_mount(container_info):
+        state = "/home/node/.openclaw"
+        prompt = state + "/workspace/AGENTS.md"
+        mounts = container_info.get("Mounts", [])
+        if not any(
+            m.get("Type") == "bind"
+            and m.get("Source") == str(root / "state")
+            and m.get("Destination") == state
+            for m in mounts
+        ) or any(
+            m.get("Destination") in (state + "/workspace", prompt) for m in mounts
+        ):
+            raise RuntimeError(
+                "Unexpected oncall workspace mount; reconcile before deployment"
+            )
+
     def rpc(method, params, required):
         p = subprocess.run(
-            compose
-            + [
+            [
+                "docker",
                 "exec",
-                "-T",
-                "gateway",
+                container,
                 "node",
                 "/app/openclaw.mjs",
                 "gateway",
@@ -113,6 +141,7 @@ def activate(root, source, old_image):
     if config_path.is_symlink():
         raise RuntimeError("Expected a regular mounted VM config")
     old_config = config_path.read_bytes()
+    require_vm_policies(old_config)
     target = candidate["maxConcurrent"]
     new_config = with_concurrency(old_config, target)
     old_release = (root / "release.env").read_bytes()
@@ -122,6 +151,39 @@ def activate(root, source, old_image):
         raise RuntimeError("Unexpected active runtime")
     if not (before["State"].get("Health", {}).get("Status") == "healthy"):
         raise RuntimeError("Gateway must be healthy before activation")
+    verify_mount(before)
+    before_sha = prior_hash(root, before)
+    old_prompt = read_prompt(root)
+    if sha(old_prompt) != before_sha:
+        raise RuntimeError(
+            "Active AGENTS.md differs from its reviewed baseline; reconcile local edits before deploying"
+        )
+    verify_active(rpc, before_sha)
+    prompt_sha = candidate["oncallPromptSha256"]
+    new_prompt = subprocess.check_output(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--entrypoint",
+            "cat",
+            new_image,
+            BUNDLED,
+        ],
+        timeout=30,
+    )
+    if sha(new_prompt) != prompt_sha:
+        raise RuntimeError("Bundled oncall prompt differs from the reviewed digest")
+    expected_prompt = old_prompt
     active = rpc(
         "sessions.list",
         {
@@ -137,7 +199,6 @@ def activate(root, source, old_image):
         raise RuntimeError("Active or queued work; wait before deployment")
     protected = [
         "state/openclaw.json",
-        "state/workspace/AGENTS.md",
         "runtime.env",
         "compose.yaml",
         "openclaw.sh",
@@ -171,6 +232,8 @@ def activate(root, source, old_image):
     receipt = {
         "source": source,
         "previousImage": old_image,
+        "previousPromptSha256": before_sha,
+        "expectedPromptSha256": prompt_sha,
         "candidateImage": new_image,
         "checks": [],
         "status": "preparing",
@@ -211,6 +274,8 @@ def activate(root, source, old_image):
             raise RuntimeError("Step failed: " + name + "; inspect private log")
 
     def unchanged():
+        if read_prompt(root) != expected_prompt:
+            raise RuntimeError("Mounted oncall prompt changed; reconcile")
         if not (
             all((digest(root / name) == sha for name, sha in protected_hashes.items()))
         ):
@@ -233,6 +298,7 @@ def activate(root, source, old_image):
             )
             socket = "socket mode connected" in (p.stdout + p.stderr).lower()
             if d["State"].get("Health", {}).get("Status") == "healthy" and socket:
+                verify_mount(d)
                 return {
                     "image": expected,
                     "health": "healthy",
@@ -295,6 +361,8 @@ def activate(root, source, old_image):
         if new_config != old_config:
             atomic_replace(config_path, new_config)
             protected_hashes[config_name] = hashlib.sha256(new_config).hexdigest()
+        install_prompt(root, old_prompt, new_prompt)
+        expected_prompt = new_prompt
         cli = compose + ["run", "--rm", "--no-deps", "--pull", "never"]
         checks = [
             (
@@ -369,6 +437,7 @@ def activate(root, source, old_image):
             )
         receipt["readiness"]["maxConcurrent"] = target
         unchanged()
+        receipt["readiness"]["activePromptSha256"] = verify_active(rpc, prompt_sha)
         receipt["status"] = "running_verified"
         receipt["finishedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         save()
@@ -377,6 +446,7 @@ def activate(root, source, old_image):
                 {
                     "status": receipt["status"],
                     "image": new_image,
+                    "activePromptSha256": receipt["readiness"]["activePromptSha256"],
                     "receipt": str(receipt_path),
                     "backup": str(archive),
                 }
@@ -415,20 +485,43 @@ def activate(root, source, old_image):
                     raise RuntimeError(
                         "Release selector changed externally; automatic rollback withheld"
                     )
-                if selected == new_release:
+                observed = inspect_container()
+                if observed["Image"] not in (old_image, new_image):
+                    raise RuntimeError(
+                        "Unexpected Gateway image; reconcile before rollback"
+                    )
+                if observed["State"]["Running"]:
                     subprocess.run(
                         compose + ["stop", "--timeout", "60", "gateway"],
                         timeout=120,
                         check=True,
                     )
-                    current_config = config_path.read_bytes()
-                    if current_config not in (old_config, new_config):
-                        raise RuntimeError(
-                            "VM config changed externally; reconcile before rollback"
-                        )
-                    if current_config != old_config:
-                        atomic_replace(config_path, old_config)
+                if inspect_container()["State"]["Running"]:
+                    raise RuntimeError(
+                        "Gateway still running; reconcile before rollback"
+                    )
+                current_config = config_path.read_bytes()
+                current_prompt = read_prompt(root)
+                if current_config not in (
+                    old_config,
+                    new_config,
+                ) or current_prompt not in (old_prompt, new_prompt):
+                    raise RuntimeError(
+                        "VM configuration or prompt changed externally; reconcile before rollback"
+                    )
+                if (root / "release.env").read_bytes() != selected:
+                    raise RuntimeError("Release selector changed during rollback")
+                install_prompt(root, current_prompt, old_prompt)
+                if current_config != old_config:
+                    atomic_replace(config_path, old_config)
+                if selected != old_release:
                     atomic_replace(root / "release.env", old_release)
+                if (
+                    read_prompt(root) != old_prompt
+                    or config_path.read_bytes() != old_config
+                    or (root / "release.env").read_bytes() != old_release
+                ):
+                    raise RuntimeError("Previous deployment could not be restored")
                 rollback_started = datetime.datetime.now(
                     datetime.timezone.utc
                 ).isoformat()
@@ -438,6 +531,9 @@ def activate(root, source, old_image):
                     check=True,
                 )
                 receipt["rollback"] = ready(old_image, rollback_started)
+                receipt["rollback"]["activePromptSha256"] = verify_active(
+                    rpc, before_sha
+                )
                 receipt["status"] = "rolled_back"
                 save_if_possible()
             except (

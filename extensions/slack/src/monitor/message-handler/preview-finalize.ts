@@ -136,17 +136,20 @@ async function readSlackMessageAfterEditError(params: {
   return message?.ts && message.ts === params.messageId ? message : null;
 }
 
-async function didSlackPreviewEditApplyAfterError(params: {
-  client: WebClient;
-  token: string;
-  channelId: string;
-  messageId: string;
-  text: string;
-  blocks?: (Block | KnownBlock)[];
-  attachments?: MessageAttachment[];
-  threadTs?: string;
-}): Promise<boolean> {
-  const readback = await readSlackMessageAfterEditError(params);
+export async function didSlackReplyEditApply(
+  params: {
+    client: WebClient;
+    token: string;
+    channelId: string;
+    messageId: string;
+    text: string;
+    blocks?: (Block | KnownBlock)[];
+    attachments?: MessageAttachment[];
+    threadTs?: string;
+  },
+  observed?: SlackReadbackMessage,
+): Promise<boolean> {
+  const readback = observed ?? (await readSlackMessageAfterEditError(params));
   if (!readback) {
     return false;
   }
@@ -211,7 +214,7 @@ export async function finalizeSlackPreviewEdit(params: {
     });
   } catch (err) {
     try {
-      const applied = await didSlackPreviewEditApplyAfterError(params);
+      const applied = await didSlackReplyEditApply(params);
       if (applied) {
         logVerbose(
           `slack: preview final edit response failed but readback matched message ${params.channelId}/${params.messageId}; suppressing duplicate fallback send`,

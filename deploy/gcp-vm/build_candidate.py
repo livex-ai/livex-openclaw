@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from release_inputs import concurrency_limit, release_arguments
+from release_inputs import concurrency_limit, release_arguments, reviewed_prompt_hash
 
 os.umask(0o077)
 source, old_id = release_arguments(sys.argv[1:3])
@@ -160,6 +160,9 @@ for name, cmd, cwd in steps:
     if not (shutil.disk_usage("/").free > 3 * 1024**3):
         raise RuntimeError("insufficient remaining build disk")
     if name == "runtime":
+        prompt_sha = reviewed_prompt_hash(
+            (cwd / "deploy/gcp-vm/oncall-vm-prompt.sha256").read_text()
+        )
         profile = json.loads(
             (cwd / "livex-agents/config/openclaw.template.json").read_bytes()
         )
@@ -199,6 +202,7 @@ receipt = {
     "nodeVersion": "24.16.0",
     "previousImage": old_id,
     "maxConcurrent": desired_concurrency,
+    "oncallPromptSha256": prompt_sha,
 }
 (root / "image-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 print(json.dumps(receipt), flush=True)

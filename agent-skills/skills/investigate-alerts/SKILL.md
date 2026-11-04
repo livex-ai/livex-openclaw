@@ -59,6 +59,22 @@ alert/incident history, recording actual scoped probe results rather than tool
 availability. Reuse investigation reads as probes; leave unnecessary sources
 untested with a reason. Missing access never means healthy.
 
+## Aggregate overview requests
+
+For service-wide error summaries, pattern questions or an expanded search window,
+load `debug` and its `references/error-summary.md` from the returned skill directory.
+Inventory every material category before interpreting trends; use ordinary thread
+text for informational requests. An aggregate alert's “what is happening?” needs
+that overview. If investigation was also requested, continue the required checks
+for distinct findings; do not replace investigation with a count summary. Explicit
+case reports and amendments retain their configured reporting workflow. Reactions,
+tracking writes and case creation are not authorized merely by a summary request.
+For overview-only requests, the error-summary inventory and coverage criteria
+replace the per-category case-disposition, runbook and emoji-marker steps below.
+Do not require accepted tracking or a new action for each category just to finish
+an informational overview. This exception does not reduce explicitly requested
+investigation depth or bypass an existing human hold.
+
 ## Collect and triage
 
 Read [Action ownership and case lifecycle](references/triage-lifecycle.md) before
@@ -220,7 +236,7 @@ link. The full report may use the existing table, with attention-needed rows
 first:
 
 | Area | Channel | Slack thread link | Findings | Escalation needed | Next step |
-|---|---|---|---|---|---|
+| ---- | ------- | ----------------- | -------- | ----------------- | --------- |
 
 For each incident/category, Findings preserves current versus historical status,
 supported service/customer and impact, confirmed cause versus hypothesis/unknown,
@@ -342,13 +358,13 @@ borrowing a Desktop user connection or switching accounts. If that actor or targ
 capability cannot be verified, report the precise blocker and continue the
 independent investigation; never silently switch identities or add credentials.
 
-| Marker | Meaning and evidence gate |
-|---|---|
-| `eyes` (👀) | The selected alert message was read. This is review acknowledgment, not a final disposition. |
-| `mag` (🔍) | Investigation is actually running and this actor's temporary marker can later be removed. |
-| `warning` (⚠️) | **Action required:** evidence supports a concrete new human action for this selected alert on an identified resource/operation. Record the action and accepted/proposed/unassigned owner. Priority may remain unknown. |
+| Marker                  | Meaning and evidence gate                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eyes` (👀)             | The selected alert message was read. This is review acknowledgment, not a final disposition.                                                                                                                                                                                                                                                                                              |
+| `mag` (🔍)              | Investigation is actually running and this actor's temporary marker can later be removed.                                                                                                                                                                                                                                                                                                 |
+| `warning` (⚠️)          | **Action required:** evidence supports a concrete new human action for this selected alert on an identified resource/operation. Record the action and accepted/proposed/unassigned owner. Priority may remain unknown.                                                                                                                                                                    |
 | `white_check_mark` (✅) | **Reviewed—no new action:** adequate relevant evidence supports expected behavior, original-operation recovery, a verified duplicate with accepted follow-up, an already tracked issue with accepted ownership and no new impact/action, or an authorized human disposition. State the reason and tracking/acceptance evidence. This does not itself mean recovered or formally resolved. |
-| `question` (❓) | **Unclassified:** the evidence cannot yet support action required or no new action. State the exact missing check/access and next permitted step. |
+| `question` (❓)         | **Unclassified:** the evidence cannot yet support action required or no new action. State the exact missing check/access and next permitted step.                                                                                                                                                                                                                                         |
 
 Choose the disposition for the selected alert, independently of investigation
 completion, technical health, regression novelty and formal incident state.

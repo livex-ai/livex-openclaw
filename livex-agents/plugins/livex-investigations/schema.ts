@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { z } from "zod";
+import { priorityIntentSchema, type PriorityIntent } from "./priority-sync.js";
+import { trendSchema, type Trend } from "./trend.js";
 
 export type HistoryScope = {
   agentId: string;
@@ -18,6 +20,7 @@ export type IssueSignature = {
   resource?: string;
 };
 export type InvestigationFacts = {
+  priority?: "Unknown" | "Low" | "Medium" | "High" | "Critical";
   finding: string;
   impact: string;
   nextAction: string;
@@ -43,11 +46,14 @@ export type InvestigationHistoryEntry = {
   completedAt: string;
   summary: string;
   kind: FindingKind;
+  trend?: Trend;
+  trendRequest?: string;
   facts: InvestigationFacts;
   evidenceUrls: string[];
   reportUrl: string;
 };
 export type CatalogIssue = {
+  pendingPriority?: PriorityIntent;
   issueId: string;
   signature: IssueSignature;
   task: string;
@@ -109,6 +115,7 @@ export const issueSignatureSchema: z.ZodType<IssueSignature> = z
   .strict();
 const factsSchema: z.ZodType<InvestigationFacts> = z
   .object({
+    priority: z.enum(["Unknown", "Low", "Medium", "High", "Critical"]).optional(),
     finding: text,
     impact: text,
     nextAction: text,
@@ -131,7 +138,10 @@ export const completedInvestigationSchema: z.ZodType<CompletedInvestigation> = z
     prs: links,
     slackThreads: links,
     jiraTickets: links,
-    facts: factsSchema,
+    facts: factsSchema.refine(
+      (facts) => facts.priority === undefined,
+      "Set human priority through an amendment",
+    ),
     evidenceUrls: links,
   })
   .strict();
@@ -140,6 +150,11 @@ const historyEntrySchema: z.ZodType<InvestigationHistoryEntry> = z
     completedAt: shortText,
     summary: text,
     kind: z.enum(["new", "known-persistence", "changed", "uncertain"]),
+    trend: trendSchema.optional(),
+    trendRequest: z
+      .string()
+      .regex(/^\d{10}\.\d{6}$/)
+      .optional(),
     facts: factsSchema,
     evidenceUrls: links,
     reportUrl: httpsUrl,
@@ -147,6 +162,7 @@ const historyEntrySchema: z.ZodType<InvestigationHistoryEntry> = z
   .strict();
 const catalogIssueSchema: z.ZodType<CatalogIssue> = z
   .object({
+    pendingPriority: priorityIntentSchema.optional(),
     issueId: z.string().regex(/^issue-[a-f0-9]{32}$/),
     signature: issueSignatureSchema,
     task: text,
@@ -161,6 +177,7 @@ const catalogIssueSchema: z.ZodType<CatalogIssue> = z
   .strict();
 
 const DISPLAY_FIELDS = {
+  "Pending priority update": "pendingPriority",
   "Issue ID": "issueId",
   "Issue signature": "signature",
   Task: "task",
@@ -285,9 +302,9 @@ export function serializeCatalog(issues: CatalogIssue[]): string {
     }
     return [
       `### ${issue.issueId}`,
-      ...Object.entries(DISPLAY_FIELDS).map(
-        ([label, key]) => `- ${label}: ${JSON.stringify(issue[key])}`,
-      ),
+      ...Object.entries(DISPLAY_FIELDS)
+        .filter(([, key]) => issue[key] !== undefined)
+        .map(([label, key]) => `- ${label}: ${JSON.stringify(issue[key])}`),
     ].join("\n");
   });
   const result = `${CATALOG_HEADER}\n${records.join("\n\n")}\n`;

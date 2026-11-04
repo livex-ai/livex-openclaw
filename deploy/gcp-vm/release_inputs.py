@@ -67,3 +67,31 @@ def with_concurrency(content, target):
     return (
         json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     ).encode()
+
+
+def reviewed_prompt_hash(manifest):
+    match = re.fullmatch(r"([0-9a-f]{64})  AGENTS\.md\n", manifest)
+    if not match:
+        raise ValueError("Expected a single reviewed oncall prompt digest")
+    return match[1]
+
+
+def require_vm_policies(content):
+    config = json.loads(content)
+    agent = config["agents"]["entries"]["oncall"]
+    actions = agent.get("tools", {}).get("message", {}).get("actions", {})
+    slack = config.get("channels", {}).get("slack", {})
+    if agent.get("permissionModeDefault") != "read-only" or actions.get("allow") != [
+        "read"
+    ]:
+        raise RuntimeError(
+            "Expected the VM read-only session and Slack message policies"
+        )
+    for account in [slack, *slack.get("accounts", {}).values()]:
+        if any(
+            account.get(key, slack.get(key)) != ""
+            for key in ("ackReaction", "typingReaction")
+        ):
+            raise RuntimeError(
+                "Expected Slack acknowledgement and typing reactions off"
+            )

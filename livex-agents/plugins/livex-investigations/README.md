@@ -41,3 +41,37 @@ python3 -B -m unittest discover -s deploy/gcp-vm -p 'test_prepare.py'
 ```
 
 The native fixture uses the actual bootstrap CLI, manifest loader, setup entry, Doctor compatibility sequence and strict configuration validator. It checks conflicting and disabled settings, policy and catalog-path preservation, idempotence, private output, refusal to overwrite and exact source-byte preservation. Container package fixtures exercise the Dockerfile's dependency links and reject an incompatible base without building or deploying an image.
+
+### Follow up in an investigation thread
+
+Ask for status to get an ordinary answer from the known evidence. Ask for a
+deeper investigation to use the existing oncall skills. For explicit changes,
+mention the bot in the original thread. Examples include “I’ll own this; make
+it Medium” and “set next action to check retry logs only after approval.”
+The model proposes the fields together. A scoped writer verifies the current
+request, canonical case, Slack authorship and edited card. Unclear values or
+unsupported wording require clarification. Ownership is accepted by the sender.
+
+A queued update can show a short request acknowledgment before verification.
+It does not assert success. The original report and case history are the
+records of the verified change. An ambiguous target, stale case, or conflicting
+replay cannot authorize an edit. Existing catalogs remain readable. Before
+downgrading to a build without the optional priority fact, retain a compatible
+catalog backup.
+
+### Remember a trend comparison
+
+In a bound case thread, a trend question can get one plain reply and a dated
+observation in the existing case. Begin the comparison for that issue, then
+exhaust the authorized errors-mode log queries for two disjoint, equal-duration
+UTC windows. The plugin counts projected entries that contain the saved
+operation and error on the matching service, using complete pages from the
+same run and filter. An unsupported selector, incomplete read, or missing
+case association leaves the comparison unsaved. Counts describe matching
+log entries. They do not measure failed customers, rate or recovery.
+
+After verified delivery the catalog appends both windows, counts, evidence
+links and retrieval times. Scoped lookup exposes the most recent measured
+window even after other case updates. No new investigation report or case is
+created. Retain a catalog backup before a downgrade to a reader that predates
+trend history.

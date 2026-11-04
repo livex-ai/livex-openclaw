@@ -28,7 +28,8 @@ import { recordSlackThreadParticipation } from "../../sent-thread-cache.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "../../thread-ts.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
-import { resolveSlackBotLoopProtection } from "./dispatch-helpers.js";
+import { createReportEditor } from "./amend-own-report.js";
+import { resolveSlackBotLoopProtection, formatSlackGroupThreadReply } from "./dispatch-helpers.js";
 import { createSlackProgressRuntime } from "./dispatch-progress.js";
 import { createSlackDispatchSetup, type SlackDispatchSetup } from "./dispatch-setup.js";
 import { createSlackStreamingDeliveryRuntime } from "./dispatch-streaming.js";
@@ -37,12 +38,8 @@ import {
   createSlackQueuedFailureNoticePolicy,
 } from "./failure-notice.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
+import { createTrendSourceVerifier, createReportPermalinkResolver } from "./trend-source.js";
 import type { PreparedSlackMessage } from "./types.js";
-
-function formatSlackGroupThreadReply(text: string, participant: { name: string }): string {
-  const name = participant.name.replace(/[\\`*_{}[\]()<>#!|]/g, "\\$&").replace(/\s+/g, " ");
-  return `**${name}**\n${text}`;
-}
 
 export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessage) {
   const setup = await createSlackDispatchSetup(prepared);
@@ -451,19 +448,10 @@ async function dispatchSlackMessageWithSetup(
     return result.deliveryResult ?? { visibleReplySent: false };
   };
   const replyTurnDelivery = createReplyTurnDelivery(prepared.replyTurn, {
+    amendOwnReport: createReportEditor(setup),
+    verifyTrendSource: createTrendSourceVerifier(prepared, slackClient),
     sourceMessageIds: [message.ts, message.thread_ts],
-    resolvePermalink: async (messageId) => {
-      prepared.replyTurn?.assertCurrent();
-      const response = await slackClient.chat.getPermalink({
-        channel: message.channel,
-        message_ts: messageId,
-      });
-      prepared.replyTurn?.assertCurrent();
-      if (!response.ok || !response.permalink) {
-        throw new Error("Slack reply permalink unavailable");
-      }
-      return response.permalink;
-    },
+    resolvePermalink: createReportPermalinkResolver(prepared, slackClient),
     annotateAcceptedFinal: async ({ messageId, text, channelData }) => {
       const projection = channelData
         ? resolveSlackReplyRenderPlan({ text, channelData })

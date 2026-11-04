@@ -1,9 +1,12 @@
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import type { AgentReportProfile, PreparedAgentReport } from "openclaw/plugin-sdk/report-profiles";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import type { AmendmentRequest, StagedAmendment } from "./amendment.js";
 import type { CatalogSnapshot, CompletedInvestigation, HistoryScope } from "./schema.js";
-
+import { observeLogPage, type TrendCapture } from "./trend-evidence.js";
+import type { StagedTrend } from "./trend.js";
 export type InvestigationTurnInput = {
+  amendmentRequest?: AmendmentRequest;
   id: string;
   scope: HistoryScope;
   sessionKey: string;
@@ -13,6 +16,7 @@ export type InvestigationTurnInput = {
   assertCurrent: () => void;
 };
 export type StagedInvestigation = {
+  trend?: StagedTrend;
   finalText: string;
   updates: CompletedInvestigation[];
   report?: PreparedAgentReport;
@@ -31,6 +35,9 @@ export type InvestigationTurn = InvestigationTurnInput & {
     upstream?: GetReplyOptions["turnAdoptionLifecycle"],
   ) => NonNullable<GetReplyOptions["turnAdoptionLifecycle"]>;
   releaseImmediate: () => void;
+  reportExpected?: boolean;
+  amendment?: StagedAmendment;
+  trendCapture?: TrendCapture;
   matchFinal: (finalText: string) => StagedInvestigation | undefined;
 };
 
@@ -121,12 +128,60 @@ export function createInvestigationTurnRegistry() {
       entries.set(input.id, { turn });
       return turn;
     },
+    observeTrendTool(
+      event: {
+        toolName: string;
+        toolCallId?: string;
+        params: Record<string, unknown>;
+        result?: unknown;
+        error?: string;
+      },
+      ctx: {
+        agentId?: string;
+        sessionKey?: string;
+        runId?: string;
+        requester?: { senderId?: string; accountId?: string; channel?: string };
+      },
+    ) {
+      if (event.error || !ctx.runId || !ctx.sessionKey || !ctx.agentId) return;
+      const begin =
+        event.toolName === "slack_investigation_record" && event.params.action === "begin_trend";
+      if (!begin && event.toolName !== "livex_gcp_logs_read") return;
+      const matches = [...entries.values()]
+        .map((e) => e.turn)
+        .filter(
+          (t) =>
+            t.trendCapture &&
+            t.scope.agentId === ctx.agentId &&
+            t.sessionKey === ctx.sessionKey &&
+            (!ctx.requester?.senderId || ctx.requester.senderId === t.scope.senderId) &&
+            (!ctx.requester?.accountId || ctx.requester.accountId === t.scope.accountId) &&
+            (!ctx.requester?.channel || ctx.requester.channel === "slack") &&
+            (begin
+              ? t.trendCapture.startCall === event.toolCallId
+              : t.trendCapture.runId === ctx.runId),
+        );
+      if (matches.length !== 1) return;
+      const turn = matches[0]!;
+      turn.assertCurrent();
+      if (begin) turn.trendCapture!.runId = ctx.runId;
+      else observeLogPage(turn.trendCapture!, event.params, event.result);
+    },
     get(id: string): InvestigationTurn | undefined {
       return active ? entries.get(id)?.turn : undefined;
     },
     clearStaged(id: string): void {
       const entry = requireTurn(id);
       delete entry.staged;
+      delete entry.turn.amendment;
+      delete entry.turn.reportExpected;
+    },
+    stageTrend(id: string, observation: StagedTrend) {
+      requireTurn(id).staged = {
+        trend: structuredClone(observation),
+        updates: [],
+        finalText: observation.finalText,
+      };
     },
     stage(
       id: string,
@@ -155,6 +210,7 @@ export function createInvestigationTurnRegistry() {
         throw new Error("Stage one to twenty investigations with a bounded exact final reply");
       }
       // Model input crosses the boundary once; later model mutations cannot change prepared facts.
+      entry.turn.reportExpected = true;
       entry.staged = structuredClone({
         finalText: finalText.trim(),
         updates,

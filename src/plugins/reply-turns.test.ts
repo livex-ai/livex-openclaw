@@ -5,6 +5,7 @@ import { PluginInstanceUnavailableError } from "./plugin-instance-error.js";
 import { getPluginInstance, hasCurrentPluginInstanceAuthority } from "./plugin-instance-scope.js";
 import { createOwnershipRecord } from "./registry-ownership.test-support.js";
 import { createTestPluginRegistry } from "./registry-runtime.test-helpers.js";
+import { createReplyTurnDelivery } from "./reply-turn-delivery.js";
 import type {
   ReplyTurnDeliveryHost,
   ReplyTurnInput,
@@ -462,3 +463,76 @@ describe("scoped reply turn providers", () => {
     expect(captured.replyTurnProviders).toEqual([value]);
   });
 });
+
+it.each(["livex-investigations", "foreign"])(
+  "binds linked priority owner to registered instance %s",
+  async (pluginId) => {
+    const { builder, register } = fixture();
+    const owner = register(pluginId);
+    const urls = [
+      "https://example.slack.com/archives/C1/p1000000001000000?thread_ts=1000000000.000000",
+      "https://example.slack.com/archives/C1/p1000000002000000?thread_ts=1000000000.000001",
+    ];
+    let escaped: ReplyTurnDeliveryHost | undefined;
+    owner.api.registerReplyTurnProvider({
+      ...provider(),
+      async prepare() {
+        return {
+          context: "",
+          toolBindings: {},
+          assertCurrent() {},
+          releaseImmediate() {},
+          lifecycle() {
+            return {};
+          },
+          createDelivery(transport) {
+            escaped = transport;
+            return {
+              deliver: async () => {
+                await transport.amendOwnReport!(
+                  urls[0]!,
+                  { priority: "Medium" },
+                  undefined,
+                  undefined,
+                  urls,
+                  "forged-owner",
+                );
+                await expect(
+                  transport.amendOwnReport!(
+                    urls[0]!,
+                    { priority: "Medium" },
+                    undefined,
+                    undefined,
+                    urls,
+                  ),
+                ).rejects.toThrow("admitted final");
+                return { visibleReplySent: true };
+              },
+            };
+          },
+        };
+      },
+    });
+    try {
+      const prepared = await withPluginRuntimeRegistryScope(builder.registry, () =>
+        prepareAgentReplyTurn(input()),
+      );
+      const amendOwnReport = vi.fn(async () => "1000000001.000000");
+      const delivery = createReplyTurnDelivery(prepared, { ...host(), amendOwnReport });
+      await expect(
+        escaped!.amendOwnReport!(urls[0]!, { priority: "Medium" }, undefined, undefined, urls),
+      ).rejects.toThrow("admitted final");
+      await delivery.deliver({ text: "priority" }, { kind: "final" });
+      expect(amendOwnReport).toHaveBeenCalledWith(
+        urls[0],
+        { priority: "Medium" },
+        undefined,
+        expect.any(Function),
+        urls,
+        pluginId,
+      );
+    } finally {
+      await disposePluginRegistryInstances(builder.registry);
+    }
+  },
+);

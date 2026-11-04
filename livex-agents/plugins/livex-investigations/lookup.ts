@@ -9,8 +9,10 @@ import {
 import { normalizePluginsConfig } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import type { InvestigationHistoryEntry } from "./schema.js";
 import type { CatalogIssue, CatalogSnapshot, HistoryScope } from "./schema.js";
 import { readCatalog } from "./store.js";
+import { nanoseconds } from "./trend.js";
 
 export type InvestigationLookupParams = {
   cfg: OpenClawConfig;
@@ -76,6 +78,13 @@ export function projectInvestigationIssue(issue: CatalogIssue) {
       ...(issue.signature.resource ? { resource: clip(issue.signature.resource) } : {}),
     },
     canonicalThreadUrl: issue.slackThreads[0],
+    lastRecordedTrend: issue.whatWeDidLast.reduce<InvestigationHistoryEntry["trend"]>(
+      (latest, h) =>
+        h.trend && (!latest || nanoseconds(h.trend.later.end) >= nanoseconds(latest.later.end))
+          ? h.trend
+          : latest,
+      undefined,
+    ),
     task: clip(issue.task),
     status: clip(issue.status, 80),
     waitingOn: clip(issue.waitingOn, 400),
@@ -86,6 +95,7 @@ export function projectInvestigationIssue(issue: CatalogIssue) {
       completedAt: latest.completedAt,
       summary: clip(latest.summary, 500),
       facts: {
+        priority: latest.facts.priority,
         finding: clip(latest.facts.finding),
         impact: clip(latest.facts.impact),
         nextAction: clip(latest.facts.nextAction),

@@ -154,7 +154,15 @@ export COMPOSE_FILE='<absolute-reviewed-package-path>/compose.yaml'
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR" "$SDK_STATE_DIR"
 sudo install -m 0600 -o 1000 -g 1000 '<transferred-prepared-openclaw.json>' "$STATE_DIR/openclaw.json"
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR/workspace"
-sudo install -m 0600 -o 1000 -g 1000 '<reviewed-archive>/livex-agents/workspaces/oncall/AGENTS.md' "$STATE_DIR/workspace/AGENTS.md"
+# Initial install only: review and verify the VM-specific bytes from the pinned image.
+(
+  set -eu
+  cd "$PRIVATE_ROOT"
+  docker run --rm --network none --read-only --entrypoint cat "$OPENCLAW_IMAGE" \
+    /opt/oncall/workspace/AGENTS.md > AGENTS.md
+  sha256sum -c '<reviewed-archive>/deploy/gcp-vm/oncall-vm-prompt.sha256'
+  sudo install -m 0600 -o 1000 -g 1000 AGENTS.md "$STATE_DIR/workspace/AGENTS.md"
+)
 ```
 
 Compare the previous approved workspace instructions before installing the archived
@@ -310,7 +318,25 @@ stopped state, switches the image, and copies only `agents.defaults.maxConcurren
 from the selected commit’s `livex-agents/config/openclaw.template.json` into the
 installed JSON config. Cutover verifies the live main-lane limit as well as
 Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
-instructions retain the VM's reaction and read-only session policies.
+instructions come from the verified candidate image. The image build applies
+`oncall-vm-policy.patch` to the shared prompt and verifies `oncall-vm-prompt.sha256`.
+Review and update that digest whenever the merged instructions change. The deployer
+requires the existing oncall read-only session default, read-only message-tool
+allowlist and disabled acknowledgement/typing reactions. It stops before cutover
+if the mounted prompt differs from the running release baseline.
+
+After the stopped-state backup, activation installs the merged file atomically.
+It reads `AGENTS.md` via the running Gateway's `agents.files.get` for `oncall`
+and checks the resolved workspace, file path, native hash and content against
+the candidate digest. The receipt and success output include `activePromptSha256`.
+Rollback restores the previous prompt with its config and image and verifies
+the previous active hash. External edits require reconciliation.
+
+The upgrade command is specific to the managed `livex-openclaw-dev` installation
+and its per-image build receipts. Its first migration recognizes the reviewed
+mounted prompt at `dbfb6fca`; subsequent upgrades use the previous image's
+receipt. A fresh manual installation needs its own reviewed baseline before it
+can use this managed upgrade flow.
 
 After backup and preflight, an enabled oncall investigation catalog is initialized
 once in the mounted agent directory. The release’s `init-catalog.log` reports

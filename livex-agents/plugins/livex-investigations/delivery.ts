@@ -11,9 +11,11 @@ import type {
   ReplyDispatchRuntimeInfo,
   ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
+import type { ReplyTurnDeliveryHost } from "openclaw/plugin-sdk/reply-turns";
+import { applyAmendment, isAmendmentFinal } from "./amendment-delivery.js";
 import { reportContext } from "./report-context.js";
 import type { InvestigationTurn } from "./runtime.js";
-import { commitInvestigations } from "./store.js";
+import { appendTrend, commitInvestigations } from "./store.js";
 
 function isInvestigationFinal(payload: ReplyPayload, kind: "tool" | "block" | "final"): boolean {
   return (
@@ -38,6 +40,7 @@ export type InvestigationPublicationResult =
 /** Catalog publication follows confirmed transport settlement; model completion alone is insufficient. */
 export function createInvestigationPublication(params: {
   turn: InvestigationTurn;
+  verifyTrendSource?: ReplyTurnDeliveryHost["verifyTrendSource"];
   resolvePermalink: (messageId: string) => Promise<string>;
 }) {
   let recorded = false;
@@ -86,6 +89,31 @@ export function createInvestigationPublication(params: {
         ) {
           return { status: "failed", reason: "Slack returned an invalid investigation permalink" };
         }
+        if (prepared.trend) {
+          const sourceReport = await params.verifyTrendSource?.(
+            prepared.trend.reportUrls,
+            messageId,
+            reportUrl,
+            prepared.finalText,
+          );
+          if (!sourceReport) {
+            return {
+              status: "failed",
+              reason:
+                "Trend history not saved: the delivered answer or prior report could not be verified in this thread",
+            };
+          }
+          await appendTrend({
+            filePath: params.turn.filePath,
+            scope: params.turn.scope,
+            observed: prepared.trend,
+            reportUrl,
+            sourceReport,
+            assertCurrent: params.turn.assertCurrent,
+          });
+          recorded = true;
+          return { status: "recorded" };
+        }
         const result = await commitInvestigations({
           filePath: params.turn.filePath,
           scope: params.turn.scope,
@@ -130,6 +158,8 @@ export function createInvestigationPublication(params: {
 /** Channel wiring stays in dispatch; this owner preserves catalog transport and bookkeeping policy. */
 export function createInvestigationDelivery(params: {
   turn?: InvestigationTurn;
+  verifyTrendSource?: ReplyTurnDeliveryHost["verifyTrendSource"];
+  amendOwnReport?: ReplyTurnDeliveryHost["amendOwnReport"];
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
   annotateAcceptedFinal: (input: {
@@ -148,6 +178,7 @@ export function createInvestigationDelivery(params: {
   const investigationPublication = investigationTurn
     ? createInvestigationPublication({
         turn: investigationTurn,
+        verifyTrendSource: params.verifyTrendSource,
         resolvePermalink: params.resolvePermalink,
       })
     : undefined;
@@ -156,6 +187,9 @@ export function createInvestigationDelivery(params: {
       return undefined;
     }
     const prepared = investigationTurn.matchFinal(payload.text!);
+    if (!prepared && !investigationTurn.reportExpected) {
+      return undefined;
+    }
     const outgoing = prepared?.report
       ? copyReplyPayloadMetadata(payload, {
           ...payload,
@@ -196,6 +230,9 @@ export function createInvestigationDelivery(params: {
       return;
     }
     params.reportError(publication.reason ?? "Investigation catalog publication failed");
+    if (investigationTurn.matchFinal(payload.text)?.trend) {
+      return;
+    }
     let settled = result;
     try {
       if (result.finalization) {
@@ -233,6 +270,7 @@ export function createInvestigationDelivery(params: {
             reportContext(prepared.updates, []),
           )
         : undefined;
+
       await params.annotateAcceptedFinal({
         messageId,
         text: report?.text ?? addHistoryWarning(payload.text, warning),
@@ -244,10 +282,30 @@ export function createInvestigationDelivery(params: {
       );
     }
   };
+  let amendmentAttempted = false;
+  const amendmentFailure = () =>
+    investigationTurn?.amendment?.changes.priority
+      ? "Could not confirm the report update and case history. Linked reports may differ. Repeat the priority request in either linked thread to reconcile them; memory commits the change only after every report is confirmed."
+      : "Could not confirm the report update and case history. Check the original report before retrying.";
   const deliver = async (
     payload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
   ): Promise<LivePreviewDeliveryResult> => {
+    if (investigationTurn && isAmendmentFinal(investigationTurn, payload, info.kind)) {
+      if (amendmentAttempted) {
+        return { visibleReplySent: false };
+      }
+      amendmentAttempted = true;
+      try {
+        const ts = await applyAmendment(investigationTurn, params.amendOwnReport);
+        return ts ? { visibleReplySent: true, messageIds: [ts] } : { visibleReplySent: false };
+      } catch {
+        investigationTurn.assertCurrent();
+        const failure = amendmentFailure();
+        params.reportError(failure);
+        return params.deliver({ text: failure }, info);
+      }
+    }
     const projection = prepareFinal(payload, info.kind);
     let outgoing = projection?.payload ?? payload;
     if (projection && !projection.prepared) {
@@ -284,15 +342,22 @@ export function createInvestigationDelivery(params: {
     }
     return result;
   };
+  let queuedAmendment: string | undefined;
   let queuedUnpreparedFinal: Pick<ReplyPayload, "text" | "channelData"> | undefined;
   const queuedCorrelation:
     | NonNullable<GetReplyOptions["queuedDeliveryCorrelations"]>[number]
     | undefined = investigationTurn
     ? {
         begin() {
+          queuedAmendment = undefined;
           queuedUnpreparedFinal = undefined;
         },
         prepareReply(payload, context) {
+          queuedAmendment = undefined;
+          if (isAmendmentFinal(investigationTurn, payload, context.kind)) {
+            queuedAmendment = payload.text;
+            return payload;
+          }
           const projection = prepareFinal(payload, context.kind);
           queuedUnpreparedFinal = undefined;
           if (projection && !projection.prepared) {
@@ -310,12 +375,40 @@ export function createInvestigationDelivery(params: {
           return projection?.payload;
         },
         async onReplyDelivered(payload, receipt) {
+          const ack = queuedAmendment;
+          queuedAmendment = undefined;
+          if (
+            ack &&
+            receipt?.complete &&
+            receipt.messageId &&
+            ack === payload.text &&
+            isAmendmentFinal(investigationTurn, payload, receipt.kind)
+          ) {
+            if (amendmentAttempted || params.sourceMessageIds.includes(receipt.messageId)) {
+              return;
+            }
+            amendmentAttempted = true;
+            try {
+              await applyAmendment(investigationTurn, params.amendOwnReport);
+            } catch {
+              const failure = amendmentFailure();
+              params.reportError(failure);
+              investigationTurn.assertCurrent();
+              // The acknowledgment itself may be unverified. Deliver a separate failure
+              // through the normal scoped transport rather than editing that message.
+              await params.deliver({ text: failure }, { kind: "final" });
+            }
+            return;
+          }
           const unpreparedFinal = queuedUnpreparedFinal;
           queuedUnpreparedFinal = undefined;
           if (!receipt || !isInvestigationFinal(payload, receipt.kind)) {
             return;
           }
           const prepared = investigationTurn.matchFinal(payload.text!);
+          if (!prepared && !unpreparedFinal && !investigationTurn.reportExpected) {
+            return;
+          }
           const unchangedUnprepared =
             unpreparedFinal?.text === payload.text &&
             isDeepStrictEqual(unpreparedFinal?.channelData?.slack, payload.channelData?.slack);
