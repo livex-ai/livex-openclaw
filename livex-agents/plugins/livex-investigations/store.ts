@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { acquireFileLock } from "openclaw/plugin-sdk/file-lock";
+import type { ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
 import {
   extractErrorCode,
   readRegularFile,
   replaceFileAtomic,
 } from "openclaw/plugin-sdk/security-runtime";
 import { compareFindings, mergeFacts, trackingFields } from "./matching.js";
+import { publishedReports, type PriorityIntent } from "./priority-sync.js";
 import {
   CatalogLimitError,
   MAX_CATALOG_BYTES,
@@ -23,6 +25,7 @@ import {
   type CompletedInvestigation,
   type HistoryScope,
 } from "./schema.js";
+import { trendSummary, type StagedTrend } from "./trend.js";
 
 export type CommitInvestigationsResult = {
   status: "committed" | "unchanged" | Exclude<CatalogStatus, "ready">;
@@ -103,6 +106,17 @@ function pacificDate(now: Date): string {
 
 const unique = (values: string[]) => [...new Set(values)];
 
+const catalogLockOptions = {
+  retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
+  stale: 30_000,
+  staleRecovery: "remove-if-definitely-stale" as const,
+};
+const lockCase = (filePath: string, id: string) =>
+  acquireFileLock(filePath + ".case-" + id, {
+    ...catalogLockOptions,
+    retries: { retries: 65, factor: 1.4, minTimeout: 20, maxTimeout: 500 },
+  });
+
 export async function commitInvestigations(params: {
   filePath: string;
   scope: HistoryScope;
@@ -122,12 +136,14 @@ export async function commitInvestigations(params: {
     }
   };
   let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined;
+  const cases: Awaited<ReturnType<typeof lockCase>>[] = [];
   try {
-    lock = await acquireFileLock(params.filePath, {
-      retries: { retries: 8, factor: 1.5, minTimeout: 10, maxTimeout: 100 },
-      stale: 30_000,
-      staleRecovery: "remove-if-definitely-stale",
-    });
+    for (const id of [
+      ...new Set(params.updates.map((u) => createIssueId(u.signature))),
+    ].toSorted()) {
+      cases.push(await lockCase(params.filePath, id));
+    }
+    lock = await acquireFileLock(params.filePath, catalogLockOptions);
     const document = await readDocument(params.filePath);
     assertCurrent();
     if (document.status !== "ready") {
@@ -178,6 +194,7 @@ export async function commitInvestigations(params: {
       };
       const tracking = previous ? trackingFields(previous, update) : update;
       const issue: CatalogIssue = {
+        ...(previous?.pendingPriority ? { pendingPriority: previous.pendingPriority } : {}),
         issueId,
         signature: previous?.signature ?? normalizeSignature(update.signature),
         task: update.task,
@@ -216,18 +233,7 @@ export async function commitInvestigations(params: {
     }
     const content = serializeCatalog(issues);
     assertCurrent();
-    await replaceFileAtomic({
-      filePath: params.filePath,
-      content,
-      mode: 0o600,
-      preserveExistingMode: false,
-      tempPrefix: `${path.basename(params.filePath)}.write`,
-      syncTempFile: true,
-      syncParentDir: true,
-      beforeRename: async () => {
-        assertCurrent();
-      },
-    });
+    await saveCatalog(params.filePath, content, assertCurrent);
     return {
       status: skipped ? "partial" : "committed",
       revision: revisionOf(content),
@@ -252,6 +258,338 @@ export async function commitInvestigations(params: {
           : "Catalog update failed; publication is not confirmed",
     };
   } finally {
-    await lock?.release();
+    try {
+      await lock?.release();
+    } finally {
+      await Promise.all(cases.map((c) => c.release()));
+    }
+  }
+}
+
+async function saveCatalog(filePath: string, content: string, assertCurrent: () => void) {
+  await replaceFileAtomic({
+    filePath,
+    content,
+    mode: 0o600,
+    preserveExistingMode: false,
+    tempPrefix: `${path.basename(filePath)}.write`,
+    syncTempFile: true,
+    syncParentDir: true,
+    beforeRename: async () => {
+      assertCurrent();
+    },
+  });
+}
+
+/** Serialize edits against case publication. Stage valid history before the Slack write;
+ * publish it only when the transport confirms the canonical edited message. */
+export async function editCatalogReport(params: {
+  filePath: string;
+  scope: HistoryScope;
+  threadId: string;
+  messageId: string;
+  changes: ReportAmendment;
+  snapshot: CatalogSnapshot;
+  assertCurrent: () => void;
+  edit: (url: string) => Promise<void>;
+  editLinked?: (urls: string[]) => Promise<void>;
+}) {
+  const { filePath, scope, threadId, messageId, changes, assertCurrent } = params;
+  assertCurrent();
+  // Serialize edits to this thread without blocking saves for independent cases during Slack I/O.
+  const threadKey = createHash("sha256")
+    .update(JSON.stringify([scope.teamId, scope.channelId, threadId]))
+    .digest("hex");
+  const lock = await acquireFileLock(filePath + ".edit-" + threadKey, catalogLockOptions);
+  let caseLock: Awaited<ReturnType<typeof lockCase>> | undefined;
+  try {
+    const stage = async () => {
+      const doc = await readDocument(filePath);
+      if (doc.status !== "ready") {
+        throw new Error("Case history unavailable");
+      }
+      const scoped = doc.issues.filter((issue) => scopeMatches(issue.signature.scope, scope));
+      const scopeOf = (raw: string | undefined) => {
+        if (!raw) {
+          return "other";
+        }
+        const url = new URL(raw);
+        if (
+          url.protocol !== "https:" ||
+          !url.hostname.endsWith(".slack.com") ||
+          !url.pathname.startsWith(`/archives/${scope.channelId}/p`)
+        ) {
+          return "other";
+        }
+        const root = url.searchParams.get("thread_ts");
+        return root === threadId ? "same" : root === null ? "unknown" : "other";
+      };
+      const exact = scoped.filter((issue) =>
+        publishedReports(issue).some((raw) => scopeOf(raw) === "same"),
+      );
+      // Older Slack permalinks can be bare. A single candidate is still subject
+      // to exact thread membership verification by the authenticated transport.
+      const matches = exact.length
+        ? exact
+        : scoped.filter((issue) =>
+            publishedReports(issue).some((url) => scopeOf(url) === "unknown"),
+          );
+      const [issue] = matches;
+      if (!issue || matches.length !== 1) {
+        throw new Error("Cannot identify one case in this thread");
+      }
+      const reports = publishedReports(issue);
+      const linked = Boolean(changes.priority && reports.length > 1);
+      const canonical = issue.slackThreads[0];
+      const url = linked
+        ? (reports.find((raw) => scopeOf(raw) === "same") ?? canonical)
+        : canonical;
+      const targets = [url!, ...reports.filter((raw) => raw !== url)];
+      // Slack may supply a bare permalink or add thread_ts/cid to the same message.
+      const messageKey = (link: string) => {
+        const parsed = new URL(link);
+        return parsed.origin + parsed.pathname;
+      };
+      if (
+        !url ||
+        scopeOf(url) === "other" ||
+        issue.whatWeDidLast[0]?.reportUrl !== canonical ||
+        doc.issues.some(
+          (other) =>
+            other !== issue &&
+            other.slackThreads.some((link) =>
+              targets.some((target) => messageKey(link) === messageKey(target)),
+            ),
+        )
+      ) {
+        throw new Error("Ambiguous canonical report");
+      }
+      const requestUrl = new URL(url);
+      requestUrl.pathname = "/archives/" + scope.channelId + "/p" + messageId.replace(".", "");
+      requestUrl.search = "";
+      const receipt = requestUrl.href;
+      const summary =
+        "Report amended by " +
+        scope.senderId +
+        ": " +
+        JSON.stringify(changes) +
+        " (Slack " +
+        messageId +
+        ").";
+      const pending = issue.pendingPriority;
+      if (pending && pending.senderId !== scope.senderId) {
+        throw new Error("Pending priority identity mismatch");
+      }
+      if (pending && !changes.priority) {
+        throw new Error("Retry the pending priority change before changing other fields");
+      }
+      if (pending && pending.messageId > messageId) {
+        throw new Error("A later pending priority change supersedes this request");
+      }
+      if (
+        pending?.messageId === messageId &&
+        (pending.priority !== changes.priority ||
+          JSON.stringify(pending.targets) !== JSON.stringify(targets))
+      ) {
+        throw new Error("Conflicting pending priority replay");
+      }
+      const previous = issue.whatWeDidLast.find(
+        (entry) =>
+          entry.evidenceUrls.includes(receipt) &&
+          entry.summary.endsWith("(Slack " + messageId + ")."),
+      );
+      if (previous) {
+        if (previous.summary !== summary) {
+          throw new Error("Conflicting replay of report amendment");
+        }
+        return { url, id: issue.issueId, targets, linked };
+      }
+      if (
+        issue.whatWeDidLast.some((entry) => {
+          const newer = /\(Slack (\d{10}\.\d{6})\)\.$/.exec(entry.summary)?.[1];
+          return newer && newer > messageId && entry.summary.startsWith("Report amended by ");
+        })
+      ) {
+        throw new Error("A later report change already supersedes this request");
+      }
+      if (linked && Object.keys(changes).length !== 1) {
+        throw new Error("Change linked priority separately from owner or next action");
+      }
+      const observed = params.snapshot.issues.find((i) => i.issueId === issue.issueId);
+      if (
+        !observed ||
+        JSON.stringify({ ...observed, pendingPriority: undefined }) !==
+          JSON.stringify({ ...issue, pendingPriority: undefined })
+      ) {
+        throw new Error("Case changed since request preparation");
+      }
+      let pendingContent: string | undefined;
+      if (linked) {
+        const intent: PriorityIntent = {
+          messageId,
+          senderId: scope.senderId,
+          priority: changes.priority!,
+          targets,
+        };
+        issue.pendingPriority = intent;
+        pendingContent = serializeCatalog(doc.issues);
+      }
+      delete issue.pendingPriority;
+      const last = issue.whatWeDidLast.at(-1)!;
+      const facts = { ...last.facts };
+      if (changes.priority) {
+        facts.priority = changes.priority;
+      }
+      if (changes.nextAction) {
+        facts.nextAction = changes.nextAction;
+      }
+      if (changes.acceptOwnership) {
+        facts.owner = { name: scope.senderId, evidenceUrl: receipt };
+      }
+      if (issue.waitingOn === last.facts.nextAction) {
+        issue.waitingOn = facts.nextAction;
+      } else if (
+        changes.acceptOwnership &&
+        /^(?:unassigned|owner (?:unknown|acceptance unknown))$/i.test(issue.waitingOn)
+      ) {
+        issue.waitingOn = facts.nextAction;
+      }
+      const completedAt = pacificDate(new Date());
+      issue.whatWeDidLast.push({
+        facts,
+        evidenceUrls: [...new Set([...last.evidenceUrls, receipt])],
+        completedAt,
+        kind: "changed",
+        summary,
+        reportUrl: canonical!,
+      });
+      issue.lastUpdated = completedAt;
+      return {
+        url,
+        id: issue.issueId,
+        targets,
+        linked,
+        pendingContent,
+        content: serializeCatalog(doc.issues),
+      };
+    };
+    const before = await stage();
+    assertCurrent();
+    caseLock = await lockCase(filePath, before.id);
+    const current = await stage();
+    if (!current.content) {
+      return;
+    }
+    if (current.id !== before.id || current.url !== before.url) {
+      throw new Error("Canonical case changed");
+    }
+    assertCurrent();
+    if (current.linked) {
+      if (!params.editLinked) {
+        throw new Error("Linked priority transport unavailable");
+      }
+      const pendingWriter = await acquireFileLock(filePath, catalogLockOptions);
+      try {
+        const prepared = await stage();
+        if (
+          prepared.id !== current.id ||
+          prepared.url !== current.url ||
+          !prepared.pendingContent
+        ) {
+          throw new Error("Linked case changed before intent publication");
+        }
+        await saveCatalog(filePath, prepared.pendingContent, assertCurrent);
+      } finally {
+        await pendingWriter.release();
+      }
+      await params.editLinked(current.targets);
+    } else {
+      await params.edit(before.url);
+    }
+    assertCurrent();
+    const writer = await acquireFileLock(filePath, catalogLockOptions);
+    try {
+      const after = await stage();
+      if (after.id !== before.id || after.url !== before.url) {
+        throw new Error("Canonical case changed during edit");
+      }
+      if (after.content) {
+        await saveCatalog(filePath, after.content, assertCurrent);
+      }
+    } finally {
+      await writer.release();
+    }
+  } finally {
+    try {
+      await caseLock?.release();
+    } finally {
+      await lock.release();
+    }
+  }
+}
+
+/** Append to the current record under the same writer locks as reports and amendments. */
+export async function appendTrend(params: {
+  filePath: string;
+  scope: HistoryScope;
+  observed: StagedTrend;
+  reportUrl: string;
+  sourceReport: string;
+  assertCurrent: () => void;
+}) {
+  const { filePath, scope, observed, reportUrl, sourceReport, assertCurrent } = params;
+  const caseLock = await lockCase(filePath, observed.issueId);
+  try {
+    const writer = await acquireFileLock(filePath, catalogLockOptions);
+    try {
+      const doc = await readDocument(filePath);
+      assertCurrent();
+      const issue = doc.issues.find(
+        (i) => i.issueId === observed.issueId && scopeMatches(i.signature.scope, scope),
+      );
+      if (
+        doc.status !== "ready" ||
+        !issue ||
+        !issue.whatWeDidLast.some((h) => !h.trend && h.reportUrl === sourceReport)
+      ) {
+        throw new Error("Trend case unavailable");
+      }
+      if (
+        doc.issues.some(
+          (other) =>
+            other !== issue &&
+            scopeMatches(other.signature.scope, scope) &&
+            other.whatWeDidLast.some((h) => h.trendRequest === observed.requestId),
+        )
+      ) {
+        throw new Error("Request already recorded for another case");
+      }
+      const prior = issue.whatWeDidLast.find((h) => h.trendRequest === observed.requestId);
+      if (prior && JSON.stringify(prior.trend) !== JSON.stringify(observed.trend)) {
+        throw new Error("Conflicting trend replay");
+      }
+      if (prior) {
+        return;
+      }
+      const completedAt = pacificDate(new Date());
+      issue.whatWeDidLast.push({
+        completedAt,
+        summary: trendSummary(observed.trend),
+        kind: "changed",
+        facts: issue.whatWeDidLast.at(-1)!.facts,
+        reportUrl,
+        trend: observed.trend,
+        trendRequest: observed.requestId,
+        evidenceUrls: [
+          ...new Set([observed.trend.earlier.evidenceUrl, observed.trend.later.evidenceUrl]),
+        ],
+      });
+      issue.lastUpdated = completedAt;
+      await saveCatalog(filePath, serializeCatalog(doc.issues), assertCurrent);
+    } finally {
+      await writer.release();
+    }
+  } finally {
+    await caseLock.release();
   }
 }

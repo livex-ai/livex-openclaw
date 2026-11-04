@@ -154,7 +154,15 @@ export COMPOSE_FILE='<absolute-reviewed-package-path>/compose.yaml'
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR" "$SDK_STATE_DIR"
 sudo install -m 0600 -o 1000 -g 1000 '<transferred-prepared-openclaw.json>' "$STATE_DIR/openclaw.json"
 sudo install -d -m 0700 -o 1000 -g 1000 "$STATE_DIR/workspace"
-sudo install -m 0600 -o 1000 -g 1000 '<reviewed-archive>/livex-agents/workspaces/oncall/AGENTS.md' "$STATE_DIR/workspace/AGENTS.md"
+# Initial install only: review and verify the VM-specific bytes from the pinned image.
+(
+  set -eu
+  cd "$PRIVATE_ROOT"
+  docker run --rm --network none --read-only --entrypoint cat "$OPENCLAW_IMAGE" \
+    /opt/oncall/workspace/AGENTS.md > AGENTS.md
+  sha256sum -c '<reviewed-archive>/deploy/gcp-vm/oncall-vm-prompt.sha256'
+  sudo install -m 0600 -o 1000 -g 1000 AGENTS.md "$STATE_DIR/workspace/AGENTS.md"
+)
 ```
 
 Compare the previous approved workspace instructions before installing the archived
@@ -287,3 +295,71 @@ run the metadata read check and an authorized Slack pilot: a new alert selects
 read GCP logs, and a follow-up resumes the same investigation after restart.
 Compare routing, streaming, disabled background services, repository pins, model,
 permissions, and instruction/skill hashes with the reviewed source snapshot.
+
+## Upgrade the existing livex-openclaw-dev Gateway
+
+From the deployment branch, pass the full lowercase SHA of a reviewed commit
+available in this checkout. The branch supplies the committed deployment helpers.
+The argument selects the application source to package.
+
+```sh
+bash deploy/gcp-vm/deploy.sh "$(git rev-parse HEAD)"
+```
+
+Use Node 24.16.0, pnpm 12.12.1, Git, shasum, and an authenticated gcloud CLI on
+the operator machine. The identity must have SSH, SCP and sudo access to
+`livex-openclaw-dev` in `ai-mvp-dv/us-central1-a`. Set `DEPLOY_WORK_DIR` to an
+existing writable directory with space for a fresh dependency install, build,
+npm cache and package. The script prints the private build directory.
+
+The VM builds a candidate before interrupting service. Cutover requires an idle,
+healthy Gateway and the same running image observed at startup. It backs up
+stopped state, switches the image, and copies only `agents.defaults.maxConcurrent`
+from the selected commit’s `livex-agents/config/openclaw.template.json` into the
+installed JSON config. Cutover verifies the live main-lane limit as well as
+Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
+instructions come from the verified candidate image. The image build applies
+`oncall-vm-policy.patch` to the shared prompt and verifies `oncall-vm-prompt.sha256`.
+Review and update that digest whenever the merged instructions change. The deployer
+requires the existing oncall read-only session default, read-only message-tool
+allowlist and disabled acknowledgement/typing reactions. It stops before cutover
+if the mounted prompt differs from the running release baseline.
+
+After the stopped-state backup, activation installs the merged file atomically.
+It reads `AGENTS.md` via the running Gateway's `agents.files.get` for `oncall`
+and checks the resolved workspace, file path, native hash and content against
+the candidate digest. The receipt and success output include `activePromptSha256`.
+Rollback restores the previous prompt with its config and image and verifies
+the previous active hash. External edits require reconciliation.
+
+The upgrade command is specific to the managed `livex-openclaw-dev` installation
+and its per-image build receipts. Its first migration recognizes the reviewed
+mounted prompt at `dbfb6fca`; subsequent upgrades use the previous image's
+receipt. A fresh manual installation needs its own reviewed baseline before it
+can use this managed upgrade flow.
+
+After backup and preflight, an enabled oncall investigation catalog is initialized
+once in the mounted agent directory. The release’s `init-catalog.log` reports
+`initialized`, `preserved`, or `disabled`. Existing records survive redeployment
+and rollback. Initialization starts with an empty catalog; verify saving and
+cross-thread lookup separately on fresh investigations.
+
+Success prints `running_verified`. On cutover failure the helper attempts to
+restore the previous image and exact pre-deploy config and reports its readiness. Inspect private receipts
+in `/opt/livex-openclaw/releases/<sha>/` before retrying a failed or interrupted
+deployment. Existing candidates and upload directories block an automatic replay.
+
+If the base image completed successfully and the disk guard stopped the build
+**before the runtime stage started**, keep both the upload and the printed
+local build directory. Check VM disk usage and free more than 5 GiB on the
+root filesystem. Review Docker build-cache usage first. To continue from that
+specific checkpoint, run from the updated tooling branch:
+
+```sh
+bash deploy/gcp-vm/deploy.sh "$FULL_COMMIT_SHA" --resume-after-base "$LOCAL_BUILD_DIR"
+```
+
+Resume checks the package and source hashes, donor image, base build command
+and exported image digest. It extracts fresh runtime source and retains the
+original receipts. A failed or attempted runtime or Node stage needs separate
+reconciliation.

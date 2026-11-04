@@ -15,7 +15,7 @@ import { createInvestigationDelivery } from "./delivery.js";
 import { createInvestigationRecordTool } from "./report-tool.js";
 import { closeInvestigationTurnRegistry, getInvestigationTurnRegistry } from "./runtime.js";
 import { serializeCatalog, type CompletedInvestigation } from "./schema.js";
-import { readCatalog } from "./store.js";
+import { commitInvestigations, readCatalog } from "./store.js";
 
 const rootPaths: string[] = [];
 function profile(id: string, agentId: string): AgentReportProfile {
@@ -331,6 +331,7 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
   async (change) => {
     install();
     const fixture = await turn("oncall");
+    fixture.value.reportExpected = true;
     const annotateAcceptedFinal = vi.fn();
     const owner = createInvestigationDelivery({
       turn: fixture.value,
@@ -341,7 +342,7 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
       deliver: vi.fn(async () => ({ visibleReplySent: true })),
     });
     const projected = owner.queuedCorrelation?.prepareReply?.(
-      { text: "Unprepared final" },
+      { text: "**Finding:** Unprepared final" },
       { kind: "final" },
     );
     const accepted = structuredClone(projected!);
@@ -366,6 +367,225 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
       });
     } else {
       expect(annotateAcceptedFinal).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it.each(["immediate", "queued", "changed", "partial"] as const)(
+  "amends one existing case through %s delivery",
+  async (mode) => {
+    install();
+    const f = await turn("oncall");
+    const root = "1793000000.000001",
+      ts = "1793000001.000001";
+    const url = "https://example.slack.com/archives/C1/p1793000001000001?thread_ts=" + root;
+    const req = {
+      threadId: root,
+      messageId: "1793000002.000001",
+      text: "I'll own this; make it Medium.",
+    };
+    await commitInvestigations({
+      filePath: f.filePath,
+      scope: f.scope,
+      updates: [f.update],
+      reportUrl: url,
+      now: new Date(),
+      assertCurrent() {},
+    });
+    f.value.snapshot = await readCatalog({ filePath: f.filePath, scope: f.scope });
+    f.value.amendmentRequest = req;
+    const tool = createInvestigationRecordTool(f.ctx);
+    await tool.execute("stage", {
+      action: "amend_current_report",
+      changes: { priority: "Medium", acceptOwnership: true },
+    });
+    const payload = { text: f.value.amendment!.finalText };
+    const amendOwnReport = vi.fn(async () => ts);
+    const send = vi.fn(async () => ({ visibleReplySent: true }));
+    const owner = createInvestigationDelivery({
+      turn: f.value,
+      sourceMessageIds: [root, req.messageId],
+      amendOwnReport,
+      resolvePermalink: vi.fn(),
+      reportError: vi.fn(),
+      annotateAcceptedFinal: vi.fn(),
+      deliver: send,
+    });
+    if (mode === "immediate") {
+      await owner.deliver(payload, { kind: "final" });
+      expect(send).not.toHaveBeenCalled();
+    } else {
+      owner.queuedCorrelation!.prepareReply!(payload, { kind: "final" });
+      await owner.queuedCorrelation!.onReplyDelivered!(
+        mode === "changed" ? { text: "Policy replacement" } : payload,
+        { kind: "final", complete: mode !== "partial", messageId: "1793000003.000001" },
+      );
+    }
+    const applied = mode === "immediate" || mode === "queued";
+    expect(amendOwnReport).toHaveBeenCalledTimes(applied ? 1 : 0);
+    const issue = (await readCatalog({ filePath: f.filePath, scope: f.scope })).issues[0]!;
+    expect(issue.whatWeDidLast).toHaveLength(applied ? 2 : 1);
+    if (applied)
+      expect(issue.whatWeDidLast.at(-1)!.facts).toMatchObject({
+        priority: "Medium",
+        owner: { name: "U1" },
+      });
+  },
+);
+
+it("answers a status question without a report, warning, or write", async () => {
+  install();
+  const f = await turn("oncall");
+  const send = vi.fn(async () => ({ visibleReplySent: true }));
+  const owner = createInvestigationDelivery({
+    turn: f.value,
+    sourceMessageIds: [],
+    resolvePermalink: vi.fn(),
+    annotateAcceptedFinal: vi.fn(),
+    reportError: vi.fn(),
+    deliver: send,
+  });
+  const payload = { text: "The last check found one blocked job." };
+  await owner.deliver(payload, { kind: "final" });
+  expect(send).toHaveBeenCalledWith(payload, { kind: "final" });
+  expect(owner.queuedCorrelation?.prepareReply?.(payload, { kind: "final" })).toBeUndefined();
+  expect((await readCatalog({ filePath: f.filePath, scope: f.scope })).issues).toHaveLength(0);
+});
+
+it.each(["immediate", "queued", "wrong-thread", "changed-answer", "partial"] as const)(
+  "saves an evidence-backed trend on its existing case only after %s delivery",
+  async (mode) => {
+    install();
+    const f = await turn("oncall"),
+      request = "1793000003.000001",
+      root = "1793000000.000001",
+      report = "https://example.slack.com/archives/C1/p1793000001000001",
+      answer = "https://example.slack.com/archives/C1/p1793000004000001";
+    await commitInvestigations({
+      filePath: f.filePath,
+      scope: f.scope,
+      updates: [f.update],
+      reportUrl: report,
+      now: new Date(),
+      assertCurrent() {},
+    });
+    f.value.amendmentRequest = { text: "is this increasing?", messageId: request, threadId: root };
+    const tool = createInvestigationRecordTool(f.ctx);
+    await tool.execute("lookup", { action: "lookup" });
+    const original = f.value.snapshot.issues[0]!,
+      issueIds = [original.issueId];
+    await tool.execute("begin", { action: "begin_trend", issueIds });
+    const registry = getInvestigationTurnRegistry(),
+      hook = { agentId: "oncall", sessionKey: f.value.sessionKey, runId: "run-A" };
+    registry.observeTrendTool(
+      {
+        toolName: "slack_investigation_record",
+        toolCallId: "begin",
+        params: { action: "begin_trend" },
+      },
+      hook,
+    );
+    const log = (minute: string, n: number) => {
+      const start = "2026-01-01T10:" + minute + ":00.000Z",
+        end = start.replace("00.000", "59.999");
+      const filter =
+        'resource.labels.service_name="api" AND timestamp>="' +
+        start +
+        '" AND timestamp<="' +
+        end +
+        '"';
+      const evidence =
+        "https://console.cloud.google.com/logs/query?" +
+        new URLSearchParams({ project: "synthetic-prod", query: filter });
+      registry.observeTrendTool(
+        {
+          toolName: "livex_gcp_logs_read",
+          params: {},
+          result: {
+            details: {
+              project: "synthetic-prod",
+              mode: "errors",
+              resourceLabels: { service_name: "api" },
+              start,
+              end,
+              retrievedAt: "2026-01-01T11:00:00Z",
+              logsExplorerUrl: evidence,
+              entries: Array.from({ length: n }, () => ({
+                textPayload: "mapping: missing variant_name",
+              })),
+              returnedRows: n,
+              invalidRows: 0,
+              truncationReasons: [],
+              truncated: false,
+              windowExhausted: true,
+              nextCursor: null,
+            },
+          },
+        },
+        hook,
+      );
+      return evidence;
+    };
+    const args = {
+      action: "record_trend",
+      issueIds,
+      earlierEvidenceUrl: log("00", 2),
+      laterEvidenceUrl: log("01", 5),
+    };
+    await expect(
+      tool.execute("forged", { ...args, laterEvidenceUrl: "https://example.org/missing" }),
+    ).rejects.toThrow();
+    const result = await tool.execute("stage", args);
+    const payload = { text: (result.details as { finalText: string }).finalText };
+    expect(payload.text).toContain("increased");
+    expect(payload.text).not.toMatch(/\*Priority|\*Summary/);
+    const send = vi.fn(async () => ({ visibleReplySent: true, messageIds: ["1793000004.000001"] }));
+    const annotate = vi.fn();
+    const owner = createInvestigationDelivery({
+      turn: f.value,
+      sourceMessageIds: [root, request],
+      resolvePermalink: async () => answer,
+      verifyTrendSource: async () => (mode === "wrong-thread" ? undefined : report),
+      annotateAcceptedFinal: annotate,
+      reportError: vi.fn(),
+      deliver: send,
+    });
+    if (mode === "immediate" || mode === "wrong-thread") {
+      await owner.deliver(payload, { kind: "final" });
+      expect(send).toHaveBeenCalledWith(payload, { kind: "final" });
+    } else {
+      const projected = owner.queuedCorrelation!.prepareReply!(payload, { kind: "final" });
+      expect(projected).toEqual(payload);
+      await owner.queuedCorrelation!.onReplyDelivered!(
+        mode === "changed-answer" ? { text: "changed by policy" } : payload,
+        { complete: mode !== "partial", kind: "final", messageId: "1793000004.000001" },
+      );
+    }
+    expect(annotate).not.toHaveBeenCalled();
+    const saved = mode === "immediate" || mode === "queued";
+    const issue = (await readCatalog({ filePath: f.filePath, scope: f.scope })).issues[0]!;
+    expect(issue.whatWeDidLast).toHaveLength(saved ? 2 : 1);
+    expect(issue.slackThreads).toEqual(original.slackThreads);
+    expect(issue.status).toBe(original.status);
+    expect(issue.whatWeDidLast.at(-1)?.facts).toEqual(original.whatWeDidLast[0]?.facts);
+    if (saved) {
+      const nextSession = "agent:oncall:slack:channel:c1:thread:another";
+      registry.register({
+        id: "next",
+        scope: f.scope,
+        sessionKey: nextSession,
+        filePath: f.filePath,
+        snapshot: { ...f.value.snapshot, issues: [] },
+        assertCurrent() {},
+      });
+      const recall = await createInvestigationRecordTool({
+        ...f.ctx,
+        sessionKey: nextSession,
+        toolBindings: { slack_investigation: { turnId: "next" } },
+      }).execute("recall", { action: "lookup", issueIds });
+      expect(recall.details).toMatchObject({
+        issues: [{ lastRecordedTrend: { earlier: { count: 2 }, later: { count: 5 } } }],
+      });
     }
   },
 );

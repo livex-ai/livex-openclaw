@@ -11,7 +11,7 @@ import {
   type CompletedInvestigation,
   type HistoryScope,
 } from "./schema.js";
-import { commitInvestigations, readCatalog } from "./store.js";
+import { editCatalogReport, commitInvestigations, readCatalog } from "./store.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const scope: HistoryScope = {
@@ -471,5 +471,350 @@ describe("completed investigation catalog", () => {
       }),
     ).rejects.toThrow("invocation closed");
     expect(await fs.readFile(filePath, "utf8")).toBe(before);
+  });
+});
+
+describe("priority update history", () => {
+  it("appends once on canonical readback, retaining independent writes and original facts", async () => {
+    const filePath = await catalogPath();
+    const root = "1793000000.000000",
+      url = firstUrl + "?thread_ts=" + root;
+    await record(filePath, [finding()], url);
+    const before = (await readCatalog({ filePath, scope })).issues[0];
+    let edits = 0;
+    const args = {
+      filePath,
+      scope,
+      threadId: root,
+      messageId: "1793000002.000001",
+      changes: { priority: "Medium", nextAction: "Review logs", acceptOwnership: true } as const,
+      snapshot: await readCatalog({ filePath, scope }),
+      assertCurrent: () => {},
+      edit: async (target: string) => {
+        expect(target).toBe(url);
+        edits++;
+        // A different case may finish while Slack is being verified.
+        await record(
+          filePath,
+          [finding("other failure")],
+          secondUrl + "?thread_ts=1793000001.000000",
+        );
+      },
+    };
+    await expect(
+      editCatalogReport({
+        ...args,
+        edit: async () => {
+          throw new Error("unconfirmed");
+        },
+      }),
+    ).rejects.toThrow();
+    expect((await readCatalog({ filePath, scope })).issues[0]).toEqual(before);
+    await editCatalogReport(args);
+    await editCatalogReport(args);
+    const issues = (await readCatalog({ filePath, scope })).issues;
+    expect(edits).toBe(1);
+    expect(issues).toHaveLength(2);
+    const updated = issues.find((i) => i.issueId === before.issueId)!;
+    expect(updated.slackThreads).toEqual([url]);
+    expect(updated.whatWeDidLast).toHaveLength(2);
+    expect(updated.whatWeDidLast[1]).toMatchObject({
+      facts: {
+        ...before.whatWeDidLast[0].facts,
+        priority: "Medium",
+        nextAction: "Review logs",
+        owner: { name: scope.senderId, evidenceUrl: expect.stringContaining("1793000002000001") },
+      },
+      reportUrl: url,
+    });
+  });
+  it("serializes a same-case publication across slow Slack confirmation and rejects an older amendment", async () => {
+    const filePath = await catalogPath(),
+      threadId = "1793000000.000001",
+      url = firstUrl + "?thread_ts=" + threadId;
+    await record(filePath, [finding()], url);
+    const snapshot = await readCatalog({ filePath, scope });
+    let publishing: ReturnType<typeof record> | undefined;
+    const args = {
+      filePath,
+      scope,
+      threadId,
+      messageId: "1793000004.000001",
+      changes: { priority: "High" as const, acceptOwnership: true as const },
+      snapshot,
+      assertCurrent() {},
+      edit: async () => {
+        publishing = record(filePath, [finding()], secondUrl);
+        await new Promise((r) => {
+          setTimeout(r, 1100);
+        });
+      },
+    };
+    await editCatalogReport(args);
+    expect((await publishing)?.status).toBe("committed");
+    const after = await readCatalog({ filePath, scope });
+    expect(after.issues[0]!.whatWeDidLast).toHaveLength(3);
+    expect(after.issues[0]!.whatWeDidLast.at(-1)?.facts.priority).toBe("High");
+    expect(after.issues[0]!.waitingOn).toBe(finding().facts.nextAction);
+    const write = vi.fn();
+    await expect(
+      editCatalogReport({ ...args, messageId: "1793000003.000001", snapshot: after, edit: write }),
+    ).rejects.toThrow("supersedes");
+    expect(write).not.toHaveBeenCalled();
+  });
+  it("refuses multiple matching cases and a different sender", async () => {
+    const filePath = await catalogPath(),
+      root = "1793000000.000000",
+      url = firstUrl + "?thread_ts=" + root;
+    await record(filePath, [finding()], url);
+    await record(filePath, [finding("different failure")], firstUrl);
+    const edit = vi.fn();
+    for (const senderId of [scope.senderId, "U-other"]) {
+      await expect(
+        editCatalogReport({
+          filePath,
+          scope: { ...scope, senderId },
+          threadId: root,
+          messageId: "1793000002.000004",
+          changes: {
+            priority: "Medium",
+            nextAction: "Review logs",
+            acceptOwnership: true,
+          } as const,
+          snapshot: await readCatalog({ filePath, scope }),
+          assertCurrent: () => {},
+          edit,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(edit).not.toHaveBeenCalled();
+  });
+});
+
+describe("linked priority", () => {
+  it.each([0, 1])("reconciles both receipts from root %i after interruption", async (origin) => {
+    const filePath = await catalogPath();
+    const roots = ["1000000000.000000", "1000000001.000000"];
+    const urls = roots.map(
+      (root, index) =>
+        "https://example.slack.com/archives/C1/p100000000200000" + index + "?thread_ts=" + root,
+    );
+    for (const url of urls) {
+      await record(filePath, [finding()], url);
+    }
+    const snapshot = await readCatalog({ filePath, scope });
+    const args = {
+      filePath,
+      scope,
+      snapshot,
+      threadId: roots[origin]!,
+      messageId: "1000000003.000001",
+      changes: { priority: "Medium" as const },
+      assertCurrent() {},
+      edit: vi.fn(),
+    };
+    const cards = new Map(urls.map((url) => [url, "Unknown"]));
+    const editLinked = vi.fn(async (targets: string[]) => {
+      expect(targets[0]).toBe(urls[origin]);
+      expect(new Set(targets)).toEqual(new Set(urls));
+      cards.set(targets[0]!, "Medium");
+      throw new Error("Slack unavailable");
+    });
+    await expect(editCatalogReport({ ...args, editLinked })).rejects.toThrow();
+    const pending = await readCatalog({ filePath, scope });
+    expect(pending.issues[0]!.pendingPriority).toMatchObject({
+      priority: "Medium",
+      messageId: args.messageId,
+    });
+    expect(pending.issues.map(({ pendingPriority: _intent, ...issue }) => issue)).toEqual(
+      snapshot.issues,
+    );
+    expect(cards.get(urls[origin]!)).toBe("Medium");
+    await expect(
+      editCatalogReport({ ...args, messageId: "1000000003.000000", editLinked }),
+    ).rejects.toThrow();
+    expect(editLinked).toHaveBeenCalledTimes(1);
+    const finish = vi.fn(async (targets: string[]) => {
+      for (const url of targets) {
+        cards.set(url, "Medium");
+      }
+    });
+    await editCatalogReport({ ...args, editLinked: finish });
+    await editCatalogReport({ ...args, editLinked: finish });
+    const after = await readCatalog({ filePath, scope });
+    expect(finish).toHaveBeenCalledOnce();
+    expect(args.edit).not.toHaveBeenCalled();
+    expect([...cards.values()]).toEqual(["Medium", "Medium"]);
+    expect(after.issues[0]!.whatWeDidLast.at(-1)!.facts.priority).toBe("Medium");
+    cards.set(urls[1]!, "Unknown");
+    await editCatalogReport({
+      ...args,
+      snapshot: after,
+      messageId: "1000000004.000000",
+      editLinked: finish,
+    });
+    expect([...cards.values()]).toEqual(["Medium", "Medium"]);
+  });
+});
+
+describe("linked priority boundaries", () => {
+  const roots = ["1000000000.000000", "1000000001.000000"];
+  const urls = roots.map(
+    (root, index) =>
+      "https://example.slack.com/archives/C1/p100000000200000" + index + "?thread_ts=" + root,
+  );
+  async function linked() {
+    const filePath = await catalogPath();
+    for (const url of urls) {
+      await record(filePath, [finding()], url);
+    }
+    const args = {
+      filePath,
+      scope,
+      threadId: roots[0]!,
+      messageId: "1000000004.000000",
+      changes: { priority: "Medium" as const },
+      snapshot: await readCatalog({ filePath, scope }),
+      assertCurrent() {},
+      edit: vi.fn(),
+      editLinked: vi.fn(async () => {}),
+    };
+    return args;
+  }
+  it("ignores model-proposed and trend links, rejects nonpriority and mixed changes from secondary root", async () => {
+    const args = await linked();
+    const issue = args.snapshot.issues[0]!;
+    issue.slackThreads.push(
+      "https://example.slack.com/archives/C1/p1000000002000099?thread_ts=1000000000.000099",
+    );
+    await fs.writeFile(args.filePath, serializeCatalog(args.snapshot.issues));
+    await editCatalogReport(args);
+    expect(args.editLinked).toHaveBeenCalledWith(urls);
+    const snapshot = await readCatalog({ filePath: args.filePath, scope });
+    for (const changes of [
+      { nextAction: "Review logs" },
+      { acceptOwnership: true as const },
+      { priority: "High" as const, acceptOwnership: true as const },
+    ]) {
+      await expect(
+        editCatalogReport({
+          ...args,
+          snapshot,
+          messageId: "1000000005.000000",
+          threadId: roots[1]!,
+          changes,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(args.editLinked).toHaveBeenCalledOnce();
+    expect(args.edit).not.toHaveBeenCalled();
+  });
+  it("reconciles newer requests from either root and prevents older pending replay", async () => {
+    const args = await linked();
+    const pending = vi.fn(async () => {
+      throw new Error("partial");
+    });
+    await expect(editCatalogReport({ ...args, editLinked: pending })).rejects.toThrow();
+    const newer = {
+      ...args,
+      threadId: roots[1]!,
+      messageId: "1000000005.000000",
+      changes: { priority: "High" as const },
+      editLinked: pending,
+    };
+    await expect(editCatalogReport(newer)).rejects.toThrow();
+    await expect(editCatalogReport(args)).rejects.toThrow("supersedes");
+    expect(args.editLinked).not.toHaveBeenCalled();
+    await editCatalogReport({ ...newer, editLinked: args.editLinked });
+    expect(
+      (await readCatalog({ filePath: args.filePath, scope })).issues[0]!.whatWeDidLast.at(-1)!.facts
+        .priority,
+    ).toBe("High");
+  });
+  it("keeps verified cards regardless of their investigator-authored summary", async () => {
+    const args = await linked();
+    args.snapshot.issues[0]!.whatWeDidLast[1]!.summary = "Report amended by a diagnostic check";
+    await fs.writeFile(args.filePath, serializeCatalog(args.snapshot.issues));
+    await editCatalogReport(args);
+    expect(args.editLinked).toHaveBeenCalledWith(urls);
+    expect(args.edit).not.toHaveBeenCalled();
+  });
+  it("preserves pending intent through later case publication and requires fresh targets", async () => {
+    const args = await linked();
+    await expect(
+      editCatalogReport({
+        ...args,
+        editLinked: async () => {
+          throw new Error("partial");
+        },
+      }),
+    ).rejects.toThrow();
+    const third =
+      "https://example.slack.com/archives/C1/p1000000003000001?thread_ts=1000000003.000000";
+    await record(args.filePath, [finding()], third);
+    const snapshot = await readCatalog({ filePath: args.filePath, scope });
+    expect(snapshot.issues[0]!.pendingPriority?.messageId).toBe(args.messageId);
+    await expect(editCatalogReport({ ...args, snapshot })).rejects.toThrow(
+      "Conflicting pending priority replay",
+    );
+    await editCatalogReport({ ...args, snapshot, messageId: "1000000005.000000" });
+    expect(args.editLinked).toHaveBeenCalledWith([...urls, third]);
+    expect(
+      (await readCatalog({ filePath: args.filePath, scope })).issues[0]!.pendingPriority,
+    ).toBeUndefined();
+  });
+  it("rejects a card shared by another case before any writes", async () => {
+    const args = await linked();
+    await record(args.filePath, [finding("another problem")], urls[1]);
+    await expect(
+      editCatalogReport({
+        ...args,
+        snapshot: await readCatalog({ filePath: args.filePath, scope }),
+      }),
+    ).rejects.toThrow("Ambiguous");
+    expect(args.editLinked).not.toHaveBeenCalled();
+  });
+  it("fails closed on unreadable pending intent and full history before Slack", async () => {
+    const args = await linked();
+    const issue = args.snapshot.issues[0]!;
+    await fs.writeFile(
+      args.filePath,
+      serializeCatalog(args.snapshot.issues) + '- Pending priority update: {"invalid":true}\n',
+    );
+    await expect(editCatalogReport(args)).rejects.toThrow("Case history unavailable");
+    while (issue.whatWeDidLast.length < 100) {
+      issue.whatWeDidLast.push({ ...issue.whatWeDidLast[0]!, summary: "Older check" });
+    }
+    await fs.writeFile(args.filePath, serializeCatalog(args.snapshot.issues));
+    await expect(editCatalogReport(args)).rejects.toThrow();
+    expect(args.editLinked).not.toHaveBeenCalled();
+  });
+  it("recovers a lost final catalog acknowledgment without replaying Slack", async () => {
+    const args = await linked();
+    const replace = securityRuntime.replaceFileAtomic;
+    let attempts = 0;
+    const spy = vi
+      .spyOn(securityRuntime, "replaceFileAtomic")
+      .mockImplementation(async (options) => {
+        const result = await replace(options);
+        if (options.filePath === args.filePath && ++attempts === 2) {
+          throw new Error("crash after commit");
+        }
+        return result;
+      });
+    try {
+      await expect(editCatalogReport(args)).rejects.toThrow("crash after commit");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(
+      (await readCatalog({ filePath: args.filePath, scope })).issues[0]!.whatWeDidLast.at(-1)!.facts
+        .priority,
+    ).toBe("Medium");
+    await editCatalogReport(args);
+    expect(args.editLinked).toHaveBeenCalledOnce();
+    expect(
+      (await readCatalog({ filePath: args.filePath, scope })).issues[0]!.pendingPriority,
+    ).toBeUndefined();
   });
 });

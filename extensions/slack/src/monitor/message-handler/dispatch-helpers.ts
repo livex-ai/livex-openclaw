@@ -186,3 +186,8 @@ export async function resolveSlackStreamRecipientTeamId(params: {
   }
   return params.fallbackTeamId;
 }
+
+export function formatSlackGroupThreadReply(text: string, participant: { name: string }): string {
+  const name = participant.name.replace(/[\\`*_{}[\]()<>#!|]/g, "\\$&").replace(/\s+/g, " ");
+  return `**${name}**\n${text}`;
+}

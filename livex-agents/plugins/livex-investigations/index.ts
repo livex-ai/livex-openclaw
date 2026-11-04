@@ -1,7 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { investigationPluginConfigSchema, resolveInvestigationAgentId } from "./config.js";
 import { createInvestigationRecordTool } from "./report-tool.js";
-import { closeInvestigationTurnRegistry } from "./runtime.js";
+import { closeInvestigationTurnRegistry, tryGetInvestigationTurnRegistry } from "./runtime.js";
 import { prepareInvestigationReplyTurn } from "./turn.js";
 
 export default {
@@ -15,6 +15,14 @@ export default {
     );
     const agentId = resolveInvestigationAgentId(api.config);
     if (agentId) {
+      api.on(
+        "after_tool_call",
+        (event, ctx) => {
+          if (ctx.agentId === agentId)
+            tryGetInvestigationTurnRegistry()?.observeTrendTool(event, ctx);
+        },
+        { matcher: ["slack_investigation_record", "livex_gcp_logs_read"] },
+      );
       api.registerReplyTurnProvider({
         id: "livex-investigations",
         agentIds: [agentId],

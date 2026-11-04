@@ -36,6 +36,7 @@ import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
 import type { SlackSendResult } from "../../send.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
+import { createPreparedMessageFactory } from "./dispatch-preview.test-helpers.js";
 import {
   checkpoint,
   contentTaskId,
@@ -323,89 +324,11 @@ function expectLastDraftUpdateText(
   expect(draftUpdateTexts(draftStream).at(-1)).toBe(expected);
 }
 
-function createPreparedSlackMessage(params?: {
-  cfg?: Record<string, unknown>;
-  botUserId?: string;
-  teamId?: string;
-  accountConfig?: Record<string, unknown>;
-  ctxPayload?: Record<string, unknown>;
-  message?: Partial<PreparedSlackMessage["message"]>;
-  replyToMode?: "off" | "first" | "all" | "batched";
-  isDirectMessage?: boolean;
-  route?: Partial<PreparedSlackMessage["route"]>;
-  setSlackSessionStatus?: PreparedSlackMessage["ctx"]["setSlackSessionStatus"];
-  typingReaction?: string;
-  ackReactionMessageTs?: string;
-  ackReactionPromise?: Promise<boolean> | null;
-  relayIdentity?: { username?: string; iconUrl?: string; iconEmoji?: string };
-  turnAdoptionLifecycle?: object;
-  dispatchReplyFromConfig?: unknown;
-  eventScope?: {
-    teamId: string;
-    client: Record<string, unknown>;
-  };
-}) {
-  const routeSessionKey = params?.route?.sessionKey ?? "agent:agent-1:slack:C123";
-  const mainSessionKey = params?.route?.mainSessionKey ?? "main";
-  const lastRoutePolicy =
-    params?.route?.lastRoutePolicy ?? (routeSessionKey === mainSessionKey ? "main" : "session");
-  const message = {
-    channel: "C123",
-    ts: "171234.111",
-    thread_ts: THREAD_TS,
-    user: "U123",
-    ...params?.message,
-  };
-
-  return {
-    ctx: {
-      cfg: params?.cfg ?? {},
-      runtime: {},
-      botToken: "xoxb-test",
-      app: { client: { chat: { postMessage: postMessageMock, update: chatUpdateMock } } },
-      teamId: params?.teamId ?? "T1",
-      botUserId: params?.botUserId ?? "U_OPENCLAW",
-      botId: "B_OPENCLAW",
-      textLimit: 4000,
-      typingReaction: params?.typingReaction ?? "",
-      historyLimit: 0,
-      allowFrom: [],
-      dispatchReplyFromConfig: params?.dispatchReplyFromConfig,
-      setSlackSessionStatus: params?.setSlackSessionStatus ?? (async () => true),
-    },
-    account: {
-      accountId: "default",
-      config: params?.accountConfig ?? {},
-    },
-    relayIdentity: params?.relayIdentity,
-    turnAdoptionLifecycle: params?.turnAdoptionLifecycle,
-    eventScope: params?.eventScope,
-    message,
-    route: {
-      agentId: "agent-1",
-      accountId: "default",
-      mainSessionKey,
-      sessionKey: routeSessionKey,
-      lastRoutePolicy,
-      ...params?.route,
-    },
-    channelConfig: null,
-    replyTarget: `channel:${message.channel}`,
-    ctxPayload: {
-      MessageThreadId: THREAD_TS,
-      ...params?.ctxPayload,
-    },
-    turn: {
-      record: {},
-    },
-    replyToMode: params?.replyToMode ?? "all",
-    isDirectMessage: params?.isDirectMessage ?? false,
-    isRoomish: false,
-    ackReactionValue: "eyes",
-    ackReactionMessageTs: params?.ackReactionMessageTs,
-    ackReactionPromise: params?.ackReactionPromise ?? null,
-  } as never;
-}
+const createPreparedSlackMessage = createPreparedMessageFactory(
+  THREAD_TS,
+  postMessageMock,
+  chatUpdateMock,
+);
 
 async function dispatch(params?: Parameters<typeof createPreparedSlackMessage>[0]) {
   await dispatchPreparedSlackMessage(createPreparedSlackMessage(params));
@@ -1020,6 +943,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];
       }
+      if (scenario === "queued-unprepared") investigationTurn.reportExpected = true;
       if (scenario !== "queued-unprepared") {
         registry.stage(
           "dispatch-catalog",
@@ -1101,7 +1025,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         expect(registry.get("dispatch-catalog")).toBeDefined();
         const correlation = capturedReplyOptions?.queuedDeliveryCorrelations?.at(-1);
         const projected = correlation?.prepareReply?.(
-          { text: FINAL_REPLY_TEXT },
+          { text: "**Finding:** Missing mapping" },
           { kind: "final" },
         );
         expect(projected).toBeDefined();
@@ -1166,6 +1090,60 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([true, false])(
+    "edits only when the dispatcher delivers the explicit final (deliver=%s)",
+    async (deliver) => {
+      useRealChannelInboundTurn = true;
+      const adopted = vi.fn();
+      const releaseImmediate = vi.fn();
+      const applyFinal = vi.fn(async () => ({ visibleReplySent: true }));
+      const dispatchReplyFromConfig: NonNullable<
+        PreparedSlackMessage["ctx"]["dispatchReplyFromConfig"]
+      > = async ({ dispatcher, replyResolver, replyOptions }) => {
+        expect(replyResolver).toBeUndefined();
+        await replyOptions?.turnAdoptionLifecycle?.onAdopted();
+        return {
+          queuedFinal: deliver && dispatcher.sendFinalReply({ text: "requested amendment" }),
+          counts: dispatcher.getQueuedCounts(),
+        };
+      };
+      await dispatch({
+        botUserId: "UBOT",
+        message: { text: "<@UBOT> set priority to Medium" },
+        eventScope: { teamId: "T1", client: {}, writeClient: { token: "test" } },
+        ctxPayload: finalizeInboundContext({
+          AgentId: "agent-1",
+          SessionKey: "agent:agent-1:slack:channel:c123",
+          Provider: "slack",
+          Surface: "slack",
+          ChatType: "channel",
+          AccountId: "default",
+          From: "slack:C123",
+          To: "channel:C123",
+          NativeChannelId: "C123",
+          SenderId: "U123",
+          MessageSid: "171234.111",
+          MessageThreadId: THREAD_TS,
+          Body: "<@UBOT> set priority to Medium",
+          CommandAuthorized: true,
+        }),
+        replyTurn: {
+          lifecycle: () => ({ onAdopted: adopted }),
+          releaseImmediate,
+          assertCurrent: () => {},
+          createDelivery: () => ({ deliver: applyFinal }),
+        },
+        dispatchReplyFromConfig,
+      });
+      expect(applyFinal).toHaveBeenCalledTimes(deliver ? 1 : 0);
+      expect(adopted).toHaveBeenCalledOnce();
+      expect(releaseImmediate).toHaveBeenCalledOnce();
+      expect(postMessageMock).not.toHaveBeenCalled();
+      expect(sendMessageSlackMock).not.toHaveBeenCalled();
+      expect(deliverRepliesMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { agents: ["alice", "bob"], withMedia: true },

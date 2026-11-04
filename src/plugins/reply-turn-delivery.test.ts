@@ -11,6 +11,7 @@ function fixture(
   const queued = vi.fn();
   const host: ReplyTurnDeliveryHost = {
     sourceMessageIds: ["alert", "root"],
+    verifyTrendSource: vi.fn(async () => "case-report"),
     resolvePermalink: vi.fn(async (id: string) => "https://slack.example/" + id),
     annotateAcceptedFinal: vi.fn(async () => {}),
     reportError: vi.fn(),
@@ -48,6 +49,59 @@ describe("reply turn accepted transport authority", () => {
     expect(ordinary.queuedCorrelation).toBeUndefined();
   });
 
+  it("grants the editor only during policy-admitted finals and revokes it after settlement", async () => {
+    const f = fixture();
+    const writer = vi.fn(async () => "updated");
+    let bound: ReplyTurnDeliveryHost | undefined;
+    let stillCurrent: (() => void) | undefined;
+    const persisted = {
+      ...f.host,
+      amendOwnReport: vi.fn(async (_url, _patch, _receipt, check) => {
+        stillCurrent = check;
+        return writer();
+      }),
+    };
+    const owner = createReplyTurnDelivery(
+      {
+        ...f.turn,
+        createDelivery: (host) => {
+          bound = host;
+          return {
+            deliver: async () => {
+              await host.amendOwnReport!("target", { priority: "Low" });
+              await expect(host.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
+                "admitted final",
+              );
+              return { visibleReplySent: true };
+            },
+          };
+        },
+      },
+      persisted,
+    );
+    await expect(bound!.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
+      "admitted final",
+    );
+    await expect(owner.deliver({ text: "progress" }, { kind: "block" })).rejects.toThrow(
+      "admitted final",
+    );
+    await owner.deliver({ text: "request" }, { kind: "final" });
+    expect(writer).toHaveBeenCalledOnce();
+    expect(() => stillCurrent!()).toThrow("closed");
+  });
+
+  it("verifies trend sources only for the active turn's accepted answer", async () => {
+    const f = fixture();
+    const verify = (id: string) =>
+      f.transport().verifyTrendSource!(["case-report"], id, "answer-link", "comparison");
+    await expect(verify("unaccepted")).rejects.toThrow();
+    await f.delivery.deliver({ text: "comparison" }, { kind: "final" });
+    expect(await verify("final")).toBe("case-report");
+    await expect(verify("root")).rejects.toThrow();
+    f.turn.releaseImmediate();
+    await expect(verify("final")).rejects.toThrow();
+    expect(f.host.verifyTrendSource).toHaveBeenCalledTimes(1);
+  });
   it("accepts only this turn's actual final receipt and never source or arbitrary IDs", async () => {
     const f = fixture();
     await expect(f.transport().resolvePermalink("final")).rejects.toThrow(/own accepted final/);

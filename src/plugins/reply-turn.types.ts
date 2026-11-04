@@ -6,6 +6,12 @@ import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { AgentReportProfile } from "./report-profile.types.js";
 
+export type ReportAmendment = {
+  priority?: "Unknown" | "Low" | "Medium" | "High" | "Critical";
+  nextAction?: string;
+  acceptOwnership?: true;
+};
+
 /** Authenticated channel facts and bounded context for one prepared reply turn. */
 export type ReplyTurnInput = {
   config: OpenClawConfig;
@@ -18,12 +24,28 @@ export type ReplyTurnInput = {
   sessionKey: string;
   isDirectMessage: boolean;
   query: string;
+  /** Current directly addressed, authorized human reply, excluding thread history. */
+  amendmentRequest?: { text: string; threadId: string; messageId: string };
   signal?: AbortSignal;
   assertCurrent: () => void;
 };
 
 /** Transport operations are bound to this turn's accepted receipts by the host. */
 export type ReplyTurnDeliveryHost = {
+  amendOwnReport?: (
+    url: string,
+    changes: ReportAmendment,
+    queuedReceipt?: { messageId: string; text: string },
+    assertAdmission?: () => void,
+    linkedReports?: readonly string[],
+    ownerPluginId?: string,
+  ) => Promise<string>;
+  verifyTrendSource?: (
+    reportUrls: readonly string[],
+    acceptedId: string,
+    answerLink: string,
+    finalText: string,
+  ) => Promise<string | undefined>;
   sourceMessageIds: readonly (string | undefined)[];
   resolvePermalink: (messageId: string) => Promise<string>;
   annotateAcceptedFinal: (input: {

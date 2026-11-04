@@ -3,11 +3,11 @@
     {
       "name": "investigate-alerts",
       "path": "skills/investigate-alerts/SKILL.md",
-      "sha256": "d2f01b3ec16eb151d06bdb54334da89b8da7975ec0812b02e5c141e30a9add21",
+      "sha256": "fc1f54355991c5aa088be5562365a639a5082e77bd0cda04b6994b3ad12d27f6",
       "importedSha256": "fcd846ec8b4265a0dc83b4edbf51db196b9d7fbcbd883a8a5cd72427a23db305",
       "adaptation": {
         "scope": "shared-source",
-        "updatedOn": "2026-10-23",
+        "updatedOn": "2026-11-03",
         "purpose": "Canonical triage, ownership/lifecycle, action-based markers and concise evidence reports; adapt only OpenClaw tool, bot identity, configured runbook destination and normal reply delivery boundaries."
       },
       "source": "livex-alert-investigator:skills/investigate-alerts/SKILL.md",
@@ -39,7 +39,7 @@
     {
       "name": "debug",
       "path": "skills/debug/SKILL.md",
-      "sha256": "d29da1264ec701126ce5455ca27e57a222d969ccb66806be09afd9b652b0779c",
+      "sha256": "ec96bba6fbcc9882a7d50cd53b469e146444f00ad0060446d737c388fcd7cecf",
       "importedSha256": "f22c77eed85189317c14102ef0615ea3fc7d8187b943ed6050aef0e2e6f4bf96",
       "adaptation": {
         "scope": "shared-source",
@@ -47,7 +47,12 @@
         "purpose": "Full-window log discovery, fixed tab-delimited application-error selection, pagination, evidence reuse, and pinned repository reads under the configured caller and project rules."
       },
       "source": "Repository-owned adaptation of the local investigation workflow",
-      "files": []
+      "files": [
+        {
+          "path": "skills/debug/references/error-summary.md",
+          "sha256": "805dfc5d067c2bbc0b15dbe15652849a448707ac47bc56ee277a9b83b09b15f7"
+        }
+      ]
     },
     {
       "name": "systematic-debugging",
