@@ -10,6 +10,10 @@ labels. Services, revisions, namespaces, and pods can change. Discover them from
 logs and preserve their provenance. Native Codex owns this workflow and decides
 when its evidence answers the request; this skill adds no separate agent loop.
 
+For a bounded error overview or trend question, read
+[Error summaries and trends](references/error-summary.md) and use its inventory
+and presentation workflow. Reuse the coverage and access rules below.
+
 ## 1. Plan coverage from the alert
 
 Read the alert root and relevant replies. Extract the symptom, full alert window,
@@ -53,7 +57,9 @@ alert window. This fixed profile also includes structured payloads with Cloud
 severity at least ERROR; text matches can have Cloud severity INFO. Omit the
 profile for ordinary severity/structured-level errors. If the tool does not
 advertise this profile, or the alert uses another text format, use all-level
-`context` reads with observed seeds where available and track paging coverage.
+`context` reads with observed seeds where available for operation-specific
+investigation, and track paging coverage. For a service-wide overview, use seeds
+to discover workload selectors, then remove ID restrictions for the inventory.
 An empty ordinary error query does not rule out application text errors. Supply
 no raw filter or custom regex; keep cursor continuations cursor-only.
 
