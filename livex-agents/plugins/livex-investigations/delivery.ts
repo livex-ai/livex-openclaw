@@ -96,12 +96,13 @@ export function createInvestigationPublication(params: {
             reportUrl,
             prepared.finalText,
           );
-          if (!sourceReport)
+          if (!sourceReport) {
             return {
               status: "failed",
               reason:
                 "Trend history not saved: the delivered answer or prior report could not be verified in this thread",
             };
+          }
           await appendTrend({
             filePath: params.turn.filePath,
             scope: params.turn.scope,
@@ -186,7 +187,9 @@ export function createInvestigationDelivery(params: {
       return undefined;
     }
     const prepared = investigationTurn.matchFinal(payload.text!);
-    if (!prepared && !investigationTurn.reportExpected) return undefined;
+    if (!prepared && !investigationTurn.reportExpected) {
+      return undefined;
+    }
     const outgoing = prepared?.report
       ? copyReplyPayloadMetadata(payload, {
           ...payload,
@@ -227,7 +230,9 @@ export function createInvestigationDelivery(params: {
       return;
     }
     params.reportError(publication.reason ?? "Investigation catalog publication failed");
-    if (investigationTurn.matchFinal(payload.text)?.trend) return;
+    if (investigationTurn.matchFinal(payload.text)?.trend) {
+      return;
+    }
     let settled = result;
     try {
       if (result.finalization) {
@@ -278,20 +283,25 @@ export function createInvestigationDelivery(params: {
     }
   };
   let amendmentAttempted = false;
-  const failure =
-    "Could not confirm the report update and case history. Check the original report before retrying.";
+  const amendmentFailure = () =>
+    investigationTurn?.amendment?.changes.priority
+      ? "Could not confirm the report update and case history. Linked reports may differ. Repeat the priority request in either linked thread to reconcile them; memory commits the change only after every report is confirmed."
+      : "Could not confirm the report update and case history. Check the original report before retrying.";
   const deliver = async (
     payload: ReplyPayload,
     info: ReplyDispatchRuntimeInfo,
   ): Promise<LivePreviewDeliveryResult> => {
     if (investigationTurn && isAmendmentFinal(investigationTurn, payload, info.kind)) {
-      if (amendmentAttempted) return { visibleReplySent: false };
+      if (amendmentAttempted) {
+        return { visibleReplySent: false };
+      }
       amendmentAttempted = true;
       try {
         const ts = await applyAmendment(investigationTurn, params.amendOwnReport);
         return ts ? { visibleReplySent: true, messageIds: [ts] } : { visibleReplySent: false };
       } catch {
         investigationTurn.assertCurrent();
+        const failure = amendmentFailure();
         params.reportError(failure);
         return params.deliver({ text: failure }, info);
       }
@@ -374,14 +384,19 @@ export function createInvestigationDelivery(params: {
             ack === payload.text &&
             isAmendmentFinal(investigationTurn, payload, receipt.kind)
           ) {
-            if (amendmentAttempted || params.sourceMessageIds.includes(receipt.messageId)) return;
+            if (amendmentAttempted || params.sourceMessageIds.includes(receipt.messageId)) {
+              return;
+            }
             amendmentAttempted = true;
             try {
               await applyAmendment(investigationTurn, params.amendOwnReport);
             } catch {
+              const failure = amendmentFailure();
               params.reportError(failure);
               investigationTurn.assertCurrent();
-              // Readback may have rejected the acknowledgment identity; never edit it on failure.
+              // The acknowledgment itself may be unverified. Deliver a separate failure
+              // through the normal scoped transport rather than editing that message.
+              await params.deliver({ text: failure }, { kind: "final" });
             }
             return;
           }
@@ -391,7 +406,9 @@ export function createInvestigationDelivery(params: {
             return;
           }
           const prepared = investigationTurn.matchFinal(payload.text!);
-          if (!prepared && !unpreparedFinal && !investigationTurn.reportExpected) return;
+          if (!prepared && !unpreparedFinal && !investigationTurn.reportExpected) {
+            return;
+          }
           const unchangedUnprepared =
             unpreparedFinal?.text === payload.text &&
             isDeepStrictEqual(unpreparedFinal?.channelData?.slack, payload.channelData?.slack);

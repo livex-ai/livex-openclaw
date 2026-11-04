@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
+import { getPluginValueInstance } from "./plugin-instance-scope.js";
 import type {
   PreparedReplyTurn,
   ReplyTurnDelivery,
@@ -54,16 +55,26 @@ export function createReplyTurnDelivery(
     ...host,
     amendOwnReport:
       host.amendOwnReport &&
-      (async (url, changes) => {
+      (async (url, changes, _receipt, _check, linkedReports) => {
         const permit = admission.getStore();
-        if (!permit?.open || permit.used)
+        if (!permit?.open || permit.used) {
           throw new Error("Report edit requires its own admitted final");
+        }
         turn.assertCurrent();
         permit.used = true;
-        return host.amendOwnReport!(url, changes, permit.queuedReceipt, () => {
-          if (!permit.open) throw new Error("Report edit admission closed");
-          turn.assertCurrent();
-        });
+        return host.amendOwnReport!(
+          url,
+          changes,
+          permit.queuedReceipt,
+          () => {
+            if (!permit.open) {
+              throw new Error("Report edit admission closed");
+            }
+            turn.assertCurrent();
+          },
+          linkedReports && [...linkedReports],
+          getPluginValueInstance(turn.createDelivery)?.pluginId,
+        );
       }),
     verifyTrendSource:
       host.verifyTrendSource &&

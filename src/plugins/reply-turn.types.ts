@@ -37,6 +37,8 @@ export type ReplyTurnDeliveryHost = {
     changes: ReportAmendment,
     queuedReceipt?: { messageId: string; text: string },
     assertAdmission?: () => void,
+    linkedReports?: readonly string[],
+    ownerPluginId?: string,
   ) => Promise<string>;
   verifyTrendSource?: (
     reportUrls: readonly string[],

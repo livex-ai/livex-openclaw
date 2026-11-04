@@ -205,8 +205,11 @@ describe("explicit report priority edit", () => {
         { text },
         { complete: mode !== "partial", messageId: id, kind: "final" },
       );
-      if (mode === "complete") await received;
-      else await expect(received).rejects.toThrow();
+      if (mode === "complete") {
+        await received;
+      } else {
+        await expect(received).rejects.toThrow();
+      }
       expect(f.write).toHaveBeenCalledTimes(mode === "complete" ? 1 : 0);
     },
   );
@@ -232,8 +235,9 @@ describe("explicit report priority edit", () => {
       link.replace("example.slack.com", "other.slack.com"),
       link + "?thread_ts=123",
       link.replace("C123", "C456"),
-    ])
+    ]) {
       await expect(f.edit(url)).rejects.toThrow();
+    }
     expect(f.write).not.toHaveBeenCalled();
   });
   it("recovers a lost response only from matching readback; never retries a write", async () => {
@@ -241,19 +245,194 @@ describe("explicit report priority edit", () => {
     const normal = f.write.getMockImplementation()!;
     f.write.mockImplementationOnce(async (a) => {
       await normal(a);
-      throw Error("connection lost");
+      throw new Error("connection lost");
     });
     await f.edit(link);
     expect(f.write).toHaveBeenCalledTimes(1);
     f.apply(f.initial);
     f.write.mockRejectedValueOnce(
-      Object.assign(Error("missing_scope"), { code: "slack_webapi_platform_error" }),
+      Object.assign(new Error("missing_scope"), { code: "slack_webapi_platform_error" }),
     );
     await expect(f.edit(link)).rejects.toThrow("missing_scope");
     expect(f.write).toHaveBeenCalledTimes(2);
     const g = fixture();
-    g.write.mockRejectedValueOnce(Error("connection lost"));
+    g.write.mockRejectedValueOnce(new Error("connection lost"));
     await expect(g.edit(link)).rejects.toThrow("not confirmed");
     expect(g.write).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("linked priority delivery", () => {
+  function linkedFixture() {
+    const f = fixture();
+    const peerRoot = "1792999999.000001";
+    const peerTs = "1793000001.000003";
+    const urls = [
+      link + "?thread_ts=" + root,
+      "https://example.slack.com/archives/C123/p1793000001000003?thread_ts=" + peerRoot,
+    ];
+    const cards = new Map([
+      [ts, structuredClone(f.initial)],
+      [peerTs, { ...structuredClone(f.initial), ts: peerTs, thread_ts: peerRoot }],
+    ]);
+    const update = vi.fn(
+      async (args: {
+        ts: string;
+        text: string;
+        blocks: typeof f.initial.blocks;
+        attachments: typeof f.initial.attachments;
+      }) => {
+        cards.set(args.ts, { ...cards.get(args.ts)!, ...args });
+        return { ok: true };
+      },
+    );
+    const replies = vi.fn(async (args: { oldest: string; ts: string }) => ({
+      ok: true,
+      messages: [...cards.values()].filter((m) => m.ts === args.oldest && m.thread_ts === args.ts),
+    }));
+    const client = {
+      ...f.client,
+      conversations: { replies },
+      chat: {
+        update,
+        getPermalink: async (args: { message_ts: string }) => ({
+          ok: true,
+          permalink: urls.find((url) => url.includes(args.message_ts.replace(".", ""))),
+        }),
+      },
+    };
+    const writer = (thread = root, text = inbound.text) =>
+      createReportEditor({
+        prepared: {
+          ctx: { botUserId: "UBOT", teamId: "T1" },
+          message: { ...inbound, thread_ts: thread, text },
+          replyTurn: { assertCurrent() {} },
+          ctxPayload: { CommandAuthorized: true },
+          eventScope: { teamId: "T1", writeClient: { ...client, token: "test" } },
+        },
+      } as unknown as SlackDispatchSetup)!;
+    return { ...f, urls, cards, update, replies, writer, peerRoot, peerTs };
+  }
+  it.each([0, 1])(
+    "updates both cards from root %i; reconciles an accepted but lost response",
+    async (origin) => {
+      const f = linkedFixture();
+      const urls = origin ? f.urls.toReversed() : f.urls;
+      const normal = f.update.getMockImplementation()!;
+      f.update.mockImplementationOnce(async (args) => {
+        await normal(args);
+        throw new Error("lost response");
+      });
+      const result = await f.writer(origin ? f.peerRoot : root)(
+        urls[0]!,
+        { priority: "Medium" },
+        undefined,
+        undefined,
+        urls,
+        "livex-investigations",
+      );
+      expect(result).toBe(origin ? f.peerTs : ts);
+      for (const card of f.cards.values()) {
+        expect(card.text).toContain("*Priority:* Medium");
+        expect(card.attachments[0]!.blocks.slice(1)).toEqual(
+          f.initial.attachments[0]!.blocks.slice(1),
+        );
+      }
+      expect(f.update).toHaveBeenCalledTimes(2);
+      await f.writer(origin ? f.peerRoot : root)(
+        urls[0]!,
+        { priority: "Medium" },
+        undefined,
+        undefined,
+        urls,
+        "livex-investigations",
+      );
+      expect(f.update).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each([
+    "foreign owner",
+    "foreign bot",
+    "wrong root",
+    "foreign channel",
+    "nonpriority",
+    "duplicate",
+    "bad queued ack",
+  ])("rejects %s before any write", async (mode) => {
+    const f = linkedFixture();
+    const urls = [...f.urls];
+    let owner = "livex-investigations";
+    let changes: ReportAmendment = { priority: "Medium" };
+    let receipt: { messageId: string; text: string } | undefined;
+    if (mode === "foreign owner") {
+      owner = "foreign";
+    }
+    if (mode === "foreign bot") {
+      f.cards.get(f.peerTs)!.user = "FOREIGN";
+    }
+    if (mode === "wrong root") {
+      urls[1] = urls[1]!.replace(f.peerRoot, "1792999998.000001");
+    }
+    if (mode === "foreign channel") {
+      urls[1] = urls[1]!.replace("C123", "C999");
+    }
+    if (mode === "nonpriority") {
+      changes = { priority: "Medium", acceptOwnership: true };
+    }
+    if (mode === "duplicate") {
+      urls[1] = urls[0]!;
+    }
+    if (mode === "bad queued ack") {
+      receipt = { messageId: "1793000003.000002", text: "ack" };
+    }
+    await expect(f.writer()(urls[0]!, changes, receipt, undefined, urls, owner)).rejects.toThrow();
+    expect(f.update).not.toHaveBeenCalled();
+  });
+  it("preflights every card and rejects nonpriority drift before overwriting it", async () => {
+    const f = linkedFixture();
+    const normal = f.update.getMockImplementation()!;
+    f.update.mockImplementationOnce(async (args) => {
+      await normal(args);
+      const peer = f.cards.get(f.peerTs)!;
+      peer.text = peer.text.replace("Check config", "New human action");
+      return { ok: true };
+    });
+    await expect(
+      f.writer()(
+        f.urls[0]!,
+        { priority: "Medium" },
+        undefined,
+        undefined,
+        f.urls,
+        "livex-investigations",
+      ),
+    ).rejects.toThrow("changed after preflight");
+    expect(f.cards.get(f.peerTs)!.text).toContain("New human action");
+    expect(f.update).toHaveBeenCalledTimes(1);
+  });
+  it("verifies the queued acknowledgment in the requesting root for both cards", async () => {
+    const f = linkedFixture();
+    const receipt = {
+      messageId: "1793000003.000002",
+      text: "Requested report update: priority Medium.",
+    };
+    f.cards.set(receipt.messageId, {
+      ...f.initial,
+      ts: receipt.messageId,
+      text: receipt.text,
+      blocks: [],
+      attachments: [],
+    });
+    await f.writer()(
+      f.urls[0]!,
+      { priority: "Medium" },
+      receipt,
+      undefined,
+      f.urls,
+      "livex-investigations",
+    );
+    const ackReads = f.replies.mock.calls.filter(([args]) => args.oldest === receipt.messageId);
+    expect(ackReads.length).toBe(2);
+    expect(ackReads.every(([args]) => args.ts === root)).toBe(true);
   });
 });

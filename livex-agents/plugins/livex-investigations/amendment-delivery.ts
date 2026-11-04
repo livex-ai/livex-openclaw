@@ -24,7 +24,9 @@ export async function applyAmendment(
 ) {
   const staged = turn.amendment;
   const request = turn.amendmentRequest;
-  if (!staged || !request || !edit) throw new Error("No active reporter or amendment");
+  if (!staged || !request || !edit) {
+    throw new Error("No active reporter or amendment");
+  }
   let messageId: string | undefined;
   await editCatalogReport({
     filePath: turn.filePath,
@@ -34,6 +36,9 @@ export async function applyAmendment(
     changes: staged.changes,
     snapshot: staged.snapshot,
     assertCurrent: turn.assertCurrent,
+    editLinked: async (urls) => {
+      messageId = await edit(urls[0]!, staged.changes, undefined, undefined, urls);
+    },
     edit: async (url) => {
       messageId = await edit(url, staged.changes);
     },
