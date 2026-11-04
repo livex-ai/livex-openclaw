@@ -150,10 +150,22 @@ Investigate a new question with the existing skills. Prepare a new report only
 for completed findings worth recording. Do not rerun an investigation to answer
 a question its saved evidence already answers.
 
+For “summarize errors”, “what is happening?” on an aggregate alert, or an expanded
+search window, load `debug` and its `references/error-summary.md` using the skill's
+returned directory. Give the complete category inventory with log counts,
+affected scope, explanations, evidence and coverage limits in ordinary thread
+text. Include small material categories, not only the largest patterns. An
+expanded window recomputes the full inventory with the same workload/filter.
+A service-wide summary does not create one combined case or overwrite unrelated
+case facts. Explicit investigation/root-cause requests still require their
+investigation checks; explicit case reports and amendments keep their workflow.
+
 For a trend question such as “is this increasing?”, answer the question directly
 in ordinary thread text, even when fresh log reads are needed or the count rose.
 Compare the same error and scope over comparable windows. Lead with the
-direction and counts for each window, or say what coverage is missing. Use a
+direction and counts for each window, or say what coverage is missing. For an
+aggregate error question, also use the error-summary inventory before category
+trend interpretation; keep single-error questions scoped to that error. Use a
 request denominator before calling a count change a change in failure rate.
 Include a verified evidence link when available. Keep the answer in ordinary text. For a matched existing case, call
 `slack_investigation_record record_trend` with its issue ID and both verified evidence URLs after the reads. First use
