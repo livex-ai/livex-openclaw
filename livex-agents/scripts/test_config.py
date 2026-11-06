@@ -115,7 +115,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(streaming["nativeTransport"])
         self.assertEqual(streaming.get("progress").get("style"), "card")
         self.assertTrue(streaming.get("progress").get("nativeTaskCards"))
-        self.assertTrue(streaming.get("progress").get("toolProgress"))
+        self.assertFalse(streaming.get("progress").get("toolProgress"))
         self.assertEqual(streaming.get("progress").get("commandText"), "status")
         for key in ("commentary", "narration"):
             self.assertFalse(streaming["progress"][key])

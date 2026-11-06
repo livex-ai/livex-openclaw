@@ -421,7 +421,9 @@ activation.
 
 The Git template selects OpenClaw's existing native task cards: `streaming.mode`
 is `progress`, `nativeTransport` is `true`, and `streaming.progress` uses
-`style: "card"`, `nativeTaskCards: true`, and `toolProgress: true`.
+`style: "card"`, `nativeTaskCards: true`, and `toolProgress: false`.
+Cards show authored plan steps or a stable summary row instead of a row per tool
+call. Investigation tools still run; this setting changes only progress display.
 `commandText: "status"` keeps raw command text off; `commentary` and `narration`
 remain `false`. These eight presentation fields are Git-owned at the Slack root.
 The selected commit's template supplies them to the image receipt for both fresh
@@ -444,7 +446,7 @@ No further manifest change is needed for an app whose loading indicator works.
 After deployment, manually invoke one investigation in an approved thread and
 verify native progress appears, the final report remains in that thread, and the
 loading state clears. Capture sanitized before/after screenshots before marking
-visual acceptance complete. Only tool events emitted through OpenClaw can appear;
-internal work inside a delegated Codex request may remain hidden. OpenClaw uses
+visual acceptance complete. Individual tool calls are hidden; this does not expose
+internal work inside a delegated Codex request. OpenClaw uses
 Slack's grouped `plan` display, so the exact collapsed label is Slack-controlled.
 Its separate `style: "compact"` option is a temporary text draft, not this card UI.

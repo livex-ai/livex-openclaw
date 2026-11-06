@@ -16,7 +16,7 @@ NEW = "sha256:" + "c" * 64
 PROGRESS = {
     "mode": "progress", "nativeTransport": True,
     "progress": {
-        "style": "card", "nativeTaskCards": True, "toolProgress": True,
+        "style": "card", "nativeTaskCards": True, "toolProgress": False,
         "commandText": "status", "commentary": False, "narration": False,
     },
 }
@@ -163,14 +163,14 @@ class ReleaseTest(unittest.TestCase):
                     streaming={"mode": "progress", "nativeTransport": True,
                                "block": {"enabled": False},
                                "progress": {"style": "compact", "nativeTaskCards": False,
-                                            "toolProgress": False, "label": "Investigating"}},
+                                            "toolProgress": True, "label": "Investigating"}},
                     accounts={"default": {
                         "botToken": {"source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN"},
                         "streaming": {"progress": {"label": "Operator label"}},
                     }},
                 )
                 if failure == "progress-override":
-                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["progress"]["toolProgress"] = False
+                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["progress"]["toolProgress"] = True
             if multi:
                 original["agents"]["entries"]["oncall"].update(
                     model="vm-selected-model",

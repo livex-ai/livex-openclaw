@@ -203,7 +203,7 @@
         "progress": {
           "style": "card",
           "nativeTaskCards": true,
-          "toolProgress": true,
+          "toolProgress": false,
           "commandText": "status",
           "commentary": false,
           "narration": false
