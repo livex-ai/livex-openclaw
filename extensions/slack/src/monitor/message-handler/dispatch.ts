@@ -42,43 +42,47 @@ import { createTrendSourceVerifier, createReportPermalinkResolver } from "./tren
 import type { PreparedSlackMessage } from "./types.js";
 
 export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessage) {
-  const setup = await createSlackDispatchSetup(prepared);
-  const beginSessionRun = () =>
-    registerSlackSessionRun(
-      prepared.ctx,
-      {
-        channelId: prepared.message.channel,
-        // First-mode roots publish in a thread even without a status target.
-        threadTs: setup.streamThreadHint,
-        eventScope: prepared.eventScope,
+  let release: (() => void) | undefined;
+  try {
+    const setup = await createSlackDispatchSetup(prepared);
+    const beginSessionRun = () =>
+      registerSlackSessionRun(
+        prepared.ctx,
+        {
+          channelId: prepared.message.channel,
+          // First-mode roots publish in a thread even without a status target.
+          threadTs: setup.streamThreadHint,
+          eventScope: prepared.eventScope,
+        },
+        {
+          ...prepared.route,
+          sessionKey: prepared.ctxPayload.SessionKey ?? prepared.route.sessionKey,
+        },
+      );
+    const upstreamLifecycle =
+      prepared.replyTurn?.lifecycle(prepared.turnAdoptionLifecycle) ??
+      prepared.turnAdoptionLifecycle;
+    let releaseDeferred: (() => void) | undefined;
+    const turnAdoptionLifecycle = upstreamLifecycle && {
+      ...upstreamLifecycle,
+      onDeferred: () => {
+        const accepted = upstreamLifecycle.onDeferred?.();
+        if (accepted !== false) {
+          releaseDeferred ??= beginSessionRun();
+        }
+        return accepted;
       },
-      {
-        ...prepared.route,
-        sessionKey: prepared.ctxPayload.SessionKey ?? prepared.route.sessionKey,
+      onSettled: () => {
+        releaseDeferred?.();
+        return upstreamLifecycle.onSettled?.();
       },
-    );
-  const upstreamLifecycle =
-    prepared.replyTurn?.lifecycle(prepared.turnAdoptionLifecycle) ?? prepared.turnAdoptionLifecycle;
-  let releaseDeferred: (() => void) | undefined;
-  const turnAdoptionLifecycle = upstreamLifecycle && {
-    ...upstreamLifecycle,
-    onDeferred: () => {
-      const accepted = upstreamLifecycle.onDeferred?.();
-      if (accepted !== false) {
-        releaseDeferred ??= beginSessionRun();
-      }
-      return accepted;
-    },
-    onSettled: () => {
-      releaseDeferred?.();
-      return upstreamLifecycle.onSettled?.();
-    },
-  };
-  const release = beginSessionRun();
-  await dispatchSlackMessageWithSetup(setup, beginSessionRun, turnAdoptionLifecycle).finally(() => {
-    release();
+    };
+    release = beginSessionRun();
+    await dispatchSlackMessageWithSetup(setup, beginSessionRun, turnAdoptionLifecycle);
+  } finally {
+    release?.();
     prepared.replyTurn?.releaseImmediate();
-  });
+  }
 }
 
 async function dispatchSlackMessageWithSetup(

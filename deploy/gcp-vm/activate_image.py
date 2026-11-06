@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from agent_bundle import BUNDLED as AGENT_BUNDLE, validate_bundle, with_agents, workspace
+
 from release_inputs import (
     release_arguments,
     require_vm_policies,
@@ -57,9 +59,9 @@ def activate(root, source, old_image):
         )
         return json.loads(p.stdout)[0]
 
-    def verify_mount(container_info):
+    def verify_mount(container_info, agent_ids=("oncall",)):
         state = "/home/node/.openclaw"
-        prompt = state + "/workspace/AGENTS.md"
+        prompts = [workspace(agent_id) + "/AGENTS.md" for agent_id in agent_ids]
         mounts = container_info.get("Mounts", [])
         if not any(
             m.get("Type") == "bind"
@@ -67,10 +69,12 @@ def activate(root, source, old_image):
             and m.get("Destination") == state
             for m in mounts
         ) or any(
-            m.get("Destination") in (state + "/workspace", prompt) for m in mounts
+            any(prompt == m.get("Destination") or prompt.startswith(m.get("Destination", "") + "/")
+                for prompt in prompts)
+            for m in mounts if m.get("Destination", "").startswith(state + "/")
         ):
             raise RuntimeError(
-                "Unexpected oncall workspace mount; reconcile before deployment"
+                "Unexpected managed workspace mount; reconcile before deployment"
             )
 
     def rpc(method, params, required):
@@ -103,6 +107,25 @@ def activate(root, source, old_image):
             if isinstance(value, dict) and required.issubset(value):
                 return value
         raise RuntimeError("Native RPC result could not be verified: " + method)
+
+    def verify_configuration(content, agent_ids):
+        # Native hashes distinguish saved configuration from the applied runtime.
+        # Do not retain the redacted snapshot or any operational configuration.
+        result = rpc("config.get", {}, {"valid", "sourceConfig", "configRevisionHash", "appliedConfigHash", "path"})
+        if (result.get("valid") is not True
+                or result.get("path") != "/home/node/.openclaw/openclaw.json"
+                or not result.get("configRevisionHash")
+                or result.get("configRevisionHash") != result.get("appliedConfigHash")):
+            raise RuntimeError("Native Gateway has not applied the installed configuration")
+        expected = json.loads(content).get("agents", {}).get("entries", {})
+        actual = result.get("sourceConfig", {}).get("agents", {}).get("entries", {})
+        for agent_id in agent_ids:
+            if agent_id not in actual:
+                raise RuntimeError("Managed agent is missing from the native configuration")
+            for key in ("name", "description", "workspace", "skills", "subagents"):
+                if actual.get(agent_id, {}).get(key) != expected.get(agent_id, {}).get(key):
+                    raise RuntimeError("Native managed agent configuration mismatch: " + agent_id + "." + key)
+        return result.get("appliedConfigHash")
 
     def atomic_replace(path, content):
         metadata = path.stat()
@@ -183,7 +206,44 @@ def activate(root, source, old_image):
     )
     if sha(new_prompt) != prompt_sha:
         raise RuntimeError("Bundled oncall prompt differs from the reviewed digest")
-    expected_prompt = old_prompt
+    old_prompts = {"oncall": old_prompt}
+    new_prompts = {"oncall": new_prompt}
+    previous_hashes = {"oncall": before_sha}
+    previous_source = before["Config"]["Labels"]["org.opencontainers.image.revision"]
+    previous = json.loads((root / "releases" / previous_source / "image-receipt.json").read_bytes())
+    previous_hashes = previous.get("agentPromptSha256", previous_hashes)
+    bundle = None
+    if not candidate.get("agentBundleSha256") and set(previous_hashes) != {"oncall"}:
+        raise RuntimeError("Legacy candidate cannot preserve managed agents; retire them explicitly before downgrade")
+    if candidate.get("agentBundleSha256"):
+        raw_bundle = subprocess.check_output(
+            ["docker", "run", "--rm", "--pull", "never", "--network", "none",
+             "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+             "--entrypoint", "cat", new_image, AGENT_BUNDLE], timeout=30,
+        )
+        if sha(raw_bundle) != candidate.get("agentBundleSha256"):
+            raise RuntimeError("Agent bundle differs from the reviewed image receipt")
+        bundle = validate_bundle(json.loads(raw_bundle))
+        verify_mount(before, bundle.get("agents"))
+        if set(previous_hashes) - set(bundle.get("agents")):
+            raise RuntimeError("Managed agent removal requires explicit retirement; state is preserved")
+        if bundle.get("agents").get("oncall").get("sha256") != prompt_sha:
+            raise RuntimeError("Oncall prompt disagrees with agent bundle")
+        for agent_id, item in bundle.get("agents").items():
+            old = read_prompt(root, agent_id)
+            baseline = previous_hashes.get(agent_id)
+            if baseline is None:
+                if old is not None:
+                    raise RuntimeError("New managed workspace already contains instructions; reconcile")
+            else:
+                if old is None or sha(old) != baseline:
+                    raise RuntimeError("Managed agent prompt differs from its previous release")
+                verify_active(rpc, baseline, agent_id)
+            old_prompts[agent_id] = old
+            new_prompts[agent_id] = item.get("prompt").encode()
+        new_config = with_agents(new_config, bundle, set(previous_hashes))
+        require_vm_policies(new_config)
+    expected_prompts = dict(old_prompts)
     active = rpc(
         "sessions.list",
         {
@@ -274,8 +334,9 @@ def activate(root, source, old_image):
             raise RuntimeError("Step failed: " + name + "; inspect private log")
 
     def unchanged():
-        if read_prompt(root) != expected_prompt:
-            raise RuntimeError("Mounted oncall prompt changed; reconcile")
+        if any(read_prompt(root, agent_id) != expected
+               for agent_id, expected in expected_prompts.items()):
+            raise RuntimeError("Mounted agent prompt changed; reconcile")
         if not (
             all((digest(root / name) == sha for name, sha in protected_hashes.items()))
         ):
@@ -298,7 +359,7 @@ def activate(root, source, old_image):
             )
             socket = "socket mode connected" in (p.stdout + p.stderr).lower()
             if d["State"].get("Health", {}).get("Status") == "healthy" and socket:
-                verify_mount(d)
+                verify_mount(d, new_prompts)
                 return {
                     "image": expected,
                     "health": "healthy",
@@ -361,8 +422,9 @@ def activate(root, source, old_image):
         if new_config != old_config:
             atomic_replace(config_path, new_config)
             protected_hashes[config_name] = hashlib.sha256(new_config).hexdigest()
-        install_prompt(root, old_prompt, new_prompt)
-        expected_prompt = new_prompt
+        for agent_id, prompt in new_prompts.items():
+            install_prompt(root, old_prompts[agent_id], prompt, agent_id)
+            expected_prompts[agent_id] = prompt
         cli = compose + ["run", "--rm", "--no-deps", "--pull", "never"]
         checks = [
             (
@@ -376,10 +438,6 @@ def activate(root, source, old_image):
                 ],
             ),
             ("config", ["cli", "config", "validate", "--json"]),
-            (
-                "models",
-                ["cli", "models", "status", "--agent", "oncall", "--json", "--check"],
-            ),
             (
                 "codex",
                 [
@@ -404,6 +462,9 @@ def activate(root, source, old_image):
                 ],
             ),
         ]
+        for agent_id in new_prompts:
+            checks.append(("models-" + agent_id,
+                           ["cli", "models", "status", "--agent", agent_id, "--json", "--check"]))
         for name, args in checks:
             logged(name, cli + args)
         unchanged()
@@ -438,6 +499,12 @@ def activate(root, source, old_image):
         receipt["readiness"]["maxConcurrent"] = target
         unchanged()
         receipt["readiness"]["activePromptSha256"] = verify_active(rpc, prompt_sha)
+        receipt["readiness"]["agentPromptSha256"] = {
+            agent_id: verify_active(rpc, sha(prompt), agent_id)
+            for agent_id, prompt in new_prompts.items()
+        }
+        if bundle is not None:
+            receipt["readiness"]["appliedConfigHash"] = verify_configuration(new_config, new_prompts)
         receipt["status"] = "running_verified"
         receipt["finishedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         save()
@@ -501,23 +568,26 @@ def activate(root, source, old_image):
                         "Gateway still running; reconcile before rollback"
                     )
                 current_config = config_path.read_bytes()
-                current_prompt = read_prompt(root)
+                current_prompts = {agent_id: read_prompt(root, agent_id) for agent_id in new_prompts}
                 if current_config not in (
                     old_config,
                     new_config,
-                ) or current_prompt not in (old_prompt, new_prompt):
+                ) or any(current_prompts[agent_id] not in (old_prompts[agent_id], new_prompts[agent_id])
+                         for agent_id in new_prompts):
                     raise RuntimeError(
                         "VM configuration or prompt changed externally; reconcile before rollback"
                     )
                 if (root / "release.env").read_bytes() != selected:
                     raise RuntimeError("Release selector changed during rollback")
-                install_prompt(root, current_prompt, old_prompt)
+                for agent_id, current in current_prompts.items():
+                    if current != old_prompts[agent_id]:
+                        install_prompt(root, current, old_prompts[agent_id], agent_id)
                 if current_config != old_config:
                     atomic_replace(config_path, old_config)
                 if selected != old_release:
                     atomic_replace(root / "release.env", old_release)
                 if (
-                    read_prompt(root) != old_prompt
+                    any(read_prompt(root, agent_id) != prompt for agent_id, prompt in old_prompts.items())
                     or config_path.read_bytes() != old_config
                     or (root / "release.env").read_bytes() != old_release
                 ):
@@ -534,6 +604,12 @@ def activate(root, source, old_image):
                 receipt["rollback"]["activePromptSha256"] = verify_active(
                     rpc, before_sha
                 )
+                receipt["rollback"]["agentPromptSha256"] = {
+                    agent_id: verify_active(rpc, expected, agent_id)
+                    for agent_id, expected in previous_hashes.items()
+                }
+                if bundle is not None:
+                    receipt["rollback"]["appliedConfigHash"] = verify_configuration(old_config, previous_hashes)
                 receipt["status"] = "rolled_back"
                 save_if_possible()
             except (

@@ -269,6 +269,9 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         upsertSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["upsertSessionEntry"]>()
           .mockResolvedValue(undefined),
+        withDescendantSessionRead: vi.fn(async () => {
+          throw new Error("Descendant lineage not configured in runtime mock");
+        }),
         runWithWorkAdmission: vi.fn(
           async (_params, run) => await run(new AbortController().signal),
         ) as PluginRuntime["agent"]["session"]["runWithWorkAdmission"],

@@ -22,14 +22,12 @@ class ConfigurationTests(unittest.TestCase):
         self.library = self.root.parent / "agent-skills"
         (self.library / "skills").mkdir(parents=True)
         (self.library / "profiles.json").write_text('{}')
-        for name in ("config", "skills", "prompts"):
+        for name in ("config", "skills"):
             (self.root / name).mkdir()
         self.write("config/openclaw.template.json", {
             "skills": {"load": {"extraDirs": ["${SHARED_SKILLS_ROOT}"]}},
-            "testPath": "${GCLOUD_PATH}", "account": "${GCLOUD_ACCOUNT}",
-            "prompt": "${INVESTIGATOR_PROMPT}"})
+            "testPath": "${GCLOUD_PATH}", "account": "${GCLOUD_ACCOUNT}"})
         self.write("../agent-skills/sources.json", {"skills": [], "sharedFiles": []})
-        (self.root / "prompts/investigator.md").write_text('Quoted "text"\nsecond line\n')
         self.local = self.root / "config/local.json"
         self.settings = {"gcloudPath": '/tmp/a path/"gcloud"',
                          "cloudSdkConfig": "/tmp/cloud", "openclawCommand": "/tmp/openclaw wrapper",
@@ -41,10 +39,9 @@ class ConfigurationTests(unittest.TestCase):
     def write(self, path, value):
         (self.root / path).write_text(json.dumps(value))
 
-    def test_render_preserves_quoted_paths_and_prompt_without_reading_runtime(self):
+    def test_render_preserves_quoted_paths_without_legacy_prompt_or_runtime(self):
         rendered, settings = config.render(self.root, self.local)
         self.assertEqual(json.loads(json.dumps(rendered))["testPath"], self.settings["gcloudPath"])
-        self.assertEqual(rendered["prompt"], 'Quoted "text"\nsecond line')
         self.assertEqual(rendered["skills"]["load"]["extraDirs"], [str(self.library / "skills")])
 
     def test_render_substitutes_explicit_gcloud_account(self):
@@ -145,6 +142,31 @@ class ConfigurationTests(unittest.TestCase):
         plugin = Path(rendered["plugins"]["load"]["paths"][0])
         self.assertEqual(plugin, root / "plugins/livex-gcp-readonly")
         self.assertTrue((plugin / "index.ts").is_file())
+
+    def test_inactive_examples_are_explicit_read_only_native_fragments(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        for agent in ("debugger", "verifier"):
+            with self.subTest(agent=agent):
+                fragment = json.loads((root / "config/examples" / f"{agent}.json").read_text())
+                self.assertEqual(set(fragment), {"agents"})
+                self.assertEqual(set(fragment["agents"]), {"entries"})
+                self.assertEqual(set(fragment["agents"]["entries"]), {agent})
+                entry = fragment["agents"]["entries"][agent]
+                self.assertEqual(entry["workspace"], "${PACKAGE_ROOT}/workspaces/" + agent)
+                self.assertTrue((root / "workspaces" / agent / "AGENTS.md").is_file())
+                self.assertEqual(entry["permissionModeDefault"], "read-only")
+                self.assertEqual(entry["tools"]["exec"]["mode"], "deny")
+                self.assertFalse(entry["tools"]["elevated"]["enabled"])
+                self.assertTrue(entry["tools"]["fs"]["workspaceOnly"])
+                self.assertNotIn("subagents", entry)
+                self.assertTrue(set(entry["tools"]["allow"]) <= {
+                    "read", "skills_read", "livex_repository_read", "livex_gcp_logs_read"})
+                target = self.root.parent / (agent + "-export")
+                config.LIBRARY.export_selection(root.parent / "agent-skills", entry["skills"], target)
+                self.assertEqual(json.loads((target / "skills-lock.json").read_text())["skills"],
+                                 entry["skills"])
 
     def test_identity_fields_reject_invalid_values(self):
         for key, value in (("project", "other project"), ("project", "--project=x"),

@@ -447,6 +447,8 @@ export type PluginRuntimeCore = {
       ) => Promise<RuntimeSessionEntry | null>;
       prepareSessionEntryPatch: typeof import("../../plugin-sdk/session-store-runtime.js").prepareSessionEntryPatch;
       upsertSessionEntry: (params: RuntimeUpsertSessionEntryParams) => Promise<void>;
+      /** Read-only exact descendant proof; callback authority expires when it returns. */
+      withDescendantSessionRead: typeof import("./runtime-agent-session-lineage.js").withDescendantSessionRead;
       runWithWorkAdmission: <T>(
         params: RuntimeSessionWorkAdmissionParams,
         run: (signal: AbortSignal) => Promise<T>,

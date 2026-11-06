@@ -107,6 +107,28 @@ No command starts a cloud read, changes production, or retries a customer operat
    Prior coverage remains uncertain; deduplicate repeated evidence. A legacy
    continuation restarts from the beginning rather than claiming to resume it.
 
+For a failed read performed by a delegated agent, keep the command in the original
+Slack thread and select the exact child session explicitly:
+
+```text
+/livex-gcp-recover child <sessionKey> <sessionId> list
+/livex-gcp-recover child <sessionKey> <sessionId> inspect <receipt>
+/livex-gcp-recover child <sessionKey> <sessionId> retry <receipt> <receiptHash>
+```
+
+Use the child identity recorded by the native delegation. The host verifies its
+persisted spawn chain against the current original-thread session, including
+parent incarnations and lifecycle revisions. An unrelated or missing child, a changed child session ID, or stale ancestor
+lineage is refused. The command keeps the child's receipt scope and
+original cloud identity; it neither adopts the receipt into the parent nor
+starts a cloud read. The next authorized matching call in that same child session
+consumes the one inspected retry approval. A removed child or one with a different session ID cannot be silently
+substituted by a newer session. Receipt scope does not include a lifecycle revision:
+a same-ID child reset before the command may retain its old receipts, which still
+require explicit inspection and approval of the saved query. Any lineage or
+lifecycle change during the command revokes its proof. No global receipt listing
+is available.
+
 A changed receipt requires another inspection. Approval and replacement are atomic
 in the same bounded SQLite namespace, so recovery works even when all 200 slots are
 occupied. Each attempt has an owner and counter; a late old completion cannot settle

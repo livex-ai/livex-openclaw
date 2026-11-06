@@ -6,9 +6,10 @@ This package keeps agent role instructions in separate workspaces:
 livex-agents/
 ├── workspaces/oncall/       Existing configured investigation role
 ├── workspaces/debugger/     Inactive diagnosis-role instructions
-├── workspaces/qa/           Inactive verification-role instructions
+├── workspaces/qa/           Existing inactive QA-role instructions
+├── workspaces/verifier/     Inactive read-only verification example
 ├── plugins/                Shared evidence-tool implementations
-├── config/                 Source configuration templates
+├── config/                 Source configuration template and inactive examples
 ├── scripts/                Configuration and startup helpers
 └── tests/role-replays.md    Offline specialist-role packets
 ```
@@ -19,6 +20,39 @@ instructions are inactive sources: they add no registrations, tools, callers,
 schedules, automatic handoffs or runner access. Their [offline replay
 packets](tests/role-replays.md) do not establish live activation or execution.
 This repository relocation does not reconfigure or restart any deployment.
+
+## Inactive native agent examples
+
+[Debugger](config/examples/debugger.json) and [Verifier](config/examples/verifier.json)
+are native `agents.entries` fragments, not another configuration format. Neither
+is loaded by the renderer or the release packaging input. Only entries explicitly
+added to `config/openclaw.template.json` become deployment inputs; the shipped
+template still registers only `oncall` and enables no delegation to these roles.
+
+Each example supplies its own workspace, reviewed skill selection, native
+`permissionModeDefault: "read-only"`, and an explicit tool allowlist with shell
+execution and elevation disabled. Debugger selects existing diagnosis workflows;
+Verifier selects existing debugging and verification workflows. These examples
+inherit the configured native model; review that model, authentication, tools,
+plugin admission and caller scope before any separately authorized activation.
+A permission setting and an allowlist do not prove plugin access or isolation.
+
+Verifier reviews existing evidence and receipts. Its example has no QA runner or
+shell tool; fresh execution requests remain blocked. The existing
+[QA workspace](workspaces/qa/AGENTS.md) stays inactive and unchanged.
+
+For a future reviewed addition, copy only the chosen native entry into the
+tracked template, keep its workspace under `workspaces/<agent-id>`, and review
+any delegation separately through native `subagents` settings. Keep skills in the
+shared library and choose them by name. Release packaging exports the union of
+the configured entries' skills through the shared library validator and installs
+their instructions through the existing VM release transaction. It does not scan
+`config/examples` to register agents. See [VM deployment](../deploy/gcp-vm/README.md)
+for preservation, managed-artifact checks and rollback. Adding files or rendering
+a patch never changes a running Gateway; VM deployment requires separate authorization.
+
+Role instructions come from the workspace's `AGENTS.md`. The retired
+`prompts/investigator.md` compatibility input is no longer read by the renderer.
 
 ## Existing deployment source-path cutover
 

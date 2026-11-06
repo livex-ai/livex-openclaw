@@ -1,4 +1,4 @@
-"""Install only the reviewed oncall prompt in the mounted VM workspace."""
+"""Install reviewed agent prompts inside the mounted VM state."""
 
 import hashlib
 import json
@@ -7,6 +7,8 @@ import re
 import secrets
 import stat
 from contextlib import ExitStack, contextmanager
+
+from agent_bundle import workspace
 
 WORKSPACE = "/home/node/.openclaw/workspace"
 NAME = "AGENTS.md"
@@ -38,35 +40,52 @@ def prior_hash(root, container):
     return value
 
 
-def verify_active(rpc, expected):
+def verify_active(rpc, expected, agent_id="oncall"):
+    expected_workspace = workspace(agent_id)
     result = rpc(
         "agents.files.get",
-        {"agentId": "oncall", "name": NAME},
+        {"agentId": agent_id, "name": NAME},
         {"agentId", "workspace", "file"},
     )
     file = result["file"]
     if (
-        result["agentId"] != "oncall"
-        or result["workspace"] != WORKSPACE
-        or file.get("path") != WORKSPACE + "/" + NAME
+        result["agentId"] != agent_id
+        or result["workspace"] != expected_workspace
+        or file.get("path") != expected_workspace + "/" + NAME
         or file.get("missing") is not False
         or file.get("hash") != expected
         or not isinstance(file.get("content"), str)
         or sha(file["content"].encode()) != expected
     ):
-        raise RuntimeError("Active oncall workspace prompt hash or path mismatch")
+        raise RuntimeError("Active agent workspace prompt hash or path mismatch")
     return expected
 
 
 @contextmanager
-def workspace_fd(root):
+def workspace_fd(root, agent_id="oncall", create=False):
+    if not re.fullmatch(r"[a-z0-9_][a-z0-9_-]{0,63}", agent_id):
+        raise ValueError("Invalid managed agent ID")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     with ExitStack() as stack:
         directory = os.open(root / "state", flags)
         stack.callback(os.close, directory)
-        workspace = os.open("workspace", flags, dir_fd=directory)
-        stack.callback(os.close, workspace)
-        yield workspace
+        owner = os.fstat(directory)
+        parts = ["workspace"] if agent_id == "oncall" else ["workspaces", agent_id]
+        for part in parts:
+            created = False
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=directory)
+                    created = True
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd=directory)
+            stack.callback(os.close, child)
+            if created:
+                os.fchown(child, owner.st_uid, owner.st_gid)
+                os.fsync(directory)
+            directory = child
+        yield directory
 
 
 def _read(fd):
@@ -78,35 +97,52 @@ def _read(fd):
             or meta.st_nlink != 1
             or meta.st_size > 128 * 1024
         ):
-            raise RuntimeError("Expected a private regular oncall prompt")
+            raise RuntimeError("Expected a private regular agent prompt")
         return source.read(128 * 1024 + 1), meta
 
 
-def read_prompt(root):
-    with workspace_fd(root) as fd:
-        return _read(fd)[0]
+def _optional_read(fd):
+    try:
+        return _read(fd)
+    except FileNotFoundError:
+        return None, None
 
 
-def install_prompt(root, expected, replacement):
-    with workspace_fd(root) as fd:
-        current, meta = _read(fd)
+def read_prompt(root, agent_id="oncall"):
+    try:
+        with workspace_fd(root, agent_id) as fd:
+            return _optional_read(fd)[0]
+    except FileNotFoundError:
+        return None
+
+
+def install_prompt(root, expected, replacement, agent_id="oncall"):
+    with workspace_fd(root, agent_id, create=replacement is not None) as fd:
+        current, meta = _optional_read(fd)
         if current != expected:
-            raise RuntimeError(
-                "Mounted oncall prompt changed externally; reconcile before replacement"
-            )
+            raise RuntimeError("Mounted agent prompt changed externally; reconcile before replacement")
         if current == replacement:
             return
-        temp = ".oncall-prompt-" + secrets.token_hex(16)
+        if replacement is None:
+            os.unlink(NAME, dir_fd=fd)
+            os.fsync(fd)
+            return
+        if meta is None:
+            meta = os.fstat(fd)
+            mode = 0o600
+        else:
+            mode = stat.S_IMODE(meta.st_mode)
+        temp = ".agent-prompt-" + secrets.token_hex(16)
         raw = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
         try:
             with os.fdopen(raw, "wb") as dest:
                 os.fchown(raw, meta.st_uid, meta.st_gid)
-                os.fchmod(raw, stat.S_IMODE(meta.st_mode))
+                os.fchmod(raw, mode)
                 dest.write(replacement)
                 dest.flush()
                 os.fsync(raw)
-            if _read(fd)[0] != expected:
-                raise RuntimeError("Oncall prompt changed during installation")
+            if _optional_read(fd)[0] != expected:
+                raise RuntimeError("Agent prompt changed during installation")
             os.replace(temp, NAME, src_dir_fd=fd, dst_dir_fd=fd)
             os.fsync(fd)
         finally:

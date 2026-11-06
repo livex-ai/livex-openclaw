@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInvestigationTurnRegistry } from "../../../../livex-agents/plugins/livex-investigations/test-api.js";
 import type { SlackMessageEvent } from "../types.js";
 import { buildSlackDebounceKey } from "./message-handler/debounce-key.js";
 import { createInboundSlackTestContext } from "./message-handler/prepare.test-helpers.js";
@@ -54,6 +55,7 @@ const prepareMock = vi.fn(
   }): Promise<{
     ctxPayload: Record<string, unknown>;
     route?: { sessionKey: string };
+    replyTurn?: PreparedSlackMessage["replyTurn"];
   } | null> => ({ ctxPayload: {} }),
 );
 const dispatchMock = vi.fn(async (_prepared: PreparedSlackMessage) => {});
@@ -339,6 +341,76 @@ describe("createSlackMessageHandler", () => {
     prepared.turnAdoptionLifecycle?.onDeferred?.();
     expect(turnAdoptionLifecycle.onDeferred).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["routing", "prepared-callback"])(
+    "releases the prepared investigation when %s fails before dispatch",
+    async (failurePoint) => {
+      useRealDebouncer = true;
+      const registry = createInvestigationTurnRegistry();
+      const scope = {
+        agentId: "oncall",
+        accountId: "default",
+        teamId: "T1",
+        channelId: "C111",
+        senderId: "U111",
+      };
+      const turn = registry.register({
+        id: "cancelled-turn",
+        scope,
+        sessionKey: "agent:oncall:slack:channel:c111",
+        filePath: "/tmp/synthetic-investigations.md",
+        snapshot: { status: "ready", scope, revision: "r1", issues: [] },
+        assertCurrent() {},
+      });
+      const controller = new AbortController();
+      const failure = new Error("cancelled before dispatch");
+      prepareMock.mockResolvedValueOnce({
+        ctxPayload: {},
+        route: { sessionKey: turn.sessionKey },
+        replyTurn: {
+          context: "",
+          toolBindings: {},
+          assertCurrent: turn.assertCurrent,
+          lifecycle: turn.lifecycle,
+          releaseImmediate: turn.releaseImmediate,
+          createDelivery: (host) => ({ deliver: host.deliver }),
+        },
+      });
+      const handler = createSlackMessageHandler({
+        ctx: createContext({ cfg: { messages: { inbound: { debounceMs: 0 } } } }),
+        onPrepared: () => {
+          if (failurePoint === "prepared-callback") {
+            throw failure;
+          }
+        },
+      });
+      try {
+        await expect(
+          handler(makeMessage("1709000000.000551", "investigate"), {
+            source: "message",
+            awaitDispatch: true,
+            turnAdoptionLifecycle: {
+              admission: "exclusive",
+              abortSignal: controller.signal,
+              onAdopted() {},
+              onDeferred() {},
+              onAbandoned() {},
+              async onSessionRouted() {
+                if (failurePoint === "routing") {
+                  controller.abort(failure);
+                  controller.signal.throwIfAborted();
+                }
+              },
+            },
+          }),
+        ).rejects.toThrow(failure);
+        expect(registry.get(turn.id)).toBeUndefined();
+        expect(dispatchMock).not.toHaveBeenCalled();
+      } finally {
+        registry.close();
+      }
+    },
+  );
 
   it.each([false, true])(
     "prepares twins once and dispatches only when allowed (denied=%s)",

@@ -22,6 +22,7 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createInvestigationDelivery,
+  createInvestigationTurnRegistry,
   getInvestigationTurnRegistry,
   oncallReportProfile,
   preparedFixture,
@@ -931,9 +932,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
         evidenceUrls: [],
       };
       const report = scenario.startsWith("compact-form")
-        ? preparedFixture(
-            prepareCompactReport(undefined, [update], [{ kind: "new", update, changes: [] }]),
-          )
+        ? preparedFixture(prepareCompactReport(undefined, [update], [{ kind: "new" }]))
         : undefined;
       if (blockOnlyReport && report) {
         report.channelData = {
@@ -943,7 +942,9 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       if (previewWithoutTopBlocks && report) {
         report.card.blocks = [];
       }
-      if (scenario === "queued-unprepared") investigationTurn.reportExpected = true;
+      if (scenario === "queued-unprepared") {
+        investigationTurn.reportExpected = true;
+      }
       if (scenario !== "queued-unprepared") {
         registry.stage(
           "dispatch-catalog",
@@ -1088,6 +1089,45 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(registry.get("dispatch-catalog")).toBeUndefined();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("releases the prepared investigation when dispatch setup fails", async () => {
+    const registry = createInvestigationTurnRegistry();
+    const scope: HistoryScope = {
+      agentId: "oncall",
+      accountId: "default",
+      teamId: "T1",
+      channelId: "C123",
+      senderId: "U123",
+    };
+    const turn = registry.register({
+      id: "setup-failed-turn",
+      scope,
+      sessionKey: "agent:oncall:slack:channel:c123",
+      filePath: "/tmp/synthetic-investigations.md",
+      snapshot: { status: "ready", scope, revision: "r1", issues: [] },
+      assertCurrent() {},
+    });
+    updateLastRouteMock.mockRejectedValueOnce(new Error("route store unavailable"));
+    const prepared: PreparedSlackMessage = createPreparedSlackMessage({
+      isDirectMessage: true,
+      replyTurn: {
+        assertCurrent: turn.assertCurrent,
+        lifecycle: turn.lifecycle,
+        releaseImmediate: turn.releaseImmediate,
+      },
+    });
+    try {
+      await expect(dispatchPreparedSlackMessage(prepared)).rejects.toThrow(
+        "route store unavailable",
+      );
+      expect(registry.get(turn.id)).toBeUndefined();
+      expect(getSlackSessionRuns(prepared.ctx, { channelId: "C123", threadTs: THREAD_TS })).toEqual(
+        [],
+      );
+    } finally {
+      registry.close();
     }
   });
 
@@ -3714,9 +3754,11 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       expect(delivered().replies[0]?.text).toBe(report);
       expect(delivered().replies[0]?.channelData?.slack).toHaveProperty("threadSummaryCard");
       expect(draft.clear).toHaveBeenCalled();
-      expect(deliverRepliesMock.mock.invocationCallOrder[0]).toBeLessThan(
-        draft.clear.mock.invocationCallOrder[0],
-      );
+      const clearOrder = draft.clear.mock.invocationCallOrder[0];
+      if (clearOrder === undefined) {
+        throw new Error("expected preview clear after fallback delivery");
+      }
+      expect(deliverRepliesMock.mock.invocationCallOrder[0]).toBeLessThan(clearOrder);
       expect(logVerboseMock.mock.calls.flat().join(" ")).toContain("falling back");
       expect(logVerboseMock.mock.calls.flat().join(" ")).not.toContain("retaining");
     });

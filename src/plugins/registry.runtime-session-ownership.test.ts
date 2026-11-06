@@ -40,6 +40,57 @@ function sessionEntry(sessionId: string, fields: Partial<SessionEntry> = {}): Se
 }
 
 describe("plugin registry runtime session ownership", () => {
+  it("captures descendant caller authority before a plugin mutates its input", async () => {
+    const runtime = createPluginRuntime();
+    const { api } = pluginFixture(runtime, "lineage-reader");
+    let current = true;
+    const params = {
+      ancestor: { sessionKey: "agent:main:root", sessionId: "root-id" },
+      descendant: { sessionKey: "agent:main:subagent:child", sessionId: "child-id" },
+      assertCurrent() {
+        if (!current) {
+          throw new Error("caller revoked");
+        }
+      },
+    };
+    runtime.agent.session.withDescendantSessionRead = async (captured, run) => {
+      params.assertCurrent = () => {};
+      current = false;
+      captured.assertCurrent();
+      return run({
+        ...captured.descendant,
+        agentId: "main",
+        assertCurrent: captured.assertCurrent,
+      });
+    };
+    await expect(
+      api.runtime.agent.session.withDescendantSessionRead(params, async () => undefined),
+    ).rejects.toThrow("caller revoked");
+  });
+  it("revokes descendant metadata callbacks when the plugin retires", async () => {
+    const runtime = createPluginRuntime();
+    const { api, registry, record } = pluginFixture(runtime, "lineage-reader");
+    const ancestor = { sessionKey: "agent:main:root", sessionId: "root-id" };
+    const descendant = { sessionKey: "agent:main:subagent:child", sessionId: "child-id" };
+    runtime.agent.session.withDescendantSessionRead = async (params, run) => {
+      params.assertCurrent();
+      return run({ ...params.descendant, agentId: "main", assertCurrent: params.assertCurrent });
+    };
+    let effects = 0;
+    await expect(
+      api.runtime.agent.session.withDescendantSessionRead(
+        { ancestor, descendant, assertCurrent() {} },
+        async (selected) => {
+          selected.assertCurrent();
+          revokePluginRecord(registry.registry, record);
+          selected.assertCurrent();
+          effects++;
+        },
+      ),
+    ).rejects.toThrow("runtime is no longer active");
+    expect(effects).toBe(0);
+  });
+
   it.each(["upsert", "route"] as const)(
     "refuses a prepared %s when its plugin retires before worker admission",
     async (operation) => {
