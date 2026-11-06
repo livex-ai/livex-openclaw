@@ -101,7 +101,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn(str(root / "plugins/livex-investigations"), plugins.get("load", {}).get("paths", []))
         self.assertNotIn("investigationCatalog", plugins.get("entries", {}).get("slack", {}).get("config", {}))
 
-    def test_review_profile_limits_message_actions_and_keeps_compact_native_progress(self):
+    def test_review_profile_limits_message_actions_and_enables_native_task_progress(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
         tools = rendered["agents"]["entries"]["oncall"]["tools"]
@@ -113,9 +113,11 @@ class ConfigurationTests(unittest.TestCase):
         streaming = slack["streaming"]
         self.assertEqual(streaming["mode"], "progress")
         self.assertTrue(streaming["nativeTransport"])
-        self.assertEqual(streaming["progress"]["style"], "compact")
-        self.assertFalse(streaming["progress"]["nativeTaskCards"])
-        for key in ("toolProgress", "commentary", "narration"):
+        self.assertEqual(streaming.get("progress").get("style"), "card")
+        self.assertTrue(streaming.get("progress").get("nativeTaskCards"))
+        self.assertTrue(streaming.get("progress").get("toolProgress"))
+        self.assertEqual(streaming.get("progress").get("commandText"), "status")
+        for key in ("commentary", "narration"):
             self.assertFalse(streaming["progress"][key])
 
     def test_dedicated_app_has_scopes_and_account_gate_for_review_markers(self):

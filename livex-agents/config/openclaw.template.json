@@ -201,9 +201,9 @@
         "mode": "progress",
         "nativeTransport": true,
         "progress": {
-          "style": "compact",
-          "nativeTaskCards": false,
-          "toolProgress": false,
+          "style": "card",
+          "nativeTaskCards": true,
+          "toolProgress": true,
           "commandText": "status",
           "commentary": false,
           "narration": false

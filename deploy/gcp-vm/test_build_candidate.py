@@ -26,7 +26,7 @@ PROMPT = b"Reviewed synthetic prompt"
 
 
 class BuildCandidateTests(unittest.TestCase):
-    def exercise(self, bundled, resume):
+    def exercise(self, bundled, resume, *, invalid_progress=False):
         with tempfile.TemporaryDirectory() as temporary:
             base = pathlib.Path(temporary)
             upload = base / "upload"
@@ -39,9 +39,20 @@ class BuildCandidateTests(unittest.TestCase):
             (source / "deploy/gcp-vm/oncall-vm-prompt.sha256").write_text(
                 hashlib.sha256(PROMPT).hexdigest() + "  AGENTS.md\n"
             )
-            (source / "livex-agents/config/openclaw.template.json").write_text(
-                json.dumps({"agents": {"defaults": {"maxConcurrent": 5}}})
-            )
+            profile = {"agents": {"defaults": {"maxConcurrent": 5}}}
+            progress = {
+                "mode": "progress", "nativeTransport": True,
+                "progress": {"style": "card", "nativeTaskCards": True,
+                             "toolProgress": True, "commandText": "status",
+                             "commentary": False, "narration": False},
+            }
+            if bundled:
+                profile["channels"] = {"slack": {"streaming": {
+                    **progress, "block": {"enabled": False},
+                }, "botToken": "synthetic-not-for-receipt"}}
+                if invalid_progress:
+                    profile.get("channels").get("slack")["streaming"] = None
+            (source / "livex-agents/config/openclaw.template.json").write_text(json.dumps(profile))
             if bundled:
                 (source / "deploy/gcp-vm/agent_bundle.py").write_text("# Bundled source generation\n")
             archive = upload / "source.tar.gz"
@@ -117,6 +128,12 @@ class BuildCandidateTests(unittest.TestCase):
                 finally:
                     os.umask(previous_umask)
 
+            if invalid_progress:
+                with self.assertRaisesRegex(ValueError, "Slack streaming and progress objects"):
+                    execute()
+                self.assertFalse((release / "image-receipt.json").exists())
+                self.assertEqual(len(builds), 1)  # Reject before building/activating the runtime.
+                return
             if resume:
                 with self.assertRaisesRegex(RuntimeError, "remaining build disk"):
                     execute(checkpoint=True)
@@ -127,6 +144,7 @@ class BuildCandidateTests(unittest.TestCase):
                     marker.unlink()
                 else:
                     marker.write_text("# unrelated later edit\n")
+                (release / "build/livex-agents/config/openclaw.template.json").write_text("{}")
                 execute(continuing=True)
             else:
                 execute()
@@ -138,9 +156,12 @@ class BuildCandidateTests(unittest.TestCase):
             self.assertEqual(len(builds), 3)  # The completed base is never rebuilt on resume.
             self.assertEqual(image_reads, [BUNDLED] if bundled else [])
             if bundled:
+                self.assertEqual(receipt.get("slackProgress"), progress)
+                self.assertNotIn("synthetic-not-for-receipt", json.dumps(receipt))
                 self.assertEqual(receipt.get("agentBundleSha256"), hashlib.sha256(bundle_bytes).hexdigest())
                 self.assertEqual(receipt.get("agentPromptSha256"), {"oncall": hashlib.sha256(PROMPT).hexdigest()})
             else:
+                self.assertNotIn("slackProgress", receipt)
                 self.assertNotIn("agentBundleSha256", receipt)
                 self.assertNotIn("agentPromptSha256", receipt)
 
@@ -149,3 +170,6 @@ class BuildCandidateTests(unittest.TestCase):
             for resume in (False, True):
                 with self.subTest(bundled=bundled, resume=resume):
                     self.exercise(bundled, resume)
+
+    def test_explicit_null_streaming_cannot_silently_skip_progress_deployment(self):
+        self.exercise(True, False, invalid_progress=True)

@@ -10,7 +10,7 @@ import tempfile
 
 from agent_bundle import BUNDLED, validate_bundle
 
-from release_inputs import concurrency_limit, release_arguments, reviewed_prompt_hash
+from release_inputs import concurrency_limit, release_arguments, reviewed_prompt_hash, slack_progress_settings
 
 os.umask(0o077)
 source, old_id = release_arguments(sys.argv[1:3])
@@ -172,6 +172,8 @@ for name, cmd, cwd in steps:
         desired_concurrency = concurrency_limit(
             profile["agents"]["defaults"]["maxConcurrent"]
         )
+        slack = profile.get("channels", {}).get("slack", {})
+        desired_progress = slack_progress_settings(slack.get("streaming")) if "streaming" in slack else None
     print("START " + name, flush=True)
     with (logs / (name + ".log")).open("x") as f:
         r = subprocess.run(
@@ -207,6 +209,8 @@ receipt = {
     "maxConcurrent": desired_concurrency,
     "oncallPromptSha256": prompt_sha,
 }
+if desired_progress is not None:
+    receipt["slackProgress"] = desired_progress
 # The helper revision and selected source SHA can differ during upgrades/resume.
 # Pre-bundle sources retain their existing Oncall-only receipt contract.
 if bundled_agents:

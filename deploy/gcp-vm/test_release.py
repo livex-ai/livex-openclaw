@@ -13,6 +13,13 @@ from vm_prompt import BUNDLED, NAME, WORKSPACE, sha
 SHA = "a" * 40
 OLD = "sha256:" + "b" * 64
 NEW = "sha256:" + "c" * 64
+PROGRESS = {
+    "mode": "progress", "nativeTransport": True,
+    "progress": {
+        "style": "card", "nativeTaskCards": True, "toolProgress": True,
+        "commandText": "status", "commentary": False, "narration": False,
+    },
+}
 
 
 class ReleaseTest(unittest.TestCase):
@@ -44,7 +51,7 @@ class ReleaseTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 select_image(invalid, OLD, NEW)
 
-    def exercise(self, failure=None, *, multi=False, existing_debugger=False):
+    def exercise(self, failure=None, *, multi=False, existing_debugger=False, progress=False):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             old_prompt = b"previously deployed VM prompt"
@@ -89,6 +96,8 @@ class ReleaseTest(unittest.TestCase):
                 "maxConcurrent": 7,
                 "oncallPromptSha256": sha(new_prompt),
             }
+            if progress:
+                candidate["slackProgress"] = None if failure == "progress-null" else PROGRESS
             if multi and failure != "legacy-downgrade":
                 candidate.update(
                     agentBundleSha256=sha(bundle_bytes),
@@ -148,6 +157,20 @@ class ReleaseTest(unittest.TestCase):
                 },
                 "channels": {"slack": {"ackReaction": "", "typingReaction": ""}},
             }
+            if progress:
+                original["channels"]["slack"].update(
+                    requireMention=True, dmPolicy="disabled", allowFrom=["U_TEST"],
+                    streaming={"mode": "progress", "nativeTransport": True,
+                               "block": {"enabled": False},
+                               "progress": {"style": "compact", "nativeTaskCards": False,
+                                            "toolProgress": False, "label": "Investigating"}},
+                    accounts={"default": {
+                        "botToken": {"source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN"},
+                        "streaming": {"progress": {"label": "Operator label"}},
+                    }},
+                )
+                if failure == "progress-override":
+                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["progress"]["toolProgress"] = False
             if multi:
                 original["agents"]["entries"]["oncall"].update(
                     model="vm-selected-model",
@@ -257,6 +280,8 @@ class ReleaseTest(unittest.TestCase):
                     pending = failure == "config-not-applied" and state["image"] == NEW
                     if failure == "agent-config-mismatch" and state["image"] == NEW:
                         active_config["agents"]["entries"]["debugger"]["skills"] = []
+                    if failure == "progress-readback" and state["image"] == NEW:
+                        active_config["channels"]["slack"]["streaming"]["progress"]["nativeTaskCards"] = False
                     output = json.dumps({
                         "valid": True,
                         "path": "/home/node/.openclaw/openclaw.json",
@@ -291,7 +316,7 @@ class ReleaseTest(unittest.TestCase):
                 elif "stop" in cmd:
                     self.assertNotIn(failure, (
                         "drift", "bundle", "workspace", "mount", "agent-collision", "config-collision",
-                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade"
+                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade", "progress-override", "progress-null"
                     ))
                     state["running"] = False
                 elif "up" in cmd:
@@ -379,6 +404,10 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original_bytes)
             else:
                 original["agents"]["defaults"]["maxConcurrent"] = 7
+                if progress:
+                    streaming = original.get("channels").get("slack").get("streaming")
+                    streaming.update(mode="progress", nativeTransport=True)
+                    streaming.get("progress").update(PROGRESS.get("progress"))
                 if multi:
                     original["agents"]["entries"]["oncall"].update(
                         name="Oncall", skills=["investigate-alerts"],
@@ -416,7 +445,7 @@ class ReleaseTest(unittest.TestCase):
                     self.assertEqual(debugger.stat().st_mode & 0o777, 0o640 if existing_debugger else 0o600)
             if failure not in (
                 "busy", "drift", "bundle", "workspace", "mount", "agent-collision", "config-collision",
-                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade"
+                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade", "progress-override", "progress-null"
             ):
                 receipt = json.loads(
                     next(release.glob("activation-*/receipt.json")).read_text()
@@ -429,6 +458,9 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(
                     receipt["status"], "rolled_back" if failure else "running_verified"
                 )
+                if progress and not failure:
+                    self.assertEqual(proof.get("slackProgress"), PROGRESS)
+                    self.assertEqual(proof.get("appliedConfigHash"), "installed-config-hash")
                 if multi:
                     expected_hashes = {"oncall": sha(old_prompt)} if failure else {
                         "oncall": sha(new_prompt), "debugger": sha(debugger_prompt)
@@ -487,6 +519,11 @@ class ReleaseTest(unittest.TestCase):
         for failure in (None, "agent-live-hash"):
             with self.subTest(failure=failure):
                 self.exercise(failure, multi=True, existing_debugger=True)
+
+    def test_progress_activation_preserves_policies_and_rolls_back_on_failed_readback(self):
+        for failure in (None, "progress-readback", "config-not-applied", "preflight", "progress-override", "progress-null"):
+            with self.subTest(failure=failure):
+                self.exercise(failure, multi=True, progress=True)
 
 
 class CheckpointTests(unittest.TestCase):
