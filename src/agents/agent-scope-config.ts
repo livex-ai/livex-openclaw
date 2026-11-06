@@ -82,6 +82,7 @@ export type ResolvedAgentConfig = {
   decisionModel?: AgentEntry["decisionModel"];
   thinkingDefault?: AgentEntry["thinkingDefault"];
   verboseDefault?: AgentDefaultsConfig["verboseDefault"];
+  permissionModeDefault?: AgentDefaultsConfig["permissionModeDefault"];
   toolProgressDetail?: AgentDefaultsConfig["toolProgressDetail"];
   reasoningDefault?: AgentEntry["reasoningDefault"];
   fastModeDefault?: AgentEntry["fastModeDefault"];
@@ -411,6 +412,7 @@ export function resolveAgentConfig(
     decisionModel: entry.decisionModel,
     thinkingDefault: entry.thinkingDefault,
     verboseDefault: entry.verboseDefault ?? agentDefaults?.verboseDefault,
+    permissionModeDefault: entry.permissionModeDefault ?? agentDefaults?.permissionModeDefault,
     toolProgressDetail: entry.toolProgressDetail ?? agentDefaults?.toolProgressDetail,
     reasoningDefault: entry.reasoningDefault,
     fastModeDefault: entry.fastModeDefault ?? agentDefaults?.fastModeDefault,

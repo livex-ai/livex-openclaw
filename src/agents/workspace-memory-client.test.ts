@@ -35,11 +35,13 @@ describe("workspace Memory file client", () => {
         ["notes", "/gateway/extra", "/archive"],
         undefined,
         skipped,
+        { includeWorkspace: false },
       ),
     ).toEqual(["/gateway/memory/note.md", "/archive/note.md"]);
     expect(skipped).toHaveBeenCalledWith("/gateway/memory/skip.md");
     expect(JSON.parse(f.request.mock.calls[0]![0])).toMatchObject({
       operation: "list",
+      includeWorkspace: false,
       extraPaths: ["notes", "/harness/extra", "/archive"],
     });
     f.request.mockResolvedValue(JSON.stringify({ result: "/harness/memory/note.md" }));
@@ -114,6 +116,7 @@ describe("workspace Memory file client", () => {
   it("sends only file-watch settings and reports a lost subscription", async () => {
     const f = fixture();
     const settings = {
+      includeWorkspace: false,
       extraPaths: ["/gateway/notes"],
       multimodal: { enabled: false, modalities: [], maxFileBytes: 1024 },
       sync: { watchDebounceMs: 10 },
@@ -127,6 +130,7 @@ describe("workspace Memory file client", () => {
     expect(JSON.parse(f.subscribe.mock.calls[0]![0])).toEqual({
       agentId: "main",
       settings: {
+        includeWorkspace: false,
         extraPaths: ["/harness/notes"],
         multimodal: settings.multimodal,
         sync: { watchDebounceMs: 10 },

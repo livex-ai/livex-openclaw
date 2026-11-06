@@ -1,0 +1,30 @@
+{
+  "id": "livex-oncall-reports",
+  "name": "LiveX oncall reports",
+  "description": "Agent-selected deterministic oncall report schema and Slack presentation.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "agentProfiles"
+    ],
+    "properties": {
+      "agentProfiles": {
+        "type": "object",
+        "propertyNames": {
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "additionalProperties": {
+          "enum": [
+            "compact-v1"
+          ]
+        }
+      }
+    }
+  }
+}

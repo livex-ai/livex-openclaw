@@ -108,6 +108,8 @@ type RouteReplyResult = {
     | "empty_after_message_sending_hook"
     | "empty_after_reply_payload_sending_hook";
   messageId?: string;
+  /** Exact accepted content only when one complete logical payload was confirmed. */
+  acceptedPayload?: ReplyPayload;
   error?: string;
   /** Original failure retains the delivery owner's no-send proof. */
   cause?: unknown;
@@ -395,7 +397,15 @@ async function routeReplyOperation(
     }
     const results = send.status === "sent" ? send.results : [];
     const delivery = summarizeVisibleRouteReplyDelivery(results);
-    return { ok: true, ...delivery };
+    const outcome = send.payloadOutcomes?.length === 1 ? send.payloadOutcomes[0] : undefined;
+    const acceptedPayload =
+      send.status === "sent" &&
+      delivery.delivered &&
+      outcome?.status === "sent" &&
+      !outcome.incompleteReason
+        ? outcome.acceptedPayload
+        : undefined;
+    return { ok: true, ...delivery, ...(acceptedPayload ? { acceptedPayload } : {}) };
   } catch (err) {
     const message = formatErrorMessage(err);
     return {

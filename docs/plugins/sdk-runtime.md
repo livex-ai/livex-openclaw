@@ -156,6 +156,31 @@ are cancelled when their runtime is retired. A fork does not write a transcript,
 deliver an answer, fire agent-turn lifecycle hooks, or consume queued injections
 or steering. Missing session context and unsupported harnesses produce errors.
 
+## Reply-turn providers
+
+Use `api.registerReplyTurnProvider` for an optional agent/channel-scoped owner
+that contributes bounded context, tool bindings and accepted-delivery bookkeeping.
+Import its contracts from `openclaw/plugin-sdk/reply-turns`. The channel calls
+`prepareAgentReplyTurn` with authenticated route/session facts, a bounded query,
+cancellation and a live-authority check. Exactly one enabled, loaded provider must
+match; ambiguous claims do not select an owner.
+
+The prepared handle supplies context and serializable tool bindings, plus
+`assertCurrent`, `lifecycle`, `releaseImmediate` and `createDelivery`. Lifecycle
+composition uses the existing turn-adoption contract; delivery uses the existing
+queued-delivery correlation contract. Returned factories and nested callbacks
+retain the exact provider instance, including after an awaited preparation.
+Retained callbacks fail after that instance is retired. Release immediate custody
+on preparation/dispatch failure; deferred work releases through its existing
+settlement owner.
+
+Channels compose delivery with `createReplyTurnDelivery`. Host permalink and
+annotation callbacks are limited to that turn's confirmed accepted receipts;
+source-message IDs cannot be annotated. Plugins receive no raw channel client or
+credentials. A provider may prepare a report and record a confirmed outcome, but
+model completion alone is not delivery evidence. Report formatting can continue
+to use an independently registered pure report profile.
+
 ## Storing runtime references
 
 Synchronous storage compatibility calls retain their synchronous return contract.
@@ -516,6 +541,19 @@ of opaque SDK callbacks. Cold restoration can recheck those prepared components
 and their stored predicates while retaining the full synchronous assertion for
 native commit. Custom SDK assertion wrappers are not executed in restoration
 worker grants; existing writer adapter selection remains unchanged.
+
+`api.runtime.agent.session.withDescendantSessionRead({ ancestor, descendant, assertCurrent }, callback)`
+verifies an explicitly selected durable descendant from persisted native spawn
+receipts. Both identities contain an exact `sessionKey` and `sessionId`; store
+selection stays host-owned. Each parent incarnation and lifecycle must still
+match, including across agents. Missing, cyclic, overly deep, or stale lineage
+is refused. Incognito sessions are not eligible for this durable receipt API.
+The callback receives only the descendant's `agentId`, `sessionKey`, `sessionId`,
+and a synchronous `assertCurrent`. Pass that assertion to guarded plugin-state
+operations; it rechecks the original caller, plugin lifetime, and retained native
+lineage before effects. It expires when the callback returns. This metadata-only
+proof grants no session execution, transcript access, or session mutation rights.
+It does not replace the caller's existing owner authorization.
 
 `await api.runtime.agent.session.createSessionEntryListReader({ agentId, storePath, env? })`
 creates a read-only metadata inventory reader for a durable session store.

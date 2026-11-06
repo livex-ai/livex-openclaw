@@ -148,3 +148,11 @@ Append-only JSONL catalogs can use `readSessionCatalogJsonlActivity` from the sa
 private runtime seam for bounded upstream activity reads. The helper owns file
 opening, the one-MiB scan window, and offset advancement; the catalog classifies
 complete rows and retains its own timestamp and user-message semantics.
+
+## Agent report profiles
+
+`api.registerReportProfile(profile)` registers a pure, plugin-owned report projection selected by trusted `agentIds` and `channels`. Import `AgentReportProfile`, `PreparedAgentReport` and `resolveAgentReportProfile` from `openclaw/plugin-sdk/report-profiles`. Duplicate agent/channel claims are rejected. Resolution uses the current request's admitted registry and does not load plugins.
+
+A profile supplies `inputSchema`, stable `instructions`, `prepare(input, context)`, `appendNotice(prepared, notice, context)` and optionally `prepareLegacy(text, context)`. It returns canonical `text`, structured `channelData` and serializable plugin-owned `state`. The profile owns its input/context validation and visual projection. Prepared work retains its selected profile; later configuration does not choose another renderer for the same queued result.
+
+The contract grants no sending, state-write or scheduling authority. The channel validates and delivers the payload using its existing preview, fallback, threading and receipt owners. Feature-specific durable effects still follow confirmed complete delivery. Unconfigured agents are unchanged.

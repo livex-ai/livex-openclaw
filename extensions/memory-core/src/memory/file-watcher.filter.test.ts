@@ -5,6 +5,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryFileWatcher } from "./file-watcher.js";
+import { MemoryWatchPolicy } from "./watch-policy.js";
 
 const observer = await vi.hoisted(async () => {
   const { createMemoryObservationHarness } = await import("./watcher-test-support.js");
@@ -115,4 +116,31 @@ it("filters irrelevant removals but preserves indexable files and possible direc
   await changed.promise;
   expect(onChange).toHaveBeenCalledOnce();
   expect(onUnavailable).not.toHaveBeenCalled();
+});
+
+it("observes only the selected catalog when workspace memory is excluded", async () => {
+  const catalog = state.path("investigations.md");
+  await fs.writeFile(catalog, "approved catalog");
+  const policy = new MemoryWatchPolicy(state.workspaceDir, {
+    includeWorkspace: false,
+    extraPaths: [catalog],
+    multimodal: { enabled: false, modalities: [], maxFileBytes: 1024 },
+    sync: { watchDebounceMs: 10 },
+  });
+  const groups = await policy.observations(new AbortController().signal);
+  expect(
+    groups.flatMap((group) =>
+      policy.scopes(group).map((scope) => path.resolve(group.root.rootDir, scope.path)),
+    ),
+  ).toEqual([catalog]);
+  for (const group of groups) {
+    expect(
+      policy.select(
+        group,
+        path.relative(group.root.rootDir, path.join(state.workspaceDir, "MEMORY.md")),
+        false,
+      ),
+    ).toBeUndefined();
+    expect(policy.select(group, path.relative(group.root.rootDir, catalog), false)).toBeDefined();
+  }
 });

@@ -7,6 +7,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock }
 import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
 import { onTrustedMessageAuditEventForTest as onTrustedMessageAuditEvent } from "../../audit/message-audit-events.test-support.js";
 import { chunkText } from "../../auto-reply/chunk.js";
+import {
+  getReplyPayloadMetadata,
+  setReplyPayloadMetadata,
+} from "../../auto-reply/reply-payload.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
 import type {
   ChannelMessageSendResult,
@@ -1753,9 +1757,11 @@ describe("deliverOutboundPayloads", () => {
       roomId: "!room",
     });
 
+    const outcomes: unknown[] = [];
     await deliverMatrix({
       to: "!room",
-      payloads: [{ text: "secret", replyToId: "original-reply" }],
+      payloads: [{ text: "secret", replyToId: "original-reply", isError: true }],
+      onPayloadDeliveryOutcome: (outcome) => outcomes.push(outcome),
       deps: { matrix: sendText },
       replyPayloadSendingHook: {
         kind: "final",
@@ -1780,6 +1786,17 @@ describe("deliverOutboundPayloads", () => {
       expect.objectContaining({ channelId: "matrix", conversationId: "!room" }),
     );
     expect(requireMatrixSendCall(sendText)[1]).toBe("redacted");
+    expect(outcomes).toEqual([
+      expect.objectContaining({
+        index: 0,
+        status: "sent",
+        acceptedPayload: expect.objectContaining({
+          text: "redacted",
+          replyToId: "hooked-reply",
+          isError: true,
+        }),
+      }),
+    ]);
     expect(queueMocks.enqueueDelivery).toHaveBeenCalledWith(
       expect.objectContaining({
         preparedBatch: expect.objectContaining({
@@ -2056,6 +2073,51 @@ describe("deliverOutboundPayloads", () => {
         root.endsWith(path.join(".openclaw", "workspace-work")),
       ),
     ).toBe(true);
+  });
+
+  it("keeps accepted content stable when later lifecycle bookkeeping mutates its payload", async () => {
+    const onPayloadDeliveryOutcome = vi.fn();
+    installPayloadOutbound(
+      { channel: "matrix", messageId: "accepted-1" },
+      {
+        afterDeliverPayload: async ({ payload }) => {
+          payload.text = "changed after send";
+          payload.channelData!.mode = "changed";
+        },
+      },
+    );
+    const payload = setReplyPayloadMetadata(
+      { text: "accepted body", channelData: { mode: "original" } },
+      { independentDeliveryIntentId: "accepted-content" },
+    );
+    await deliverMatrix({ payloads: [payload], onPayloadDeliveryOutcome });
+    expect(onPayloadDeliveryOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        status: "sent",
+        acceptedPayload: expect.objectContaining({
+          text: "accepted body",
+          channelData: { mode: "original" },
+        }),
+      }),
+    );
+    expect(
+      getReplyPayloadMetadata(onPayloadDeliveryOutcome.mock.calls[0]![0].acceptedPayload),
+    ).toMatchObject({
+      independentDeliveryIntentId: "accepted-content",
+    });
+  });
+
+  it("does not block sending extension data that cannot produce an accepted content snapshot", async () => {
+    const onPayloadDeliveryOutcome = vi.fn();
+    installPayloadOutbound({ channel: "matrix", messageId: "uncloneable-1" });
+    await expect(
+      deliverMatrix({
+        payloads: [{ text: "accepted body", channelData: { callback() {} } }],
+        skipQueue: true,
+        onPayloadDeliveryOutcome,
+      }),
+    ).resolves.toEqual([{ channel: "matrix", messageId: "uncloneable-1" }]);
+    expect(onPayloadDeliveryOutcome.mock.calls[0]?.[0]).not.toHaveProperty("acceptedPayload");
   });
 
   it("runs partial after-delivery bookkeeping once with rendered payload and accepted target", async () => {
@@ -3055,6 +3117,7 @@ describe("deliverOutboundPayloads", () => {
     const hasFallback = text.trim().length > 0;
     const afterDeliverPayload = vi.fn();
     const onDeliveredPayload = vi.fn();
+    const onPayloadDeliveryOutcome = vi.fn();
     if (!hasFallback) {
       hookMocks.runner.hasHooks.mockReturnValue(true);
     }
@@ -3065,12 +3128,14 @@ describe("deliverOutboundPayloads", () => {
     const delivery = deliverMatrix({
       to: "!room:1",
       payloads: [{ text, mediaUrl: "https://example.com/file.png" }],
+      onPayloadDeliveryOutcome,
       ...(hasFallback ? { onDeliveredPayload } : {}),
     });
     if (hasFallback) {
       await expect(delivery).resolves.toEqual([{ channel: "matrix", messageId: "mx-1" }]);
       expect(sendText).toHaveBeenCalledTimes(1);
       expect(requireMockCallArg(sendText, "sendText").text).toBe("caption");
+      expect(onPayloadDeliveryOutcome.mock.calls[0]?.[0]).not.toHaveProperty("acceptedPayload");
       expect(onDeliveredPayload).toHaveBeenCalledWith(
         expect.objectContaining({ text: "caption", mediaUrls: [] }),
       );

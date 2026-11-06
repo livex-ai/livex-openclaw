@@ -33,6 +33,7 @@ import {
   type HistoryEntry,
 } from "openclaw/plugin-sdk/reply-history";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import { prepareAgentReplyTurn } from "openclaw/plugin-sdk/reply-turns";
 import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
@@ -89,6 +90,7 @@ import { resolveSlackRoutingContext } from "./prepare-routing.js";
 import { resolveSlackGroupSessionSubject } from "./prepare-session-presentation.js";
 import { resolveSlackThreadContextData } from "./prepare-thread-context.js";
 import { resolveSlackThreadMentionPolicy } from "./prepare-thread-mentions.js";
+import { editRequest, slackReplyTurnQuery } from "./priority-card.js";
 import {
   collectSlackMentionIds,
   isSlackSubteamMentionForBot,
@@ -1063,7 +1065,7 @@ export async function prepareSlackMessage(params: {
   }
   const { rawBody, effectiveDirectMedia, commandSourceText, mentionStripPatterns } =
     resolvedMessageContent;
-  const bodyForAgent = preflightAudioTranscript
+  let bodyForAgent = preflightAudioTranscript
     ? formatSlackAudioTranscriptForAgent({
         transcript: preflightAudioTranscript,
         rawBody,
@@ -1339,225 +1341,262 @@ export async function prepareSlackMessage(params: {
     ? normalizeSlackAppContextEntities(message.app_context)
     : [];
 
-  const ctxPayload = (ctx.buildContext ?? buildChannelInboundEventContext)({
-    channelIngress: messageIngress,
+  const replyTurn = await prepareAgentReplyTurn({
+    config: cfg,
     channel: "slack",
-    accountId: route.accountId,
-    messageId: threadContext.messageTs,
-    timestamp: resolveSlackTimestampMs(message.ts),
-    from: slackFrom,
-    sender: {
-      id: senderId,
-      name: senderName,
-      displayLabel: senderName,
-      isBot: isBotMessage || undefined,
-    },
-    conversation: {
-      kind: chatType,
-      id: message.channel,
-      routePeer: {
+    agentId: route.agentId,
+    accountId: account.accountId,
+    workspaceId: opts.eventScope?.teamId ?? ctx.teamId ?? "",
+    nativeChannelId: message.channel,
+    senderId,
+    sessionKey,
+    isDirectMessage,
+    amendmentRequest: editRequest(message, ctx.botUserId, commandAuthorized && !isBotMessage),
+    query: slackReplyTurnQuery(threadStarterBody, threadHistoryBody, textWithId),
+    assertCurrent: assertHistoryCurrent,
+    signal: opts.abortSignal,
+  });
+  try {
+    assertHistoryCurrent();
+    if (replyTurn) {
+      combinedBody += replyTurn.context;
+      bodyForAgent += replyTurn.context;
+    }
+
+    const ctxPayload = (ctx.buildContext ?? buildChannelInboundEventContext)({
+      channelIngress: messageIngress,
+      channel: "slack",
+      accountId: route.accountId,
+      messageId: threadContext.messageTs,
+      timestamp: resolveSlackTimestampMs(message.ts),
+      from: slackFrom,
+      sender: {
+        id: senderId,
+        name: senderName,
+        displayLabel: senderName,
+        isBot: isBotMessage || undefined,
+      },
+      conversation: {
         kind: chatType,
-        id: qualifySlackRoutePeerId({
-          id: isDirectMessage ? (message.user ?? "unknown") : message.channel,
-          kind: isDirectMessage ? "user" : "channel",
-          eventScope: opts.eventScope,
-        }),
+        id: message.channel,
+        routePeer: {
+          kind: chatType,
+          id: qualifySlackRoutePeerId({
+            id: isDirectMessage ? (message.user ?? "unknown") : message.channel,
+            kind: isDirectMessage ? "user" : "channel",
+            eventScope: opts.eventScope,
+          }),
+        },
+        label: envelopeFrom,
+        spaceId: opts.eventScope?.teamId || ctx.teamId || undefined,
+        threadId: boundMessageThreadId,
+        nativeChannelId: message.channel,
+        avatar: conversationAvatar,
       },
-      label: envelopeFrom,
-      spaceId: opts.eventScope?.teamId || ctx.teamId || undefined,
-      threadId: boundMessageThreadId,
-      nativeChannelId: message.channel,
-      avatar: conversationAvatar,
-    },
-    route: {
-      ...route,
-      routeSessionKey: route.sessionKey,
-      dispatchSessionKey: sessionKey,
-      parentSessionKey: threadKeys.parentSessionKey,
-    },
-    reply: {
-      to: replyRouteTarget,
-      replyToId: threadContext.replyToId,
-      messageThreadId: boundMessageThreadId,
-      nativeChannelId: message.channel,
-    },
-    message: {
-      inboundEventKind,
-      body: combinedBody,
-      bodyForAgent,
-      rawBody,
-      commandBody,
-      inboundHistory,
-    },
-    sessionTranscript: {
-      historyLimit: isRoomish ? ctx.historyLimit : dmHistoryLimit,
-      historyKind: isRoomish ? "recent" : "pending",
-    },
-    access: {
-      mentions: {
-        canDetectMention: isRoomish,
-        wasMentioned: effectiveWasMentioned,
-        hasAnyMention: explicitlyMentioned || mentionedSubteamIds.length > 0,
-        implicitMentionKinds: matchedImplicitMentionKinds,
-        requireMention: shouldRequireMention,
-        effectiveWasMentioned,
+      route: {
+        ...route,
+        routeSessionKey: route.sessionKey,
+        dispatchSessionKey: sessionKey,
+        parentSessionKey: threadKeys.parentSessionKey,
       },
-      commands: {
-        authorized: commandAuthorized,
+      reply: {
+        to: replyRouteTarget,
+        replyToId: threadContext.replyToId,
+        messageThreadId: boundMessageThreadId,
+        nativeChannelId: message.channel,
       },
-    },
-    media: inboundMedia,
-    supplemental: {
-      thread: {
-        // Only include thread starter body for NEW sessions (existing sessions already have it in their transcript)
-        starterBody:
-          !directThreadRoutedToDmSession && shouldSeedInitialThreadContext
-            ? threadStarterBody
-            : undefined,
-        historyBody: supplementalThreadHistoryBody,
-        label: directThreadRoutedToDmSession ? undefined : threadLabel,
+      message: {
+        inboundEventKind,
+        body: combinedBody,
+        bodyForAgent,
+        rawBody,
+        commandBody,
+        inboundHistory,
       },
-      groupSystemPrompt,
-    },
-    channelContext: {
-      chat: {
-        commandSourceText,
-        mentionStripPatterns,
+      sessionTranscript: {
+        historyLimit: isRoomish ? ctx.historyLimit : dmHistoryLimit,
+        historyKind: isRoomish ? "recent" : "pending",
       },
-    },
-    extra: {
-      GroupThread: groupThread,
-      GroupSubject: groupSessionSubject,
-      ChannelPromptContext: channelMetadata ? [channelMetadata] : undefined,
-      ChannelStructuredContext:
-        agentContextEntities.length > 0
-          ? [
-              {
-                label: "Slack active context",
-                source: "slack",
-                type: "active_view",
-                payload: { entities: agentContextEntities },
-              },
-            ]
-          : undefined,
-      TransportThreadId: directThreadRoutedToDmSession ? threadContext.messageThreadId : undefined,
-      // Keep the child message identity, but never inject it as Slack's thread root.
-      ReplyThreading: isThreadReply ? { implicitCurrentMessage: "deny" } : undefined,
-      SlackAssistantThread: assistantThreadContext ? true : undefined,
-      SlackAgentThread: agentViewThreadTs ? true : undefined,
-      SlackAssistantThreadContextChannelId: assistantThreadContext?.channelId,
-      SlackAssistantThreadContextTeamId: assistantThreadContext?.teamId,
-      SlackAssistantThreadContextEnterpriseId: assistantThreadContext?.enterpriseId ?? undefined,
-      Transcript: preflightAudioTranscript,
-      IsFirstThreadTurn:
-        isThreadReply &&
-        threadTs &&
-        !directThreadRoutedToDmSession &&
-        shouldSeedInitialThreadContext
-          ? true
-          : undefined,
-      ...(isRoomish
-        ? {
-            WasMentioned: effectiveWasMentioned,
-            ExplicitlyMentionedBot: explicitlyMentioned,
-            MentionedUserIds: mentionedUserIds.length > 0 ? [...mentionedUserIds] : undefined,
-            MentionedSubteamIds:
-              mentionedSubteamIds.length > 0 ? [...mentionedSubteamIds] : undefined,
-            ImplicitMentionKinds:
-              matchedImplicitMentionKinds.length > 0 ? [...matchedImplicitMentionKinds] : undefined,
-            MentionSource: mentionSource,
-          }
-        : {}),
-    },
-  }) satisfies FinalizedMsgContext;
-  ctxPayload.ReplyToMode = replyToMode;
-
-  const pinnedMainDmOwner = isDirectMessage
-    ? resolvePinnedMainDmOwnerFromAllowlist({
-        dmScope: cfg.session?.dmScope,
-        allowFrom: allowFromLower,
-        normalizeEntry: normalizeSlackAllowOwnerEntry,
-      })
-    : null;
-
-  // Live DM replies should target the concrete Slack DM channel id we just
-  // received on. This avoids depending on a follow-up conversations.open
-  // round-trip for the normal reply path while keeping persisted routing
-  // metadata user-scoped for later session deliveries.
-  const replyTarget = `channel:${message.channel}`;
-
-  if (preflightAudioTranscript) {
-    await sendSlackPreflightAudioTranscriptEcho({
-      transcript: preflightAudioTranscript,
-      cfg,
-      accountId: account.accountId,
-      originatingTo: preflightChannelTarget,
-      messageThreadId: threadContext.messageThreadId,
-    });
-  }
-
-  const updateLastRouteSessionKey = resolveInboundLastRouteSessionKey({ route, sessionKey });
-
-  return {
-    ctx,
-    account,
-    message,
-    ...(opts.relayIdentity ? { relayIdentity: opts.relayIdentity } : {}),
-    eventScope: opts.eventScope,
-    route,
-    channelConfig,
-    replyTarget,
-    ctxPayload,
-    sessionDisplayName: sessionEntry?.displayName,
-    turn: {
-      record: {
-        updateLastRoute:
-          isDirectMessage || opts.eventScope
-            ? {
-                sessionKey: updateLastRouteSessionKey,
-                channel: "slack",
-                to: replyRouteTarget,
-                accountId: route.accountId,
-                threadId: effectiveMessageThreadId,
-                mainDmOwnerPin:
-                  isDirectMessage &&
-                  updateLastRouteSessionKey === route.mainSessionKey &&
-                  pinnedMainDmOwner &&
-                  message.user
-                    ? {
-                        ownerRecipient: pinnedMainDmOwner,
-                        senderRecipient: normalizeLowercaseStringOrEmpty(message.user),
-                        onSkip: ({ ownerRecipient, senderRecipient }) => {
-                          logVerbose(
-                            `slack: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
-                          );
-                        },
-                      }
-                    : undefined,
-              }
-            : undefined,
-        onRecordError: (err: unknown) => {
-          ctx.logger.warn(
-            {
-              error: formatErrorMessage(err),
-              storePath,
-              sessionKey,
-            },
-            "failed updating session meta",
-          );
+      access: {
+        mentions: {
+          canDetectMention: isRoomish,
+          wasMentioned: effectiveWasMentioned,
+          hasAnyMention: explicitlyMentioned || mentionedSubteamIds.length > 0,
+          implicitMentionKinds: matchedImplicitMentionKinds,
+          requireMention: shouldRequireMention,
+          effectiveWasMentioned,
+        },
+        commands: {
+          authorized: commandAuthorized,
         },
       },
-    },
-    replyToMode,
-    ...(forcedReplyThreadTs ? { forcedReplyThreadTs } : {}),
-    ...(assistantThreadContext
-      ? { slackMessageMetadata: buildSlackAssistantThreadMetadata(assistantThreadContext) }
-      : {}),
-    isDirectMessage,
-    isRoomish,
-    ackReactionMessageTs,
-    ackReactionValue,
-    ackReactionPromise,
-  };
+      media: inboundMedia,
+      supplemental: {
+        thread: {
+          // Only include thread starter body for NEW sessions (existing sessions already have it in their transcript)
+          starterBody:
+            !directThreadRoutedToDmSession && shouldSeedInitialThreadContext
+              ? threadStarterBody
+              : undefined,
+          historyBody: supplementalThreadHistoryBody,
+          label: directThreadRoutedToDmSession ? undefined : threadLabel,
+        },
+        groupSystemPrompt,
+      },
+      channelContext: {
+        chat: {
+          commandSourceText,
+          mentionStripPatterns,
+        },
+      },
+      extra: {
+        GroupThread: groupThread,
+        GroupSubject: groupSessionSubject,
+        ChannelPromptContext: channelMetadata ? [channelMetadata] : undefined,
+        ChannelStructuredContext:
+          agentContextEntities.length > 0
+            ? [
+                {
+                  label: "Slack active context",
+                  source: "slack",
+                  type: "active_view",
+                  payload: { entities: agentContextEntities },
+                },
+              ]
+            : undefined,
+        TransportThreadId: directThreadRoutedToDmSession
+          ? threadContext.messageThreadId
+          : undefined,
+        // Keep the child message identity, but never inject it as Slack's thread root.
+        ReplyThreading: isThreadReply ? { implicitCurrentMessage: "deny" } : undefined,
+        SlackAssistantThread: assistantThreadContext ? true : undefined,
+        SlackAgentThread: agentViewThreadTs ? true : undefined,
+        SlackAssistantThreadContextChannelId: assistantThreadContext?.channelId,
+        SlackAssistantThreadContextTeamId: assistantThreadContext?.teamId,
+        SlackAssistantThreadContextEnterpriseId: assistantThreadContext?.enterpriseId ?? undefined,
+        Transcript: preflightAudioTranscript,
+        IsFirstThreadTurn:
+          isThreadReply &&
+          threadTs &&
+          !directThreadRoutedToDmSession &&
+          shouldSeedInitialThreadContext
+            ? true
+            : undefined,
+        ...(isRoomish
+          ? {
+              WasMentioned: effectiveWasMentioned,
+              ExplicitlyMentionedBot: explicitlyMentioned,
+              MentionedUserIds: mentionedUserIds.length > 0 ? [...mentionedUserIds] : undefined,
+              MentionedSubteamIds:
+                mentionedSubteamIds.length > 0 ? [...mentionedSubteamIds] : undefined,
+              ImplicitMentionKinds:
+                matchedImplicitMentionKinds.length > 0
+                  ? [...matchedImplicitMentionKinds]
+                  : undefined,
+              MentionSource: mentionSource,
+            }
+          : {}),
+      },
+    }) satisfies FinalizedMsgContext;
+    ctxPayload.ReplyToMode = replyToMode;
+
+    const pinnedMainDmOwner = isDirectMessage
+      ? resolvePinnedMainDmOwnerFromAllowlist({
+          dmScope: cfg.session?.dmScope,
+          allowFrom: allowFromLower,
+          normalizeEntry: normalizeSlackAllowOwnerEntry,
+        })
+      : null;
+
+    // Live DM replies should target the concrete Slack DM channel id we just
+    // received on. This avoids depending on a follow-up conversations.open
+    // round-trip for the normal reply path while keeping persisted routing
+    // metadata user-scoped for later session deliveries.
+    const replyTarget = `channel:${message.channel}`;
+
+    if (preflightAudioTranscript) {
+      await sendSlackPreflightAudioTranscriptEcho({
+        transcript: preflightAudioTranscript,
+        cfg,
+        accountId: account.accountId,
+        originatingTo: preflightChannelTarget,
+        messageThreadId: threadContext.messageThreadId,
+      });
+    }
+
+    const updateLastRouteSessionKey = resolveInboundLastRouteSessionKey({ route, sessionKey });
+    if (replyTurn) {
+      ctxPayload.GatewayRunToolBindings = {
+        ...ctxPayload.GatewayRunToolBindings,
+        ...replyTurn.toolBindings,
+      };
+    }
+
+    return {
+      ctx,
+      account,
+      message,
+      ...(opts.relayIdentity ? { relayIdentity: opts.relayIdentity } : {}),
+      eventScope: opts.eventScope,
+      route,
+      channelConfig,
+      replyTarget,
+      ctxPayload,
+      replyTurn,
+      sessionDisplayName: sessionEntry?.displayName,
+      turn: {
+        record: {
+          updateLastRoute:
+            isDirectMessage || opts.eventScope
+              ? {
+                  sessionKey: updateLastRouteSessionKey,
+                  channel: "slack",
+                  to: replyRouteTarget,
+                  accountId: route.accountId,
+                  threadId: effectiveMessageThreadId,
+                  mainDmOwnerPin:
+                    isDirectMessage &&
+                    updateLastRouteSessionKey === route.mainSessionKey &&
+                    pinnedMainDmOwner &&
+                    message.user
+                      ? {
+                          ownerRecipient: pinnedMainDmOwner,
+                          senderRecipient: normalizeLowercaseStringOrEmpty(message.user),
+                          onSkip: ({ ownerRecipient, senderRecipient }) => {
+                            logVerbose(
+                              `slack: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
+                            );
+                          },
+                        }
+                      : undefined,
+                }
+              : undefined,
+          onRecordError: (err: unknown) => {
+            ctx.logger.warn(
+              {
+                error: formatErrorMessage(err),
+                storePath,
+                sessionKey,
+              },
+              "failed updating session meta",
+            );
+          },
+        },
+      },
+      replyToMode,
+      ...(forcedReplyThreadTs ? { forcedReplyThreadTs } : {}),
+      ...(assistantThreadContext
+        ? { slackMessageMetadata: buildSlackAssistantThreadMetadata(assistantThreadContext) }
+        : {}),
+      isDirectMessage,
+      isRoomish,
+      ackReactionMessageTs,
+      ackReactionValue,
+      ackReactionPromise,
+    };
+  } catch (error) {
+    replyTurn?.releaseImmediate();
+    throw error;
+  }
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

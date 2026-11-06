@@ -1,0 +1,33 @@
+{
+  "agents": {
+    "entries": {
+      "verifier": {
+        "name": "LiveX Verifier",
+        "description": "Read-only review of supplied validation evidence; reports missing execution as blocked.",
+        "workspace": "${PACKAGE_ROOT}/workspaces/verifier",
+        "skills": [
+          "systematic-debugging",
+          "verification-before-completion"
+        ],
+        "permissionModeDefault": "read-only",
+        "tools": {
+          "profile": "full",
+          "exec": {
+            "mode": "deny"
+          },
+          "elevated": {
+            "enabled": false
+          },
+          "fs": {
+            "workspaceOnly": true
+          },
+          "allow": [
+            "read",
+            "skills_read",
+            "livex_repository_read"
+          ]
+        }
+      }
+    }
+  }
+}

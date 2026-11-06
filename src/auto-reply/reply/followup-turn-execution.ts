@@ -55,6 +55,7 @@ function buildFollowupTemplateContext(turn: AdmittedFollowupTurn): TemplateConte
     Surface: surface,
     OriginatingChannel: queued.originatingChannel,
     OriginatingTo: queued.originatingTo,
+    NativeChannelId: queued.originatingChatId,
     To: queued.originatingTo,
     AccountId: queued.originatingAccountId ?? run.agentAccountId,
     ChatType: queued.originatingChatType ?? run.chatType,

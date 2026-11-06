@@ -872,3 +872,102 @@ describe("renderSlackMessagePresentationFallbackText", () => {
     ]);
   });
 });
+
+describe("thread summary attachment projection", () => {
+  const text =
+    "⚠️ Action required · Priority unknown · Investigation partial\n**Finding:** Recovery unverified.\n**Action:** Inspect the identified installation.\n**Owner:** Unassigned.\n**Evidence:** Checked 2026-10-24 UTC; URL unavailable.";
+  const blocks = [
+    {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "Action required · Severity unknown · Investigation partial" },
+      ],
+    },
+  ];
+  const attachment = {
+    color: "#E3A008",
+    fallback: text,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "*Next action:* Inspect the identified installation.\n*Impact:* Unknown.\n*Finding:* Recovery unverified.",
+        },
+      },
+    ],
+  };
+  const payload = {
+    text,
+    channelData: { slack: { threadSummaryCard: { blocks, attachment, fallbackText: text } } },
+  };
+
+  it("keeps the full report only in fallback while carrying a missing-evidence native card", () => {
+    const resolution = resolveSlackReplyBlockResolution(payload, { materializeAuthoredText: true });
+    const messages = resolveSlackReplyDeliveryMessages({ ...resolution, text });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ text, blocks, attachments: [attachment] });
+    expect(messages[0]?.blocks).toEqual(blocks);
+    expect(resolveSlackReplyRenderPlan(payload)).toMatchObject({
+      mode: "single",
+      text,
+      blocks,
+      attachments: [attachment],
+    });
+    expect(JSON.stringify(messages[0]?.blocks)).not.toContain("**Owner:**");
+  });
+
+  it.each(["\n", " \n"])(
+    "preserves exact fallback whitespace at the presentation boundary: %j",
+    (suffix) => {
+      const exact = text + suffix;
+      const authored = {
+        ...payload,
+        text: exact,
+        channelData: {
+          slack: { threadSummaryCard: { blocks, attachment, fallbackText: exact } },
+        },
+      };
+      const messages = resolveSlackReplyDeliveryMessages({
+        ...resolveSlackReplyBlockResolution(authored, { materializeAuthoredText: true }),
+        text: exact,
+      });
+      expect(messages[0]?.text).toBe(exact);
+      expect(resolveSlackReplyRenderPlan(authored)).toMatchObject({
+        mode: "single",
+        text: exact,
+        attachments: [expect.objectContaining({ fallback: exact })],
+      });
+    },
+  );
+
+  it("preserves an attachment-only report without adding top-level blocks", () => {
+    const authored = {
+      ...payload,
+      channelData: { slack: { threadSummaryCard: { blocks: [], attachment, fallbackText: text } } },
+    };
+    const messages = resolveSlackReplyDeliveryMessages({
+      ...resolveSlackReplyBlockResolution(authored, { materializeAuthoredText: true }),
+      text,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ text, blocks: [], attachments: [attachment] });
+    expect(resolveSlackReplyRenderPlan(authored)).toMatchObject({
+      mode: "single",
+      text,
+      blocks: [],
+      attachments: [attachment],
+    });
+  });
+
+  it("discards a stale card when the authored fallback changes", () => {
+    const updated = { ...payload, text: "A materially different follow-up." };
+    const messages = resolveSlackReplyDeliveryMessages({
+      ...resolveSlackReplyBlockResolution(updated, { materializeAuthoredText: true }),
+      text: updated.text,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).not.toHaveProperty("attachments");
+    expect(messages[0]?.text).toContain(updated.text);
+  });
+});

@@ -29,6 +29,7 @@ function memoryPathNotAllowed(): Error {
 /** Read a validated memory markdown file from workspace or configured extra paths. */
 export async function readMemoryFile(params: {
   workspaceDir: string;
+  includeWorkspace?: boolean;
   extraPaths?: MemoryExtraPath[];
   relPath: string;
   from?: number;
@@ -45,7 +46,8 @@ export async function readMemoryFile(params: {
     : path.resolve(params.workspaceDir, rawPath);
   const relPath = path.relative(params.workspaceDir, absPath).replace(/\\/g, "/");
   const inWorkspace = relPath.length > 0 && !relPath.startsWith("..") && !path.isAbsolute(relPath);
-  const allowedWorkspace = inWorkspace && isMemoryPath(relPath);
+  const allowedWorkspace =
+    params.includeWorkspace !== false && inWorkspace && isMemoryPath(relPath);
   const notFound = (): MemoryReadResult => ({ status: "not_found", text: "", path: relPath });
   const readFromRoot = async (directory: string): Promise<MemoryReadResult> => {
     const filesystem = await root(directory, {
@@ -168,6 +170,7 @@ export async function readAgentMemoryFile(params: {
   const access = getAgentWorkspaceAccess(workspaceDir, "memoryFiles");
   return await (access?.memoryFiles?.readFile ?? readMemoryFile)({
     workspaceDir,
+    includeWorkspace: settings.includeWorkspace,
     extraPaths: settings.extraPaths,
     relPath: params.relPath,
     from: params.from,

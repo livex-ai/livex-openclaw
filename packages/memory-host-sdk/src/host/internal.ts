@@ -256,6 +256,7 @@ export async function listMemoryFiles(
   extraPaths?: MemoryExtraPath[],
   multimodal?: MemoryMultimodalSettings,
   onSkippedSymlinkRoot?: (root: string) => void,
+  options?: { includeWorkspace?: boolean },
 ): Promise<string[]> {
   const result: string[] = [];
   const memoryDir = path.join(workspaceDir, "memory");
@@ -271,22 +272,29 @@ export async function listMemoryFiles(
     result.push(absPath);
   };
 
-  const memoryFile = await scanMemorySource(workspaceDir, () =>
-    resolveCanonicalRootMemoryFile(workspaceDir),
-  );
-  if (memoryFile) {
-    await addMarkdownFile(memoryFile);
-  }
-  await addMarkdownFile(path.join(workspaceDir, "USER.md"));
-  try {
-    const dirStat = await scanMemorySource(memoryDir, () => fs.lstat(memoryDir));
-    if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
-      // Default memory roots stay Markdown-only; multimodal discovery is an extraPaths opt-in.
-      await collectMemoryFilesFromDir(memoryDir, result, undefined, shouldSkipWorkspaceMemoryPath);
+  if (options?.includeWorkspace !== false) {
+    const memoryFile = await scanMemorySource(workspaceDir, () =>
+      resolveCanonicalRootMemoryFile(workspaceDir),
+    );
+    if (memoryFile) {
+      await addMarkdownFile(memoryFile);
     }
-  } catch (error) {
-    if (!isFileMissingError(error)) {
-      throw error;
+    await addMarkdownFile(path.join(workspaceDir, "USER.md"));
+    try {
+      const dirStat = await scanMemorySource(memoryDir, () => fs.lstat(memoryDir));
+      if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
+        // Default memory roots stay Markdown-only; multimodal discovery is an extraPaths opt-in.
+        await collectMemoryFilesFromDir(
+          memoryDir,
+          result,
+          undefined,
+          shouldSkipWorkspaceMemoryPath,
+        );
+      }
+    } catch (error) {
+      if (!isFileMissingError(error)) {
+        throw error;
+      }
     }
   }
 

@@ -21,6 +21,7 @@ type MemoryConfig = {
 
 type MemorySearchConfig = {
   enabled?: boolean;
+  includeWorkspace?: boolean;
   rememberAcrossConversations?: boolean;
   extraPaths?: MemoryExtraPath[];
 };
@@ -184,6 +185,7 @@ export function resolveMemoryHostSearchPathConfig(
   agentId: string,
 ): {
   enabled: boolean;
+  includeWorkspace: boolean;
   rememberAcrossConversations: boolean;
   extraPaths: MemoryExtraPath[];
 } | null {
@@ -199,6 +201,7 @@ export function resolveMemoryHostSearchPathConfig(
   ]);
   return {
     enabled,
+    includeWorkspace: overrides?.includeWorkspace ?? defaults?.includeWorkspace ?? true,
     rememberAcrossConversations: resolveRememberAcrossConversations(cfg, agentId),
     extraPaths,
   };

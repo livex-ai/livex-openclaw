@@ -99,9 +99,10 @@ export function createWorkspaceMemoryFileClient(options: {
         ),
     },
     assertCurrent: () => options.signal.throwIfAborted(),
-    async listFiles(_workspace, extraPaths, multimodal, skipped) {
+    async listFiles(_workspace, extraPaths, multimodal, skipped, fileOptions) {
       const result = await call<{ files: string[]; skipped: string[] }>({
         operation: "list",
+        ...(fileOptions?.includeWorkspace === false ? { includeWorkspace: false } : {}),
         extraPaths: extra(extraPaths),
         multimodal,
       });
@@ -138,6 +139,7 @@ export function createWorkspaceMemoryFileClient(options: {
       const mapped: MemoryWorkspaceWatchRequest = {
         agentId: request.agentId,
         settings: {
+          ...(request.settings.includeWorkspace === false ? { includeWorkspace: false } : {}),
           extraPaths: extra(request.settings.extraPaths),
           multimodal: request.settings.multimodal,
           sync: { watchDebounceMs: request.settings.sync.watchDebounceMs },

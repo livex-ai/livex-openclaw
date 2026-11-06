@@ -40,7 +40,26 @@ New sessions, including managed worktree sessions, inherit the configured global
 
 Creating a worktree pins the working directory without selecting a permission mode. Explicit modes and modes already saved on existing sessions remain unchanged.
 
-The Control UI permission picker labels Default with the agent's resolved exec posture when it matches a session mode, for example **Default (Guarded)** for `tools.exec.mode: "ask"` without a stricter host approval policy. Resolution includes global settings, agent overrides, and host approval floors. Without those settings or sandboxing, the default is full access. Allowlist-only policy and non-equivalent `security`/`ask` pairs, including `ask: "always"`, keep the plain **Default** label. Agents whose sandbox configuration could apply to their sessions also keep plain **Default**, because effective policy cannot be stated at agent scope. This is display metadata, not an authorization decision or a filesystem-access guarantee; tool policy still applies. Selecting Default clears the session override; it does not save the displayed mode into the session.
+To give channel replies a read-only session default, set
+`agents.entries.<id>.permissionModeDefault: "read-only"` for the selected agent,
+or `agents.defaults.permissionModeDefault: "read-only"` for all agents. This
+setting only accepts `read-only`; it cannot configure a more permissive default.
+
+Reply initialization saves this default when a new or existing session has no
+stored permission mode. New channel threads therefore receive their own mode;
+they do not inherit a parent thread's permissions. Existing explicit modes remain
+unchanged. Once saved, the mode persists even if the configuration setting is
+removed. Leaving the setting unset preserves the existing tool/exec policy
+behavior. Session creation paths that bypass reply initialization, such as custom
+SDK callers, must set their session mode explicitly.
+
+Gateway `chat.send`, including Control UI requests, can capture session permissions
+before reply initialization. An admitted turn can retain that captured mode even
+if initialization saves the configured default. Set the session mode explicitly
+before admitting those turns; this setting does not replace their admission
+policy.
+
+The Control UI permission picker labels Default with the agent's resolved exec posture when it matches a session mode, for example **Default (Guarded)** for `tools.exec.mode: "ask"` without a stricter host approval policy. Resolution includes global settings, agent overrides, and host approval floors. Without those settings or sandboxing, the default is full access. Allowlist-only policy and non-equivalent `security`/`ask` pairs, including `ask: "always"`, keep the plain **Default** label. Agents whose sandbox configuration could apply to their sessions also keep plain **Default**, because effective policy cannot be stated at agent scope. This is display metadata, not an authorization decision or a filesystem-access guarantee; tool policy still applies. Selecting Default clears the session override; it does not save the displayed mode into the session. If `permissionModeDefault` is configured, subsequent channel reply initialization saves that default again.
 
 ## Delegated setup and repair
 

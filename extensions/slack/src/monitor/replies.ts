@@ -1,4 +1,4 @@
-import type { MessageMetadata } from "@slack/types";
+import type { MessageAttachment, MessageMetadata } from "@slack/types";
 import type { Block, KnownBlock } from "@slack/web-api";
 import {
   createAcceptedChannelDeliveryResult,
@@ -179,6 +179,7 @@ export async function deliverReplies(params: {
       threadTs?: string | undefined;
       mediaUrl?: string | undefined;
       blocks?: (Block | KnownBlock)[] | undefined;
+      attachments?: MessageAttachment[];
       authoredTextPlacement?: "none" | "blocks" | "outside-blocks";
       nativeDataFallbackBaseText?: string;
       textIsSlackMrkdwn?: boolean;
@@ -271,9 +272,11 @@ export async function deliverReplies(params: {
           continue;
         }
         lastResult = await sendReply({
-          ...(message.blocks
-            ? { ...message, text: message.nativeDataFallbackBaseText ?? "" }
-            : { text: message.text }),
+          ...(message.attachments?.length
+            ? message
+            : message.blocks
+              ? { ...message, text: message.nativeDataFallbackBaseText ?? "" }
+              : { text: message.text }),
           threadTs,
         });
         delivered = true;

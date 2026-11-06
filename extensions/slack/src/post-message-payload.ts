@@ -1,4 +1,4 @@
-import type { MessageMetadata } from "@slack/types";
+import type { MessageAttachment, MessageMetadata } from "@slack/types";
 import type { Block, ChatPostMessageArguments, KnownBlock } from "@slack/web-api";
 
 export type SlackUnfurlOptions = {
@@ -20,6 +20,7 @@ export type SlackBasePostMessagePayload = SlackPostThreadPayload & {
   channel: string;
   text: string;
   blocks?: (Block | KnownBlock)[];
+  attachments?: MessageAttachment[];
   metadata?: MessageMetadata;
   mrkdwn?: boolean;
   unfurl_links?: boolean;
@@ -36,6 +37,7 @@ export function buildSlackPostMessagePayload(params: {
   threadTs?: string;
   replyBroadcast?: boolean;
   blocks?: (Block | KnownBlock)[];
+  attachments?: MessageAttachment[];
   metadata?: MessageMetadata;
   mrkdwn?: boolean;
   unfurl?: SlackUnfurlOptions;
@@ -50,6 +52,7 @@ export function buildSlackPostMessagePayload(params: {
     channel: params.channelId,
     text: params.text,
     ...(params.blocks?.length ? { blocks: params.blocks } : {}),
+    ...(params.attachments?.length ? { attachments: params.attachments } : {}),
     ...(params.metadata ? { metadata: params.metadata } : {}),
     ...(params.mrkdwn !== undefined ? { mrkdwn: params.mrkdwn } : {}),
     ...threadPayload,

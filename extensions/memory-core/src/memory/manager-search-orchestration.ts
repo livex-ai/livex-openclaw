@@ -87,6 +87,7 @@ export abstract class MemorySearchOrchestration extends MemorySearchRetrieval {
     files?.assertCurrent();
     return await (files?.readFile ?? readMemoryFile)({
       workspaceDir: this.workspaceDir,
+      includeWorkspace: this.settings.includeWorkspace,
       extraPaths: this.settings.extraPaths,
       relPath: params.relPath,
       from: params.from,

@@ -22,6 +22,7 @@ vi.mock("../../infra/outbound/deliver.js", () => ({
 
 import {
   sendDurableMessageBatchCore as sendDurableMessageBatch,
+  serializeDurableMessagePayloadOutcomes,
   type DurableMessageSendContext,
   type DurableMessageSendContextParams,
   withDurableMessageSendContextCore as withDurableMessageSendContext,
@@ -325,6 +326,25 @@ describe("withDurableMessageSendContext", () => {
     assert(result.status === "suppressed");
     expect(result.payloadOutcomes?.[0]).toEqual(outcome);
     expect(onPayloadDeliveryOutcome).toHaveBeenCalledExactlyOnceWith(outcome);
+  });
+
+  it("keeps accepted content in process without serializing it into delivery diagnostics", async () => {
+    const acceptedPayload = {
+      text: "private accepted body",
+      channelData: { private: "card content" },
+    };
+    const results = [{ channel: "telegram", messageId: "accepted-1" }];
+    deliverOutboundPayloads.mockImplementationOnce(async (params) => {
+      params.onPayloadDeliveryOutcome?.({ index: 0, status: "sent", results, acceptedPayload });
+      return results;
+    });
+    const result = await sendBatch({});
+    expect(result.payloadOutcomes?.[0]).toMatchObject({ acceptedPayload });
+    for (const includeHookEffect of [false, true]) {
+      expect(
+        serializeDurableMessagePayloadOutcomes(result.payloadOutcomes, { includeHookEffect }),
+      ).toEqual([{ index: 0, status: "sent", resultCount: 1 }]);
+    }
   });
 
   it("reports zero-result failed best-effort payloads as failed sends", async () => {
