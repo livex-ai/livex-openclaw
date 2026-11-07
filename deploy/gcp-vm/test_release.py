@@ -6,12 +6,20 @@ import unittest
 from unittest.mock import patch
 
 from activate_image import activate
+from agent_bundle import BUNDLED as AGENT_BUNDLE, workspace
 from release_inputs import release_arguments, select_image, with_concurrency
 from vm_prompt import BUNDLED, NAME, WORKSPACE, sha
 
 SHA = "a" * 40
 OLD = "sha256:" + "b" * 64
 NEW = "sha256:" + "c" * 64
+PROGRESS = {
+    "mode": "off", "nativeTransport": True,
+    "progress": {
+        "style": "card", "nativeTaskCards": True, "toolProgress": False,
+        "commandText": "status", "commentary": False, "narration": False,
+    },
+}
 
 
 class ReleaseTest(unittest.TestCase):
@@ -43,35 +51,74 @@ class ReleaseTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 select_image(invalid, OLD, NEW)
 
-    def exercise(self, failure=None):
+    def exercise(self, failure=None, *, multi=False, existing_debugger=False, progress=False):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             old_prompt = b"previously deployed VM prompt"
             old_source = "e" * 40
             new_prompt = b"reviewed merged VM prompt"
+            debugger_prompt = b"Read-only scoped debugger instructions"
+            old_debugger_prompt = b"Previous reviewed debugger instructions"
+            bundle = {
+                "version": 1,
+                "agents": {
+                    "oncall": {
+                        "config": {
+                            "name": "Oncall",
+                            "workspace": WORKSPACE,
+                            "skills": ["investigate-alerts"],
+                            "subagents": {"allowAgents": ["debugger"]},
+                            "model": "repository-default",
+                            "tools": {"allow": ["read"]},
+                        },
+                        "prompt": new_prompt.decode(),
+                        "sha256": sha(new_prompt),
+                    },
+                    "debugger": {
+                        "config": {
+                            "name": "Debugger",
+                            "workspace": workspace("debugger"),
+                            "skills": ["debug"],
+                            "permissionModeDefault": "read-only",
+                            "tools": {"allow": ["read"]},
+                        },
+                        "prompt": debugger_prompt.decode(),
+                        "sha256": sha(debugger_prompt),
+                    },
+                },
+                "skills": ["debug", "investigate-alerts"],
+            }
+            bundle_bytes = json.dumps(bundle).encode()
+            candidate = {
+                "source": SHA,
+                "previousImage": OLD,
+                "image": NEW,
+                "maxConcurrent": 7,
+                "oncallPromptSha256": sha(new_prompt),
+            }
+            if progress:
+                candidate["slackProgress"] = None if failure == "progress-null" else PROGRESS
+            if multi and failure != "legacy-downgrade":
+                candidate.update(
+                    agentBundleSha256=sha(bundle_bytes),
+                    agentPromptSha256={"oncall": sha(new_prompt), "debugger": sha(debugger_prompt)},
+                )
             prev = root / "releases" / old_source
             prev.mkdir(parents=True)
-            (prev / "image-receipt.json").write_text(
-                json.dumps(
-                    {
-                        "image": OLD,
-                        "source": old_source,
-                        "oncallPromptSha256": sha(old_prompt),
-                    }
-                )
-            )
+            previous_receipt = {
+                "image": OLD,
+                "source": old_source,
+                "oncallPromptSha256": sha(old_prompt),
+            }
+            if existing_debugger:
+                previous_receipt["agentPromptSha256"] = {
+                    "oncall": sha(old_prompt), "debugger": sha(old_debugger_prompt)
+                }
+            (prev / "image-receipt.json").write_text(json.dumps(previous_receipt))
             release = root / "releases" / SHA
             release.mkdir(parents=True)
             (release / "image-receipt.json").write_text(
-                json.dumps(
-                    {
-                        "source": SHA,
-                        "previousImage": OLD,
-                        "image": NEW,
-                        "maxConcurrent": 7,
-                        "oncallPromptSha256": sha(new_prompt),
-                    }
-                )
+                json.dumps(candidate)
             )
             (root / "backups").mkdir()
             (root / "gcloud").mkdir()
@@ -88,6 +135,15 @@ class ReleaseTest(unittest.TestCase):
             initial = b"unexpected local edit" if failure == "drift" else old_prompt
             mounted.write_bytes(initial)
             mounted.chmod(0o640)
+            debugger = root / "state/workspaces/debugger/AGENTS.md"
+            if multi:
+                debugger.parent.mkdir(parents=True)
+                (debugger.parent / "notes.md").write_text("operator notebook")
+                if existing_debugger:
+                    debugger.write_bytes(old_debugger_prompt)
+                    debugger.chmod(0o640)
+                if failure == "agent-collision":
+                    debugger.write_bytes(b"unmanaged agent instructions")
             config = root / "state/openclaw.json"
             original = {
                 "agents": {
@@ -101,6 +157,38 @@ class ReleaseTest(unittest.TestCase):
                 },
                 "channels": {"slack": {"ackReaction": "", "typingReaction": ""}},
             }
+            if progress:
+                original["channels"]["slack"].update(
+                    requireMention=True, dmPolicy="disabled", allowFrom=["U_TEST"],
+                    streaming={"mode": "progress", "nativeTransport": True,
+                               "block": {"enabled": False},
+                               "progress": {"style": "compact", "nativeTaskCards": False,
+                                            "toolProgress": True, "label": "Investigating"}},
+                    accounts={"default": {
+                        "botToken": {"source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN"},
+                        "streaming": {"progress": {"label": "Operator label"}},
+                    }},
+                )
+                if failure == "progress-override":
+                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["mode"] = "progress"
+            if multi:
+                original["agents"]["entries"]["oncall"].update(
+                    model="vm-selected-model",
+                    workspace=WORKSPACE,
+                    sandbox={"mode": "all"},
+                )
+                original["agents"]["entries"]["unrelated"] = {
+                    "name": "Operator agent", "workspace": "/operator-workspace"
+                }
+                original["skills"] = {"load": {"extraDirs": ["/operator-skills"]}}
+                if existing_debugger:
+                    original["agents"]["entries"]["debugger"] = {
+                        "name": "Old debugger", "workspace": workspace("debugger"),
+                        "model": "vm-debugger-model", "permissionModeDefault": "read-only",
+                        "tools": {"allow": ["read", "web_search"]},
+                    }
+                if failure == "config-collision":
+                    original["agents"]["entries"]["debugger"] = {"name": "Unmanaged"}
             original_bytes = json.dumps(original).encode()
             config.write_bytes(original_bytes)
             selector = root / "release.env"
@@ -125,6 +213,14 @@ class ReleaseTest(unittest.TestCase):
                 if cmd[0] == "tar":
                     return real_run(cmd, **kwargs)
                 if cmd[1] == "inspect":
+                    shadow = []
+                    if failure in ("agent-mount", "agent-mount-parent", "agent-mount-file"):
+                        destination = {
+                            "agent-mount": workspace("debugger"),
+                            "agent-mount-parent": "/home/node/.openclaw/workspaces",
+                            "agent-mount-file": workspace("debugger") + "/AGENTS.md",
+                        }.get(failure)
+                        shadow = [{"Type": "bind", "Source": "/operator-data", "Destination": destination}]
                     output = json.dumps(
                         [
                             {
@@ -142,7 +238,7 @@ class ReleaseTest(unittest.TestCase):
                                         ),
                                         "Destination": "/home/node/.openclaw",
                                     }
-                                ],
+                                ] + shadow,
                                 "Config": {
                                     "Labels": {
                                         "org.opencontainers.image.revision": old_source
@@ -157,13 +253,18 @@ class ReleaseTest(unittest.TestCase):
                         ]
                     )
                 elif "agents.files.get" in cmd:
-                    data = mounted.read_bytes()
-                    active_workspace = "/other" if failure == "workspace" else WORKSPACE
-                    if failure == "live-hash" and state["image"] == NEW:
+                    params = json.loads(cmd[cmd.index("--params") + 1])
+                    agent_id = params.get("agentId")
+                    data = (mounted if agent_id == "oncall" else debugger).read_bytes()
+                    active_workspace = "/other" if failure == "workspace" else workspace(agent_id)
+                    if state["image"] == NEW and (
+                        failure == "live-hash"
+                        or (failure == "agent-live-hash" and agent_id == "debugger")
+                    ):
                         data = b"different active prompt"
                     output = json.dumps(
                         {
-                            "agentId": "oncall",
+                            "agentId": agent_id,
                             "workspace": active_workspace,
                             "file": {
                                 "path": active_workspace + "/" + NAME,
@@ -174,6 +275,20 @@ class ReleaseTest(unittest.TestCase):
                             },
                         }
                     )
+                elif "config.get" in cmd:
+                    active_config = json.loads(config.read_bytes())
+                    pending = failure == "config-not-applied" and state["image"] == NEW
+                    if failure == "agent-config-mismatch" and state["image"] == NEW:
+                        active_config["agents"]["entries"]["debugger"]["skills"] = []
+                    if failure == "progress-readback" and state["image"] == NEW:
+                        active_config["channels"]["slack"]["streaming"]["mode"] = "progress"
+                    output = json.dumps({
+                        "valid": True,
+                        "path": "/home/node/.openclaw/openclaw.json",
+                        "sourceConfig": active_config,
+                        "configRevisionHash": "installed-config-hash",
+                        "appliedConfigHash": "old-config-hash" if pending else "installed-config-hash",
+                    })
                 elif "diagnostics.lanes" in cmd:
                     if failure in ("reset-selector", "foreign-prompt"):
                         selector.write_bytes(old_content)
@@ -199,13 +314,23 @@ class ReleaseTest(unittest.TestCase):
                         {"sessions": ["active"] if count else [], "totalCount": count}
                     )
                 elif "stop" in cmd:
-                    self.assertNotIn(failure, ("drift", "bundle", "workspace", "mount"))
+                    self.assertNotIn(failure, (
+                        "drift", "bundle", "workspace", "mount", "agent-collision", "config-collision",
+                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade", "progress-override", "progress-null"
+                    ))
                     state["running"] = False
                 elif "up" in cmd:
                     selected_new = NEW in selector.read_text()
                     self.assertEqual(
                         mounted.read_bytes(), new_prompt if selected_new else old_prompt
                     )
+                    if multi:
+                        if selected_new:
+                            self.assertEqual(debugger.read_bytes(), debugger_prompt)
+                        elif existing_debugger:
+                            self.assertEqual(debugger.read_bytes(), old_debugger_prompt)
+                        else:
+                            self.assertFalse(debugger.exists())
                     state.update(
                         running=True,
                         image=selector.read_text().splitlines()[0].split("=")[1],
@@ -222,6 +347,7 @@ class ReleaseTest(unittest.TestCase):
                     code = int(
                         (failure == "preflight" and "validate" in cmd)
                         or (failure == "seed" and is_seed)
+                        or (failure == "agent-model" and "--agent" in cmd and "debugger" in cmd)
                     )
                 else:
                     self.fail(f"Unexpected subprocess {cmd}")
@@ -231,8 +357,12 @@ class ReleaseTest(unittest.TestCase):
                 if cmd[0] == "du":
                     return "2000 state\n"
                 if cmd[:2] == ["docker", "run"]:
-                    self.assertEqual(cmd[-2:], [NEW, BUNDLED])
+                    self.assertEqual(cmd[-2], NEW)
                     self.assertNotIn("-v", cmd)
+                    if cmd[-1] == AGENT_BUNDLE:
+                        self.assertTrue(multi)
+                        return bundle_bytes
+                    self.assertEqual(cmd[-1], BUNDLED)
                     return b"bad bundle" if failure == "bundle" else new_prompt
                 self.assertEqual(cmd, ["docker", "image", "inspect", NEW])
                 return json.dumps(
@@ -257,7 +387,7 @@ class ReleaseTest(unittest.TestCase):
             ):
                 disk.return_value.free = 10 * 1024**3
                 if failure:
-                    with self.assertRaises((OSError, RuntimeError)):
+                    with self.assertRaises((OSError, RuntimeError, ValueError)):
                         activate(root, SHA, OLD)
                 else:
                     activate(root, SHA, OLD)
@@ -274,6 +404,22 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original_bytes)
             else:
                 original["agents"]["defaults"]["maxConcurrent"] = 7
+                if progress:
+                    streaming = original.get("channels").get("slack").get("streaming")
+                    streaming.update(mode="off", nativeTransport=True)
+                    streaming.get("progress").update(PROGRESS.get("progress"))
+                if multi:
+                    original["agents"]["entries"]["oncall"].update(
+                        name="Oncall", skills=["investigate-alerts"],
+                        subagents={"allowAgents": ["debugger"]},
+                    )
+                    if existing_debugger:
+                        original["agents"]["entries"]["debugger"].update(
+                            name="Debugger", skills=["debug"],
+                        )
+                    else:
+                        original["agents"]["entries"]["debugger"] = bundle["agents"]["debugger"]["config"]
+                    original["skills"]["load"]["extraDirs"].append("/opt/oncall-skills/skills")
                 self.assertEqual(json.loads(config.read_bytes()), original)
             expected = OLD if failure else NEW
             self.assertEqual(state, {"image": expected, "running": True})
@@ -285,7 +431,22 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual((root / name).read_text(), "existing operator policy")
             self.assertEqual(mounted.read_bytes(), initial if failure else new_prompt)
             self.assertEqual(mounted.stat().st_mode & 0o777, 0o640)
-            if failure not in ("busy", "drift", "bundle", "workspace", "mount"):
+            if multi:
+                self.assertEqual((debugger.parent / "notes.md").read_text(), "operator notebook")
+                if failure == "agent-collision":
+                    self.assertEqual(debugger.read_bytes(), b"unmanaged agent instructions")
+                elif failure:
+                    if existing_debugger:
+                        self.assertEqual(debugger.read_bytes(), old_debugger_prompt)
+                    else:
+                        self.assertFalse(debugger.exists())
+                else:
+                    self.assertEqual(debugger.read_bytes(), debugger_prompt)
+                    self.assertEqual(debugger.stat().st_mode & 0o777, 0o640 if existing_debugger else 0o600)
+            if failure not in (
+                "busy", "drift", "bundle", "workspace", "mount", "agent-collision", "config-collision",
+                        "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade", "progress-override", "progress-null"
+            ):
                 receipt = json.loads(
                     next(release.glob("activation-*/receipt.json")).read_text()
                 )
@@ -297,6 +458,23 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(
                     receipt["status"], "rolled_back" if failure else "running_verified"
                 )
+                if progress and not failure:
+                    self.assertEqual(proof.get("slackProgress"), PROGRESS)
+                    self.assertEqual(proof.get("appliedConfigHash"), "installed-config-hash")
+                if multi:
+                    expected_hashes = {"oncall": sha(old_prompt)} if failure else {
+                        "oncall": sha(new_prompt), "debugger": sha(debugger_prompt)
+                    }
+                    if failure and existing_debugger:
+                        expected_hashes["debugger"] = sha(old_debugger_prompt)
+                    self.assertEqual(proof["agentPromptSha256"], expected_hashes)
+                    self.assertEqual(proof["appliedConfigHash"], "installed-config-hash")
+                    model_checks = {
+                        check["name"] for check in receipt["checks"]
+                        if check["name"].startswith("models-")
+                    }
+                    if failure not in ("preflight", "receipt"):
+                        self.assertEqual(model_checks, {"models-oncall", "models-debugger"})
 
     def test_cutover_and_recovery(self):
         for failure in (
@@ -316,6 +494,36 @@ class ReleaseTest(unittest.TestCase):
         ):
             with self.subTest(failure=failure):
                 self.exercise(failure)
+
+    def test_multi_agent_activation_preserves_overrides_and_rolls_back_together(self):
+        for failure in (
+            None,
+            "preflight",
+            "agent-model",
+            "agent-live-hash",
+            "agent-collision",
+            "config-collision",
+            "agent-config-mismatch",
+            "config-not-applied",
+            "agent-mount",
+            "agent-mount-parent",
+            "agent-mount-file",
+        ):
+            with self.subTest(failure=failure):
+                self.exercise(failure, multi=True)
+
+    def test_legacy_candidate_cannot_silently_drop_managed_agent_support(self):
+        self.exercise("legacy-downgrade", multi=True, existing_debugger=True)
+
+    def test_existing_managed_agent_update_and_rollback_preserve_vm_overrides(self):
+        for failure in (None, "agent-live-hash"):
+            with self.subTest(failure=failure):
+                self.exercise(failure, multi=True, existing_debugger=True)
+
+    def test_progress_activation_preserves_policies_and_rolls_back_on_failed_readback(self):
+        for failure in (None, "progress-readback", "config-not-applied", "preflight", "progress-override", "progress-null"):
+            with self.subTest(failure=failure):
+                self.exercise(failure, multi=True, progress=True)
 
 
 class CheckpointTests(unittest.TestCase):

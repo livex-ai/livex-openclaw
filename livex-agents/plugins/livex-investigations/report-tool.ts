@@ -7,13 +7,23 @@ import { projectInvestigationIssue } from "./lookup.js";
 import { compareFindings } from "./matching.js";
 import { reportContext } from "./report-context.js";
 import { sameInvestigationScope, tryGetInvestigationTurnRegistry } from "./runtime.js";
-import { assertNoSensitiveContent, parseCompletedInvestigations } from "./schema.js";
+import {
+  assertNoSensitiveContent,
+  hasCompleteSignature,
+  issueSignatureSchema,
+  normalizeSignature,
+  parseCompletedInvestigations,
+  signatureKey,
+  type CatalogSnapshot,
+  type IssueSignature,
+} from "./schema.js";
 import { readCatalog } from "./store.js";
 import { measuredTrend } from "./trend-evidence.js";
 import { trendSummary } from "./trend.js";
 
 const boundedText = { type: "string", minLength: 1, maxLength: 8000 } as const;
 const links = { type: "array", maxItems: 30, items: { type: "string", maxLength: 4096 } } as const;
+const lookupSignaturePart = { type: "string", minLength: 1, maxLength: 512 } as const;
 const parameters = {
   type: "object",
   properties: {
@@ -36,6 +46,19 @@ const parameters = {
       type: "array",
       maxItems: 20,
       items: { type: "string", minLength: 1, maxLength: 128 },
+    },
+    signature: {
+      type: "object",
+      description: "For lookup after log reads. Use the stable resource ID, such as a chatbot ID.",
+      properties: {
+        service: lookupSignaturePart,
+        environment: lookupSignaturePart,
+        operation: lookupSignaturePart,
+        error: { ...lookupSignaturePart, maxLength: 4096 },
+        resource: lookupSignaturePart,
+      },
+      required: ["service", "environment", "operation", "error", "resource"],
+      additionalProperties: false,
     },
     report: { type: "object" },
     finalText: {
@@ -111,6 +134,28 @@ const parameters = {
   additionalProperties: false,
 } as const;
 
+function selectSignatureMatches(snapshot: CatalogSnapshot, signature: IssueSignature) {
+  if (snapshot.status !== "ready") {
+    return { match: "unavailable", issues: [] };
+  }
+  const key = signatureKey(signature);
+  const exact = snapshot.issues.filter((issue) => signatureKey(issue.signature) === key);
+  if (exact.length) {
+    return { match: exact.length === 1 ? "exact" : "possible", issues: exact };
+  }
+  // A resource match can surface a differently worded signature for review.
+  const observed = normalizeSignature(signature);
+  const possible = snapshot.issues.filter((issue) => {
+    const saved = normalizeSignature(issue.signature);
+    return (
+      saved.service === observed.service &&
+      saved.environment === observed.environment &&
+      saved.resource === observed.resource
+    );
+  });
+  return { match: possible.length ? "possible" : "none", issues: possible };
+}
+
 /** The definition stays stable; current invocation and channel ownership gate execution. */
 export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>): AnyAgentTool {
   const schemaBinding = asOptionalRecord(ctx.toolBindings?.slack_investigation);
@@ -126,7 +171,7 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
     name: "slack_investigation_record",
     label: "Investigation record",
     description:
-      "Look up the authorized turn's catalog or stage completed updates with the configured report profile. Supply report OR legacy finalText, not both. The tool stages only; confirmed Slack delivery owns catalog saving. " +
+      "Look up the authorized turn's catalog by issueIds or by a signature identified in logs. A lookup is read-only. To stage completed updates, supply report OR legacy finalText, not both. Confirmed Slack delivery owns catalog saving. " +
       (profile?.instructions ?? "No report profile is configured for this agent."),
     parameters: {
       ...parameters,
@@ -158,6 +203,23 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
       turn.assertCurrent();
       const args = asOptionalRecord(input);
       if (args?.action === "lookup") {
+        const rawSignature = asOptionalRecord(args.signature);
+        const signature =
+          args.signature === undefined
+            ? undefined
+            : issueSignatureSchema.parse({ ...rawSignature, scope: turn.scope });
+        if (
+          signature &&
+          (args.issueIds !== undefined ||
+            (rawSignature && Object.hasOwn(rawSignature, "scope")) ||
+            !hasCompleteSignature(signature) ||
+            !signature.resource ||
+            /^(?:unknown|unspecified|n\/a|none)$/i.test(signature.resource))
+        ) {
+          throw new Error(
+            "lookup requires issueIds or a complete signature with a stable resource",
+          );
+        }
         if (
           args.issueIds !== undefined &&
           (!Array.isArray(args.issueIds) ||
@@ -174,9 +236,12 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
         signal?.throwIfAborted();
         turn.snapshot = snapshot;
         const requestedIds = Array.isArray(args.issueIds) ? new Set(args.issueIds) : undefined;
-        const selected = requestedIds
-          ? snapshot.issues.filter((issue) => requestedIds.has(issue.issueId))
-          : snapshot.issues;
+        const signatureMatches = signature && selectSignatureMatches(snapshot, signature);
+        const selected =
+          signatureMatches?.issues ??
+          (requestedIds
+            ? snapshot.issues.filter((issue) => requestedIds.has(issue.issueId))
+            : snapshot.issues);
         const issues = [];
         let size = 0;
         for (const issue of selected) {
@@ -191,6 +256,7 @@ export function createInvestigationRecordTool(ctx: OpenClawPluginToolContext<2>)
         return jsonResult({
           status: snapshot.status,
           reason: snapshot.reason,
+          ...(signatureMatches && { match: signatureMatches.match }),
           issues,
           truncated: issues.length < selected.length,
           totalIssues: snapshot.issues.length,

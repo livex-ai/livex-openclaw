@@ -3,7 +3,7 @@ import { scopeIdentity, PAGE_CACHE_ENTRIES, PAGE_CACHE_ERRORS } from "./page-sto
 
 // This command is intercepted by the host before the LLM. Its owner authority is
 // required independently of the evidence tool's ordinary invocation authority.
-export function createRecoveryCommand(rawConfig, openStore) {
+export function createRecoveryCommand(rawConfig, openStore, withDescendantSessionRead) {
   return {
     name: "livex-gcp-recover",
     description: "Inspect or explicitly recover one unfinished log read in this thread.",
@@ -56,91 +56,121 @@ export function createRecoveryCommand(rawConfig, openStore) {
         messageChannel: "slack",
         assertInvocationCurrent: authority,
       };
-      const scope = scopeIdentity(scopeContext, config);
-      const legacyScope = scopeIdentity(scopeContext, config, { legacy: true });
       const parts = ctx.args?.trim().split(/\s+/) ?? [];
-      const [action, selector, receiptHash] = parts;
-      const listing = action === "list";
-      const legacyList = listing && selector === "legacy";
-      const offsetText = listing ? parts[legacyList ? 2 : 1] : undefined;
-      const offset = offsetText === undefined ? 0 : Number(offsetText);
-      const selected = /^(legacy:)?([a-f0-9]{64})$/.exec(selector ?? "");
-      if (
-        listing
-          ? parts.length > (legacyList ? 3 : 2) ||
-            (offsetText !== undefined && !/^(0|[1-9]\d*)$/.test(offsetText)) ||
-            !Number.isSafeInteger(offset) ||
-            offset < 0 ||
-            offset > PAGE_CACHE_ENTRIES
-          : !selected ||
-            !["inspect", "retry", "restart-legacy", "retire-checkpoint"].includes(action) ||
-            parts.length !== (action === "inspect" ? 2 : 3) ||
-            (action !== "inspect" && !/^[a-f0-9]{64}$/.test(receiptHash ?? ""))
-      ) {
-        throw new Error(
-          "Usage: /livex-gcp-recover list [legacy] [offset]; inspect <receipt|legacy:receipt>; retry, restart-legacy or retire-checkpoint <receipt> <inspected-hash>",
-        );
-      }
-      if (
-        !listing &&
-        (action === "restart-legacy") !==
-          (Boolean(selected[1]) && action !== "inspect" && action !== "retire-checkpoint")
-      ) {
-        throw new Error(
-          "Use restart-legacy for explicit legacy recovery; retry only accepts current-identity receipts",
-        );
-      }
-      const store = openStore(
-        { namespace: "log-pages", maxEntries: PAGE_CACHE_ENTRIES, overflowPolicy: "reject-new" },
-        { assertCurrent: authority },
-      );
-      const operation = store.createOperation(
-        [store],
-        {
-          moduleName: "page-store-operation-api.ts",
-          exportName: "runPageOperation",
-        },
-        { assertCurrent: authority },
-      );
-      authority();
-      let result;
-      try {
-        result = await operation.execute(
-          {
-            type: listing
-              ? "list"
-              : action === "inspect"
-                ? "inspect"
-                : ["retry", "restart-legacy"].includes(action)
-                  ? "approve-retry"
-                  : "retire",
-            input: {
-              scope,
-              legacyScope,
-              legacy: listing ? legacyList : Boolean(selected[1]),
-              id: listing ? "0".repeat(64) : selected[2],
-              receiptHash,
-              offset,
-              operatorId: ctx.senderId,
-              restartLegacy: action === "restart-legacy",
-              now: Date.now(),
-            },
-          },
-          { writeStores: [0] },
-        );
-      } catch (error) {
-        authority();
+      const execute = async (selectedContext, assertSelectedCurrent, actionParts) => {
+        const scope = scopeIdentity(selectedContext, config);
+        const legacyScope = scopeIdentity(selectedContext, config, { legacy: true });
+        const [action, selector, receiptHash] = actionParts;
+        const listing = action === "list";
+        const legacyList = listing && selector === "legacy";
+        const offsetText = listing ? actionParts[legacyList ? 2 : 1] : undefined;
+        const offset = offsetText === undefined ? 0 : Number(offsetText);
+        const selected = /^(legacy:)?([a-f0-9]{64})$/.exec(selector ?? "");
         if (
-          error?.code === "PLUGIN_STATE_WRITE_FAILED" &&
-          Object.values(PAGE_CACHE_ERRORS).includes(error.cause?.message)
+          listing
+            ? actionParts.length > (legacyList ? 3 : 2) ||
+              (offsetText !== undefined && !/^(0|[1-9]\d*)$/.test(offsetText)) ||
+              !Number.isSafeInteger(offset) ||
+              offset < 0 ||
+              offset > PAGE_CACHE_ENTRIES
+            : !selected ||
+              !["inspect", "retry", "restart-legacy", "retire-checkpoint"].includes(action) ||
+              actionParts.length !== (action === "inspect" ? 2 : 3) ||
+              (action !== "inspect" && !/^[a-f0-9]{64}$/.test(receiptHash ?? ""))
         ) {
-          // eslint-disable-next-line preserve-caught-error -- This whitelist is a privacy boundary; never attach private native storage causes.
-          throw new Error(error.cause.message);
+          throw new Error(
+            "Usage: /livex-gcp-recover list [legacy] [offset]; inspect <receipt|legacy:receipt>; retry, restart-legacy or retire-checkpoint <receipt> <inspected-hash>",
+          );
         }
-        throw error;
+        if (
+          !listing &&
+          (action === "restart-legacy") !==
+            (Boolean(selected[1]) && action !== "inspect" && action !== "retire-checkpoint")
+        ) {
+          throw new Error(
+            "Use restart-legacy for explicit legacy recovery; retry only accepts current-identity receipts",
+          );
+        }
+        const store = openStore(
+          { namespace: "log-pages", maxEntries: PAGE_CACHE_ENTRIES, overflowPolicy: "reject-new" },
+          { assertCurrent: assertSelectedCurrent },
+        );
+        const operation = store.createOperation(
+          [store],
+          {
+            moduleName: "page-store-operation-api.ts",
+            exportName: "runPageOperation",
+          },
+          { assertCurrent: assertSelectedCurrent },
+        );
+        assertSelectedCurrent();
+        let result;
+        try {
+          result = await operation.execute(
+            {
+              type: listing
+                ? "list"
+                : action === "inspect"
+                  ? "inspect"
+                  : ["retry", "restart-legacy"].includes(action)
+                    ? "approve-retry"
+                    : "retire",
+              input: {
+                scope,
+                legacyScope,
+                legacy: listing ? legacyList : Boolean(selected[1]),
+                id: listing ? "0".repeat(64) : selected[2],
+                receiptHash,
+                offset,
+                operatorId: ctx.senderId,
+                restartLegacy: action === "restart-legacy",
+                now: Date.now(),
+              },
+            },
+            { writeStores: [0] },
+          );
+        } catch (error) {
+          assertSelectedCurrent();
+          if (
+            error?.code === "PLUGIN_STATE_WRITE_FAILED" &&
+            Object.values(PAGE_CACHE_ERRORS).includes(error.cause?.message)
+          ) {
+            // eslint-disable-next-line preserve-caught-error -- This whitelist is a privacy boundary; never attach private native storage causes.
+            throw new Error(error.cause.message);
+          }
+          throw error;
+        }
+        assertSelectedCurrent();
+        return { text: JSON.stringify(result.value) };
+      };
+      if (parts[0] !== "child") {
+        return execute(scopeContext, authority, parts);
       }
-      authority();
-      return { text: JSON.stringify(result.value) };
+      if (parts.length < 4 || typeof withDescendantSessionRead !== "function") {
+        throw new Error(
+          "Child recovery requires native descendant verification and an exact session key and session ID",
+        );
+      }
+      const [, sessionKey, sessionId, ...childArgs] = parts;
+      return withDescendantSessionRead(
+        {
+          ancestor: { sessionKey: ctx.sessionKey, sessionId: ctx.sessionId },
+          descendant: { sessionKey, sessionId },
+          assertCurrent: authority,
+        },
+        (child) =>
+          execute(
+            {
+              ...scopeContext,
+              agentId: child.agentId,
+              sessionKey: child.sessionKey,
+              sessionId: child.sessionId,
+              assertInvocationCurrent: child.assertCurrent,
+            },
+            child.assertCurrent,
+            childArgs,
+          ),
+      );
     },
   };
 }

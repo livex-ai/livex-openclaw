@@ -20,7 +20,12 @@ import { expect, it, vi } from "vitest";
 import { reportEntry } from "../livex-oncall-reports/test-api.js";
 import investigationEntry from "./index.js";
 import { getInvestigationTurnRegistry, tryGetInvestigationTurnRegistry } from "./runtime.js";
-import { serializeCatalog, type CompletedInvestigation, type HistoryScope } from "./schema.js";
+import {
+  createIssueId,
+  serializeCatalog,
+  type CompletedInvestigation,
+  type HistoryScope,
+} from "./schema.js";
 import { readCatalog } from "./store.js";
 
 const manifest = JSON.parse(
@@ -286,3 +291,110 @@ it.each(["immediate", "queued"] as const)(
     }
   },
 );
+
+it("finds a saved VOVO 404 after the initial digest lookup omitted it", async () => {
+  const agentDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "investigation-recurrence-"));
+  const filePath = path.join(agentDir, "investigations.md");
+  const signature = {
+    service: "chat-engine",
+    environment: "production",
+    operation: "configurable tool-agent chat generation",
+    error: "openai http 404 / notfounderror",
+    resource: "pub-vovo-fixture",
+  };
+  const savedSignature = { ...signature, scope };
+  const issueId = createIssueId(savedSignature);
+  const canonicalThreadUrl = "https://example.slack.com/archives/C1/p1000000000000000";
+  const catalog = serializeCatalog([
+    {
+      issueId,
+      signature: savedSignature,
+      task: "Verify VOVO model access",
+      status: "action-required",
+      whatWeDidLast: [
+        {
+          completedAt: "2026-11-05T16:28:24-08:00",
+          summary: "Earlier conversation failed after an OpenAI 404.",
+          kind: "new",
+          facts: {
+            finding: "The same chatbot failed with an OpenAI 404.",
+            impact: "One earlier conversation",
+            nextAction: "Verify model access.",
+          },
+          evidenceUrls: [],
+          reportUrl: canonicalThreadUrl,
+        },
+      ],
+      waitingOn: "Unassigned",
+      prs: [],
+      slackThreads: [canonicalThreadUrl],
+      jiraTickets: [],
+      lastUpdated: "2026-11-05T16:28:24-08:00",
+    },
+  ]);
+  await fs.promises.writeFile(filePath, catalog);
+  const config: OpenClawConfig = {
+    agents: { entries: { oncall: { agentDir, workspace: agentDir } } },
+    plugins: {
+      entries: {
+        "livex-investigations": {
+          enabled: true,
+          config: { investigationCatalog: { enabled: true, agentId: "oncall" } },
+        },
+      },
+    },
+  };
+  const owner = createManagedInvestigationOwner(config);
+  try {
+    const turn = await withPluginRuntimeRegistryScope(owner.registry, () =>
+      prepareAgentReplyTurn({
+        config,
+        agentId: scope.agentId,
+        channel: "slack",
+        accountId: scope.accountId,
+        workspaceId: scope.teamId,
+        nativeChannelId: scope.channelId,
+        senderId: scope.senderId,
+        sessionKey,
+        isDirectMessage: false,
+        query: "Rank the top three suspected issues from this digest.",
+        assertCurrent() {},
+      }),
+    );
+    assert(turn);
+    expect(turn.context).not.toContain(issueId);
+    const tool = owner.registry.tools[0]!.factory({ ...context, toolBindings: turn.toolBindings });
+    assert(tool && !Array.isArray(tool));
+    await turn.lifecycle().onAdopted?.();
+
+    expect(
+      await tool.execute("fresh-log-signature", {
+        action: "lookup",
+        signature: { ...signature, error: "OpenAI HTTP 404 / NotFoundError" },
+      }),
+    ).toMatchObject({
+      details: {
+        status: "ready",
+        match: "exact",
+        issues: [{ issueId, canonicalThreadUrl, status: "action-required" }],
+      },
+    });
+    expect(
+      await tool.execute("same-error-other-chatbot", {
+        action: "lookup",
+        signature: { ...signature, resource: "pub-other-fixture" },
+      }),
+    ).toMatchObject({ details: { status: "ready", match: "none", issues: [] } });
+    expect(
+      await tool.execute("incomplete-error-signature", {
+        action: "lookup",
+        signature: { ...signature, error: "NotFoundError" },
+      }),
+    ).toMatchObject({ details: { match: "possible", issues: [{ issueId, canonicalThreadUrl }] } });
+    expect(await fs.promises.readFile(filePath, "utf8")).toBe(catalog);
+    turn.releaseImmediate();
+  } finally {
+    await disposePluginRegistryInstances(owner.registry);
+    await fs.promises.rm(agentDir, { recursive: true, force: true });
+  }
+});

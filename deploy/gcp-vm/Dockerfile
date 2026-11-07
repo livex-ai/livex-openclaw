@@ -25,18 +25,14 @@ RUN mkdir -p /opt/oncall/plugins/livex-investigations/node_modules \
     && ln -s /app /opt/oncall/plugins/livex-investigations/node_modules/openclaw \
     && ln -s /app/node_modules/zod /opt/oncall/plugins/livex-investigations/node_modules/zod \
     && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-investigations/index.ts"); for (const spec of ["zod", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/reply-turns", "openclaw/plugin-sdk/agent-runtime", "openclaw/plugin-sdk/report-profiles"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("Investigation plugin requires the declared zod version in the reviewed base");'
-COPY livex-agents/workspaces/oncall/AGENTS.md /opt/oncall/workspace/AGENTS.md
-COPY deploy/gcp-vm/oncall-vm-policy.patch deploy/gcp-vm/oncall-vm-prompt.sha256 /opt/oncall/
-RUN cd /opt/oncall/workspace \
-    && git apply --whitespace=error /opt/oncall/oncall-vm-policy.patch \
-    && sha256sum -c /opt/oncall/oncall-vm-prompt.sha256
-COPY livex-agents/prompts /opt/oncall/prompts
+COPY livex-agents/config/openclaw.template.json /opt/agent-build/livex-agents/config/openclaw.template.json
+COPY livex-agents/workspaces /opt/agent-build/livex-agents/workspaces
+COPY agent-skills /opt/agent-build/agent-skills
+COPY deploy/gcp-vm/agent_bundle.py deploy/gcp-vm/oncall-vm-policy.patch deploy/gcp-vm/oncall-vm-prompt.sha256 /opt/agent-build/deploy/gcp-vm/
 COPY livex-agents/scripts/local-gcloud-startup/preflight.mjs /opt/oncall/preflight.mjs
-COPY agent-skills /opt/agent-skills
 COPY deploy/gcp-vm/start.sh /opt/oncall/start.sh
-RUN python3 /opt/agent-skills/scripts/library.py validate \
-    && python3 /opt/agent-skills/scripts/library.py export --profile oncall --target /opt/oncall-skills \
-    && rm -rf /opt/agent-skills \
+RUN python3 /opt/agent-build/deploy/gcp-vm/agent_bundle.py --root /opt/agent-build --output /opt/oncall/agents.json --skills-target /opt/oncall-skills \
+    && rm -rf /opt/agent-build \
     && test -x /opt/google-cloud-sdk/bin/gcloud \
     && test -d /opt/google-cloud-sdk/lib/googlecloudsdk \
     && install -d -m 0700 -o 1000 -g 1000 /home/node/.config/gcloud \

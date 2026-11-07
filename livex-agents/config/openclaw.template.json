@@ -198,11 +198,11 @@
         "enabled": false
       },
       "streaming": {
-        "mode": "progress",
+        "mode": "off",
         "nativeTransport": true,
         "progress": {
-          "style": "compact",
-          "nativeTaskCards": false,
+          "style": "card",
+          "nativeTaskCards": true,
           "toolProgress": false,
           "commandText": "status",
           "commentary": false,

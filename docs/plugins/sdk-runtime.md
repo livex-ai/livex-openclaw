@@ -542,6 +542,19 @@ and their stored predicates while retaining the full synchronous assertion for
 native commit. Custom SDK assertion wrappers are not executed in restoration
 worker grants; existing writer adapter selection remains unchanged.
 
+`api.runtime.agent.session.withDescendantSessionRead({ ancestor, descendant, assertCurrent }, callback)`
+verifies an explicitly selected durable descendant from persisted native spawn
+receipts. Both identities contain an exact `sessionKey` and `sessionId`; store
+selection stays host-owned. Each parent incarnation and lifecycle must still
+match, including across agents. Missing, cyclic, overly deep, or stale lineage
+is refused. Incognito sessions are not eligible for this durable receipt API.
+The callback receives only the descendant's `agentId`, `sessionKey`, `sessionId`,
+and a synchronous `assertCurrent`. Pass that assertion to guarded plugin-state
+operations; it rechecks the original caller, plugin lifetime, and retained native
+lineage before effects. It expires when the callback returns. This metadata-only
+proof grants no session execution, transcript access, or session mutation rights.
+It does not replace the caller's existing owner authorization.
+
 `await api.runtime.agent.session.createSessionEntryListReader({ agentId, storePath, env? })`
 creates a read-only metadata inventory reader for a durable session store.
 Await the returned function to read `{ entries, assertCurrent }`. It reuses

@@ -1,7 +1,8 @@
 # Private GCP VM oncall runtime
 
-This package prepares a reviewed fork for one Debian VM; it never provisions,
-starts, authenticates, or modifies an existing deployment. Use the generic
+The preparation tools produce an offline configuration for one Debian VM.
+The separately invoked managed upgrade command builds and activates a reviewed
+commit on an existing installation, with stopped-state backup and rollback. Use the generic
 [GCP guide](../../docs/install/gcp.md) for host setup, but use **attached service
 account authentication** for this workload instead of its user-login examples.
 The Grafana deployment's image/config packaging is a useful precedent; its
@@ -93,7 +94,7 @@ Select `codex,slack` when building the base. These opt-in plugins and their
 runtime dependencies are otherwise pruned from the image. Include any additional
 opt-in plugins required by the reviewed configuration.
 
-The wrapper copies both LiveX source plugins to `/opt/oncall/plugins`. The
+The wrapper copies the LiveX source plugins to `/opt/oncall/plugins`. The
 report plugin's local `node_modules` links to the same base's `/app` package for
 public OpenClaw SDK exports and `/app/node_modules/zod` for its declared runtime
 dependency. No separate dependency install or version substitution occurs.
@@ -113,8 +114,9 @@ The SDK source path is verified in Google's [stable image Dockerfile](https://gi
 (`COPY /usr/lib/google-cloud-sdk`); verify the chosen digest retains that layout.
 The full SDK is copied because paging imports `googlecloudsdk`, not just a CLI
 shim. The Dockerfile makes the public runtime files readable by uid 1000, even
-when archive extraction uses a restrictive umask. The build validates the library and exports only the oncall skill profile
-plus its referenced shared dependencies. `/opt/oncall-skills/skills-lock.json`
+when archive extraction uses a restrictive umask. The build validates the library and exports the union of explicit `skills`
+selections from registered `agents.entries`, plus their shared dependencies.
+Unregistered workspace directories and configuration examples remain inactive. `/opt/oncall-skills/skills-lock.json`
 and `/opt/skills.sha256` record its bytes. Compare the previous release's selected
 skill bytes and manifest with this image **before** approving path mapping to
 image skills. A source revision change is not an automatic skill upgrade approval.
@@ -314,9 +316,9 @@ npm cache and package. The script prints the private build directory.
 
 The VM builds a candidate before interrupting service. Cutover requires an idle,
 healthy Gateway and the same running image observed at startup. It backs up
-stopped state, switches the image, and copies only `agents.defaults.maxConcurrent`
-from the selected commit’s `livex-agents/config/openclaw.template.json` into the
-installed JSON config. Cutover verifies the live main-lane limit as well as
+stopped state, switches the image, and applies `agents.defaults.maxConcurrent`
+and managed `agents.entries` from the selected commit’s
+`livex-agents/config/openclaw.template.json` to the installed JSON config. Cutover verifies the live main-lane limit as well as
 Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
 instructions come from the verified candidate image. The image build applies
 `oncall-vm-policy.patch` to the shared prompt and verifies `oncall-vm-prompt.sha256`.
@@ -325,12 +327,18 @@ requires the existing oncall read-only session default, read-only message-tool
 allowlist and disabled acknowledgement/typing reactions. It stops before cutover
 if the mounted prompt differs from the running release baseline.
 
-After the stopped-state backup, activation installs the merged file atomically.
-It reads `AGENTS.md` via the running Gateway's `agents.files.get` for `oncall`
-and checks the resolved workspace, file path, native hash and content against
-the candidate digest. The receipt and success output include `activePromptSha256`.
-Rollback restores the previous prompt with its config and image and verifies
-the previous active hash. External edits require reconciliation.
+After the stopped-state backup, activation installs each managed `AGENTS.md`
+atomically. It reads each file through the running Gateway's `agents.files.get`
+and checks the resolved workspace, path, native hash and content against the
+candidate digest. Native `config.get` must show matching saved/applied revision
+hashes and the expected managed names, descriptions, workspaces, skills and
+delegation settings. The receipt includes `agentPromptSha256` and
+`appliedConfigHash`; `activePromptSha256` remains the Oncall digest.
+Rollback restores previous prompts, config and image; a newly added agent's
+AGENTS.md is removed, while unrelated workspace files remain. External edits
+require reconciliation. This does not roll back runtime database migrations;
+retain the stopped-state backup and follow the manual restore procedure above
+if a source upgrade changes persisted schema.
 
 The upgrade command is specific to the managed `livex-openclaw-dev` installation
 and its per-image build receipts. Its first migration recognizes the reviewed
@@ -363,3 +371,79 @@ Resume checks the package and source hashes, donor image, base build command
 and exported image digest. It extracts fresh runtime source and retains the
 original receipts. A failed or attempted runtime or Node stage needs separate
 reconciliation.
+
+## Add an agent using native configuration
+
+Only Oncall is registered by default. `livex-agents/config/examples/debugger.json`
+and `verifier.json` are inactive native configuration fragments, not an additional
+schema or runtime. To enable a role in a future reviewed deployment:
+
+1. Add its entry under `agents.entries` in
+   `livex-agents/config/openclaw.template.json`, using an example as a starting point.
+2. Set `workspace` to `${PACKAGE_ROOT}/workspaces/<directory>` and maintain that
+   directory's `AGENTS.md`. Choose an explicit native `skills` list (`[]` is valid).
+3. Review its native model, tool allowlist and `permissionModeDefault: "read-only"`.
+   New agents need an explicit tool allowlist. Authentication remains native;
+   provision any required agent credentials separately, never in Git.
+4. If delegation is wanted, configure native `subagents.allowAgents` and the
+   caller's native tool permissions. A registered agent is not automatically
+   delegated to or bound to Slack. VM routing/bindings are preserved and require
+   their own operator configuration.
+5. Run the offline checks above and native configuration validation, review the
+   commit, then run the same `deploy.sh "$FULL_COMMIT_SHA"` command when deployment
+   is authorized.
+
+The image contains `/opt/oncall/agents.json`, a build artifact derived from native
+configuration and instructions. It is not a separate agent registry. Oncall keeps
+`/home/node/.openclaw/workspace`; other managed agents use
+`/home/node/.openclaw/workspaces/<agent-id>`. Deployment manages only `AGENTS.md`
+in each workspace; native bootstrap files, operator notes and memory are not
+replaced. Shared skill files come from the existing reviewed library.
+
+Git supplies managed role definitions and selected skills. For existing agents,
+installed `model`, `models`, `modelPolicy`, `runtime`, `tools`, `sandbox`,
+`permissionModeDefault`, `agentDir`, `memory` and `nativeRuntimeConsent` remain
+VM-owned overrides. Unspecified agent fields, other defaults, bindings, plugins,
+credentials, unrelated agents and workspace files are preserved. Therefore,
+changing an existing agent's tool/model policy in Git alone does not change its
+VM policy; reconcile that operator-owned setting explicitly.
+
+An existing agent outside the prior managed receipt cannot be silently adopted.
+Prompt drift and workspace relocation stop deployment before cutover. Removing a
+managed agent from Git also stops deployment: retiring its routing, sessions and
+state requires an explicit native operator workflow. Per-agent model preflight
+and native prompt/config readback must pass before success is recorded. These
+checks establish deployment configuration, not live model/tool access or a
+successful delegated investigation; verify those separately after authorized
+activation.
+
+### Slack native loading indicator
+
+The Git template sets `streaming.mode` to `off`. During a threaded investigation,
+Slack displays the native loading indicator above the composer. The final answer
+appears when the turn finishes, with no streamed progress card.
+
+The deploy validator also accepts `progress` for releases that select cards.
+The existing eight streaming presentation fields remain Git-owned at the Slack
+root, including the inactive progress settings and `commandText: "status"`.
+The selected commit's template supplies them to the image receipt for both fresh
+builds and resumes. Activation merges only these fields into the VM config.
+Credentials, routing, permissions, disabled reactions, other streaming settings
+and account overrides remain unchanged. A conflicting account presentation
+override stops deployment before the Gateway is stopped; reconcile that override
+explicitly instead of expecting deployment to erase it. Legacy receipts without
+`slackProgress` preserve the previous presentation settings.
+
+Run `bash deploy/gcp-vm/deploy.sh "$FULL_COMMIT_SHA"` from the branch when ready
+to deploy. Activation requires native `config.get` readback to match the selected
+progress settings and its saved/applied configuration hashes to agree. The
+successful activation receipt includes `readiness.slackProgress` and
+`readiness.appliedConfigHash`; a failed check uses the existing config rollback.
+This verifies applied configuration, not a successful Slack API call or UI.
+
+The Slack app must already have Agent messaging enabled and the required scopes.
+No further manifest change is needed for an app whose loading indicator works.
+After deployment, manually invoke one investigation in an approved thread and
+verify the native loading indicator appears without a progress card, the final
+report remains in that thread, and the loading state clears. Capture sanitized
+before/after screenshots before marking visual acceptance complete.

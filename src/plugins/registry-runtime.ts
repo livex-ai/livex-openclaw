@@ -489,6 +489,24 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 upsertSessionEntry(session, params, assertRuntimeCurrent),
               );
             },
+            withDescendantSessionRead: (params, run) => {
+              const assertCaller = params.assertCurrent;
+              const ancestor = { ...params.ancestor };
+              const descendant = { ...params.descendant };
+              return runWithCurrentPluginScope(() =>
+                session.withDescendantSessionRead(
+                  {
+                    ancestor,
+                    descendant,
+                    assertCurrent: () => {
+                      assertRuntimeCurrent();
+                      assertCaller();
+                    },
+                  },
+                  (selected) => runWithCurrentPluginScope(() => run(selected)),
+                ),
+              );
+            },
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {

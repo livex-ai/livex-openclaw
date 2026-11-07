@@ -18,7 +18,7 @@ class SharedSkillTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
         self.root = self.repo / "livex-agents"
-        for name in ("config", "prompts", "skills"):
+        for name in ("config", "skills"):
             (self.root / name).mkdir(parents=True)
         self.library = self.repo / "agent-skills"
         self.skill = self.library / "skills/debug/SKILL.md"
@@ -30,7 +30,6 @@ class SharedSkillTests(unittest.TestCase):
         }], "sharedFiles": []}))
         (self.library / "profiles.json").write_text(json.dumps({"oncall": ["debug"]}))
         (self.root / "skills/sources.json").write_text('{"skills": []}')
-        (self.root / "prompts/investigator.md").write_text("Read-only investigation.")
         self.local = self.root / "config/local.json"
         self.local.write_text(json.dumps({
             "gcloudPath": "/opt/gcloud", "cloudSdkConfig": "/tmp/cloud",
