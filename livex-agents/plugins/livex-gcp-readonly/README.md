@@ -238,3 +238,67 @@ Existing VM agent tool overrides are preserved by packaging. Before activation,
 verify that the actual Debugger allowlist contains the exact two service names,
 without discarding existing overrides. Missing names must remain policy-denied and
 surface as unavailable/unclassified; never relax native policy to compensate.
+
+## Optional Google Calendar roster
+
+`plugins.entries.livex-gcp-readonly.config.oncall.googleCalendar` is disabled by
+`{ "enabled": false }` in the shipped template. Canvas remains the default roster.
+The optional public setup fields are `calendarId` and `oauth.clientId`; enabling
+Calendar without these or usable credentials produces a visible provider warning
+and the entire fresh Canvas roster. It does not prevent coordinator startup.
+
+The only credential inputs are structured SecretRefs at
+`oncall.googleCalendar.oauth.clientSecret` and
+`oncall.googleCalendar.oauth.refreshToken`, relative to this plugin's config.
+Both are optional, capability-owned prepared inputs. The source schema rejects
+literal credentials; native source/runtime paired validation preserves prepared
+runtime strings. Calendar reads only the current host-prepared snapshot, never
+ADC, gcloud, environment fallback, credential files or a new OAuth flow. The public
+feature config discards credential values and reference payloads. Disabled Calendar
+performs no prepared reads or Google HTTP; disabled examples therefore omit all
+references, since the host can still prepare authored references for an enabled
+GCP plugin even when its Calendar child is disabled.
+
+A separately authorized operator must supply existing prepared references, confirm
+Calendar access and actual consent for
+`https://www.googleapis.com/auth/calendar.events.readonly`, then enable the provider
+through reviewed configuration. This scaffold supplies no credentials, consent,
+IAM grants, event writes, deployment or live Calendar/Slack acceptance. An omitted
+scope in a token response does not establish the live grant.
+
+Use exact event titles `Oncall P1` and `Oncall P2`. Only confirmed, noncancelled
+current timed events count, with explicit-offset RFC3339 `dateTime` boundaries and
+`start <= now < end`. P1 is required; P2 is optional. Each role description must
+contain exactly one complete line such as `Slack-User-ID: U123ABC`, using a valid
+existing Slack U/W ID. Never use display names, attendees, email or organizers to
+infer identity. Duplicate or overlapping active assignments, including duplicates
+for the same person, all-day/unspecified-end role events, malformed bindings or
+missing P1 make Calendar unavailable.
+
+Descriptions support plain text and only attribute-free `p`, `div`, `br`, `b` and
+`strong` wrappers, case-insensitively. Paragraph/div/br boundaries remain line
+boundaries; bold wrappers disappear. CRLF becomes LF, and only `&nbsp;` / `&#160;`
+become spaces. Other entities, attributes, links, scripts, unknown markup, duplicate
+ID fields and IDs split across line or paragraph boundaries are rejected. Keep descriptions
+within 4,096 UTF-8 bytes.
+
+Each lookup obtains one short-lived Bearer token from the fixed Google OAuth
+endpoint and completely paginates a bounded Calendar Events query with recurrence
+expanded by Google (`singleEvents=true`). No token or event cache is retained.
+One lookup has a 30-second total deadline, at most 10 pages / 1,000 events, 64 KiB
+token JSON, 256 KiB per page and 2 MiB consumed event-response bytes in aggregate.
+Redirects and nonapproved/private destinations are refused. Missing/degraded
+credentials, rejected tokens, incomplete pagination, malformed events or HTTP
+failure cause one fresh whole-Canvas fallback with bounded warning/provenance;
+P1/P2 slots never mix providers. Owner cancellation or retirement stops work
+without a fallback request. If Canvas also fails, existing visible missing-roster
+behavior remains; no engineer identity is guessed.
+
+Roster selection is ephemeral and rechecked after awaited notification work and
+immediately before Slack transport. Calendar validity ends no later than selected
+shift end, an observed upcoming role start, the query's exclusive 60-second frontier
+or the existing tick interval after lookup completion. Expired/revision-invalid
+rosters are reacquired once and targets rerendered; a still-invalid roster prevents
+engineer paging. Secret rotation invalidates stale Calendar use while leaving
+current GCP/Canvas coordination usable. Existing known suppression, acknowledgment,
+reminders and durable notification ownership remain unchanged.

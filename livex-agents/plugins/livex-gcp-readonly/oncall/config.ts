@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { calendarPublicSchema } from "./calendar-config.js";
 
 const slackId = (prefix: string) => z.string().regex(new RegExp(`^[${prefix}][A-Z0-9]+$`));
 const limited = (maximum: number, fallback: number) =>
@@ -27,6 +28,7 @@ export const oncallSchema = z.strictObject({
   maxConcurrent: limited(2, 2),
   maxNudges: limited(3, 3),
   reminderMs: limited(600_000, 600_000),
+  googleCalendar: calendarPublicSchema.optional(),
 });
 
 export type OncallConfig = z.infer<typeof oncallSchema>;

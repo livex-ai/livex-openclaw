@@ -49,7 +49,10 @@
           },
           "repositories": [],
           "oncall": {
-            "enabled": false
+            "enabled": false,
+            "googleCalendar": {
+              "enabled": false
+            }
           }
         }
       },

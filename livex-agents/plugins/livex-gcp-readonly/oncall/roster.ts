@@ -8,6 +8,9 @@ type Member = {
   is_bot?: boolean;
   profile?: { display_name?: string; real_name?: string };
 };
+export function isSlackUserId(value: string) {
+  return /^[UW][A-Z0-9]{6,}$/.test(value);
+}
 const LABEL =
   /(?<![@\w])[*_`]*P([12])[*_`]*\s*[*_`]*(?:[:=]|\|)[*_`]*\s*(.+?)\s*\|?\s*(?=$|[*_`|\s]*(?<![@\w])P[12][*_`]*\s*[*_`]*(?:[:=]|\|))/gim;
 
@@ -70,7 +73,7 @@ export function resolveRoster(body: string, members: Member[]): Roster {
 
 function resolveMember(reference: string, members: Member[]) {
   const direct = /^<?@?([UW][A-Z0-9]{6,})>?$/.exec(reference);
-  if (direct) {
+  if (direct && isSlackUserId(direct[1]!)) {
     return direct[1];
   }
   const name = reference.replace(/^@/, "").trim().toLowerCase();

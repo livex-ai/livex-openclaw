@@ -266,6 +266,93 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 600000
+          },
+          "googleCalendar": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Optional read-only Calendar roster; missing setup or unavailable Calendar uses the entire fresh Canvas roster.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false
+              },
+              "calendarId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "\\S"
+              },
+              "oauth": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "pattern": "\\S"
+                  },
+                  "clientSecret": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source",
+                      "provider",
+                      "id"
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "env",
+                          "file",
+                          "exec",
+                          "store"
+                        ]
+                      },
+                      "provider": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      }
+                    }
+                  },
+                  "refreshToken": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source",
+                      "provider",
+                      "id"
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "env",
+                          "file",
+                          "exec",
+                          "store"
+                        ]
+                      },
+                      "provider": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "if": {
@@ -291,6 +378,34 @@
           ]
         }
       }
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "oncall.googleCalendar.oauth.clientSecret",
+          "expected": "string",
+          "ownerKind": "capability"
+        },
+        {
+          "path": "oncall.googleCalendar.oauth.refreshToken",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
+    }
+  },
+  "uiHints": {
+    "oncall.googleCalendar.oauth.clientSecret": {
+      "label": "Calendar OAuth client secret",
+      "sensitive": true,
+      "help": "Structured SecretRef only; read from the current native prepared snapshot. Missing setup falls back to Canvas."
+    },
+    "oncall.googleCalendar.oauth.refreshToken": {
+      "label": "Calendar OAuth refresh token",
+      "sensitive": true,
+      "help": "Structured SecretRef only; no inline credential or refresh-token cache. Missing setup falls back to Canvas."
     }
   }
 }

@@ -4,6 +4,82 @@ import { createReceiptStore } from "./state.js";
 import { alert, config, finding, nativeStore, now, slackStub } from "./test-support.js";
 import type { Finding, Receipt, Roster } from "./types.js";
 
+it("reacquires roster after awaited acknowledgment crosses a shift and rerenders targets", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  vi.mocked(app.slack.acknowledged).mockImplementation(async () => {
+    app.setClock(now + 20_000);
+    return false;
+  });
+  vi.mocked(app.slack.roster).mockResolvedValue({
+    p1: "W765432",
+    provider: "googleCalendar",
+    validUntil: now + 60_000,
+  });
+  await app.tick(now, { p1: "U123456", provider: "googleCalendar", validUntil: now + 10_000 });
+  expect(app.slack.roster).toHaveBeenCalledOnce();
+  expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).toContain("<@W765432>");
+  expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).not.toContain("<@U123456>");
+});
+
+it("keeps nonpaging handoff independent of missing roster and suppresses expired paging", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  vi.mocked(app.slack.roster).mockResolvedValue({
+    provider: "canvas",
+    error: "unavailable",
+    warning: "Calendar roster unavailable: missing_credentials; using current Canvas",
+    validUntil: now - 1,
+  });
+  await app.tick(now, { p1: "U123456", provider: "googleCalendar", validUntil: now - 1 });
+  expect(app.slack.send).toHaveBeenCalledOnce();
+  expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).not.toContain("<@");
+  expect((await app.store.list())[0]!.findings?.[0]?.delivery).toMatchObject({
+    status: "rejected",
+    attempts: 0,
+  });
+  expect(app.health).toHaveBeenCalledWith(
+    "Calendar roster unavailable: missing_credentials; using current Canvas",
+  );
+});
+
+it.each([
+  { old: { p1: "U123456" }, fresh: { p2: "W765432" }, tier: 1 },
+  { old: { p2: "U123456" }, fresh: { p1: "W765432" }, tier: 0 },
+])("selects and settles fresh roster tier $tier", async ({ old, fresh, tier }) => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  vi.mocked(app.slack.acknowledged).mockImplementation(async () => {
+    app.setClock(now + 20_000);
+    return false;
+  });
+  vi.mocked(app.slack.roster).mockResolvedValue({ ...fresh, validUntil: now + 60_000 });
+  await app.tick(now, { ...old, validUntil: now + 10_000 });
+  expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).toContain("<@W765432>");
+  expect((await app.store.list())[0]!.findings?.[0]?.baseTier).toBe(tier);
+});
+
+it("honors acknowledgment arriving during Calendar reacquisition", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  let acknowledged = false;
+  vi.mocked(app.slack.acknowledged).mockImplementation(async () => acknowledged);
+  vi.mocked(app.slack.roster).mockImplementation(async () => {
+    acknowledged = true;
+    return { p1: "W765432", validUntil: now + 60_000 };
+  });
+  await app.tick(now, { p1: "U123456", validUntil: now - 1 });
+  expect(app.slack.send).toHaveBeenCalledOnce();
+  expect((await app.store.list())[0]!.findings?.[0]?.acknowledged).toBe(true);
+});
+
+it("does not settle an engineer page when a fresh roster has no valid mention target", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  await app.tick(now, { p1: "not-a-slack-id", validUntil: now + 60_000 });
+  expect(app.slack.send).toHaveBeenCalledOnce();
+  expect((await app.store.list())[0]!.findings?.[0]?.delivery).toMatchObject({
+    status: "rejected",
+    attempts: 0,
+  });
+  expect((await app.store.list())[0]!.findings?.[0]?.notifiedAt).toBeUndefined();
+});
+
 async function setup(findings: Finding[]) {
   const { store, source } = nativeStore();
   await store.admit(alert);

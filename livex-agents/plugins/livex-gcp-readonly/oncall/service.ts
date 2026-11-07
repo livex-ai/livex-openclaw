@@ -1,6 +1,8 @@
 import { createOncallCatalogReader } from "@livex/investigations/oncall-catalog";
 import type { OpenClawPluginApi, PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { validateConfig } from "../core.mjs";
+import { publicGcpConfig, publicGcpEntry } from "./calendar-config.js";
+import { createCalendarRoster } from "./calendar.js";
 import { createServiceCapabilities, type ServiceCapabilities } from "./capability.js";
 import { parseOncallConfig, type OncallConfig } from "./config.js";
 import { debuggerIdentity, runDebugger, type DebuggerIdentity } from "./debugger.js";
@@ -58,6 +60,14 @@ async function classify(assessment: Assessment, catalog: Catalog): Promise<Findi
 export function createCoordinator(params: CoordinatorParams) {
   const running = new Set<string>();
   let roster: Roster = {};
+  let lastRosterWarning: string | undefined;
+
+  function reportRosterWarning(message?: string) {
+    if (message && message !== lastRosterWarning) {
+      params.health(message);
+    }
+    lastRosterWarning = message;
+  }
 
   async function diagnose(
     receipt: Receipt,
@@ -125,6 +135,7 @@ export function createCoordinator(params: CoordinatorParams) {
     }
     params.assertCurrent();
     roster = await params.slack.roster();
+    reportRosterWarning(roster.warning);
     if (roster.error) {
       params.health(roster.error);
     }
@@ -145,7 +156,12 @@ export function createCoordinator(params: CoordinatorParams) {
       dispatch(receipt);
     }
     if (receipt.phase === "assessed" || receipt.phase === "dispatch_uncertain") {
-      await notifyReceipt(receipt, roster, { ...params, now, clock: params.scheduler.now });
+      await notifyReceipt(receipt, roster, {
+        ...params,
+        now,
+        clock: params.scheduler.now,
+        reportRosterWarning,
+      });
     }
   }
 
@@ -185,7 +201,7 @@ type SourceAuthority = {
 
 function sourceFingerprint(config: SourceAuthority) {
   return JSON.stringify([
-    config.plugins?.entries?.["livex-gcp-readonly"],
+    publicGcpEntry(config.plugins?.entries?.["livex-gcp-readonly"]),
     config.plugins?.entries?.["livex-investigations"],
     pluginPolicy(config),
     config.channels?.slack,
@@ -237,7 +253,7 @@ export function registerOncall(api: OpenClawPluginApi) {
       };
       capabilities = createServiceCapabilities({
         config,
-        gcpConfig: api.pluginConfig,
+        gcpConfig: publicGcpConfig(api.pluginConfig),
         signal: lifecycle,
         now: context.scheduler.now,
         assertCurrent,
@@ -247,6 +263,13 @@ export function registerOncall(api: OpenClawPluginApi) {
         sourceConfig: context.config,
         signal: context.scheduler.signal,
         assertCurrent,
+      });
+      const resolveRoster = createCalendarRoster({
+        config,
+        signal: context.scheduler.signal,
+        now: context.scheduler.now,
+        assertCurrent,
+        canvas: () => slack.roster(),
       });
       const catalog = createOncallCatalogReader({
         config: context.config,
@@ -261,7 +284,7 @@ export function registerOncall(api: OpenClawPluginApi) {
       });
       const sourceId = createReceiptScope(
         config,
-        validateConfig(api.pluginConfig),
+        validateConfig(publicGcpConfig(api.pluginConfig)),
         catalog.sourceIdentity,
       );
       const source = api.runtime.state.openKeyedStoreV2<
@@ -282,7 +305,7 @@ export function registerOncall(api: OpenClawPluginApi) {
       const coordinator = createCoordinator({
         config,
         store,
-        slack,
+        slack: { ...slack, roster: resolveRoster },
         scheduler: context.scheduler,
         catalog,
         assertCurrent,

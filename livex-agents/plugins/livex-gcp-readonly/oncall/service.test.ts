@@ -8,6 +8,91 @@ import { createConfigCurrency, createCoordinator } from "./service.js";
 import { alert, config, finding, message, nativeStore, now, slackStub } from "./test-support.js";
 import type { Assessment } from "./types.js";
 
+it("isolates Calendar credential material from source currency but preserves public identity", () => {
+  const calendar = {
+    enabled: true,
+    calendarId: "rotation",
+    oauth: { clientId: "public", clientSecret: "first", refreshToken: "old" },
+  };
+  const source = {
+    plugins: {
+      entries: {
+        "livex-gcp-readonly": { config: { project: "prd", oncall: { googleCalendar: calendar } } },
+      },
+    },
+  };
+  const current = createConfigCurrency(source, () => source);
+  calendar.oauth.clientSecret = "rotated";
+  calendar.oauth.refreshToken = "rotated";
+  expect(current).not.toThrow();
+  calendar.calendarId = "different";
+  expect(current).toThrow("source configuration changed");
+});
+
+it("canonicalizes credentials-only OAuth shape without revoking public source currency", () => {
+  const calendar: Record<string, unknown> = { enabled: false };
+  const source = {
+    plugins: {
+      entries: { "livex-gcp-readonly": { config: { oncall: { googleCalendar: calendar } } } },
+    },
+  };
+  const current = createConfigCurrency(source, () => source);
+  calendar.oauth = { clientSecret: { source: "env", provider: "default", id: "REF_CANARY" } };
+  expect(current).not.toThrow();
+  delete calendar.oauth;
+  expect(current).not.toThrow();
+});
+
+it("treats absent and credentials-only disabled Calendar as the same public source", () => {
+  const oncall: Record<string, unknown> = {};
+  const source = { plugins: { entries: { "livex-gcp-readonly": { config: { oncall } } } } };
+  const current = createConfigCurrency(source, () => source);
+  oncall.googleCalendar = { oauth: { refreshToken: "secret-canary" } };
+  expect(current).not.toThrow();
+});
+
+it("deduplicates the same roster warning across tick selection and notification reacquisition", async () => {
+  const { store } = nativeStore();
+  await store.admit(alert);
+  await store.change(alert.key, (row) => ({
+    ...row,
+    phase: "assessed",
+    findings: [{ ...finding, classification: "unknown" }],
+  }));
+  const time = createGatewaySchedulerClock(now);
+  const gateway = createTestGatewayScheduler(time.clock);
+  const scheduler = createTestPluginServiceScheduler(gateway);
+  const slack = slackStub();
+  const warning = "Calendar roster unavailable: missing_credentials; using current Canvas";
+  vi.mocked(slack.roster).mockImplementation(async () => ({
+    p1: "U123456",
+    validUntil: scheduler.now() + 5,
+    warning,
+  }));
+  vi.mocked(slack.acknowledged).mockImplementation(async () => {
+    time.setTime(scheduler.now() + 10);
+    return false;
+  });
+  const health = vi.fn();
+  const coordinator = createCoordinator({
+    config,
+    store,
+    slack,
+    scheduler,
+    assertCurrent() {},
+    investigate: async () => ({ findings: [] }),
+    catalog: { lookup: async () => [] },
+    health,
+  });
+  try {
+    await coordinator.tick();
+    expect(health.mock.calls.filter(([reported]) => reported === warning)).toHaveLength(1);
+  } finally {
+    await scheduler.stop();
+    await gateway.stop();
+  }
+});
+
 it.each(["disable", "retarget", "deny", "disallow", "disable-all"])(
   "revokes old catalog authority on %s without changing GCP source",
   (change) => {
