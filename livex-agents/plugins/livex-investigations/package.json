@@ -23,5 +23,8 @@
     "openclaw": {
       "optional": true
     }
+  },
+  "exports": {
+    "./oncall-catalog": "./oncall-catalog.ts"
   }
 }

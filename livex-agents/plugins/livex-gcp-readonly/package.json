@@ -3,7 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test *.test.mjs" },
-  "openclaw": { "extensions": ["./index.ts"] },
-  "peerDependencies": { "openclaw": "2026.10.5" }
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": "2026.10.5"
+  },
+  "dependencies": {
+    "@livex/investigations": "workspace:*",
+    "@openclaw/slack": "workspace:*",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*",
+    "openclaw": "workspace:*"
+  }
 }

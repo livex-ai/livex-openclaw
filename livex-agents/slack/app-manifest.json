@@ -17,6 +17,7 @@
         "channels:read",
         "chat:write",
         "chat:write.customize",
+        "files:read",
         "groups:history",
         "groups:read",
         "reactions:read",

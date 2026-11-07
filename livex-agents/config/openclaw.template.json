@@ -47,7 +47,10 @@
             "pythonPath": "${PYTHON_PATH}",
             "sdkRoot": "${GCLOUD_SDK_ROOT}"
           },
-          "repositories": []
+          "repositories": [],
+          "oncall": {
+            "enabled": false
+          }
         }
       },
       "livex-oncall-reports": {
@@ -134,7 +137,34 @@
             "skills_read",
             "message",
             "livex_gcp_logs_read",
-            "livex_repository_read"
+            "livex_repository_read",
+            "livex_oncall_logs_read",
+            "livex_oncall_assessment_submit"
+          ]
+        }
+      },
+      "oncall-coordinator": {
+        "name": "LiveX Oncall",
+        "identity": {
+          "name": "LiveX Reporting · Oncall"
+        },
+        "description": "Deterministic scheduled alert coordination; disabled until separately configured.",
+        "workspace": "${PACKAGE_ROOT}/workspaces/oncall-coordinator",
+        "skills": [],
+        "permissionModeDefault": "read-only",
+        "tools": {
+          "profile": "minimal",
+          "exec": {
+            "mode": "deny"
+          },
+          "elevated": {
+            "enabled": false
+          },
+          "fs": {
+            "workspaceOnly": true
+          },
+          "allow": [
+            "read"
           ]
         }
       }

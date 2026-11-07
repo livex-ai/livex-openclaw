@@ -190,3 +190,51 @@ If redaction changes a selector, or the URL exceeds the output budget, the
 result includes `logsExplorerLinkUnavailableReason`. Cached results can gain a
 link without another cloud read or a stored-history rewrite. Rows and cursors
 remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
+
+## Scheduled Oncall coordinator
+
+`plugins.entries.livex-gcp-readonly.config.oncall` is disabled by default with
+`{ "enabled": false }`. The separate `oncall-coordinator` role has no default
+Slack binding. Enabling this service requires separately reviewed operator
+configuration for exact Slack account/team/channel and trusted publisher,
+cloud project/environment/selectors, Canvas roster and any escalation destination.
+Do not grant new credentials or activate the service merely to load this source.
+Canvas reading requires the installed bot’s `files:read` scope and membership in
+the source/roster channels. The packaged manifest declares that scope; actual app
+reauthorization remains a separate operator action, with no live grant here.
+
+The native scheduled service owns trusted intake, SQLite receipts, one Debugger
+admission per alert, scoped catalog matching and notification recovery. The native
+Debugger run allows exactly `livex_oncall_logs_read` and
+`livex_oncall_assessment_submit`; both factories require a live private capability
+for the exact run, agent, session, owner generation and scope. No grant enters the
+prompt, durable receipt, result or telemetry. Human GCP authorization remains the
+existing branch. The catalog uses only the supported public subpath
+`@livex/investigations/oncall-catalog`; it resolves the operator-selected history
+under the owning investigations configuration, with no model-provided path.
+Matching is limited to the explicit agent/account/Slack workspace/channel/historical
+sender scope; excluded histories cannot establish a known match.
+
+Known findings at every priority, including Critical, never page, remind or
+broadcast. Unknown findings may notify only after valid assessment and an original
+message acknowledgment check. Unclassified failures get one nonpaging human-review
+handoff. Confirmed initial notification delivery starts reminder timing; uncertain
+admission or delivery is visible and never blindly retried. After downtime, send
+the next sequential reminder only after its nominal deadline and at least the
+configured interval (default 10 minutes) since the last confirmed notification;
+lateness stretches the full ladder and never jumps straight to final broadcast.
+Existing reactions `white_check_mark`, `eyes`, `+1` and `ok_hand` stop notifications
+without resolving
+the issue. There is no default `@channel` or `@here` broadcast.
+
+VM source packaging links dependencies only beneath the relocated plugin's own
+`node_modules`. It uses the reviewed base's `zod` and public Slack package API,
+plus the copied investigations package. It never installs packages or modifies
+`/app/node_modules`. Offline tests import the real copied catalog reader with
+real SDK source aliases and Jiti; this is not a full container build, deployed
+Slack/cloud integration, or live activation proof.
+
+Existing VM agent tool overrides are preserved by packaging. Before activation,
+verify that the actual Debugger allowlist contains the exact two service names,
+without discarding existing overrides. Missing names must remain policy-denied and
+surface as unavailable/unclassified; never relax native policy to compensate.
