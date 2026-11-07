@@ -25,6 +25,13 @@ RUN mkdir -p /opt/oncall/plugins/livex-investigations/node_modules \
     && ln -s /app /opt/oncall/plugins/livex-investigations/node_modules/openclaw \
     && ln -s /app/node_modules/zod /opt/oncall/plugins/livex-investigations/node_modules/zod \
     && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-investigations/index.ts"); for (const spec of ["zod", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/reply-turns", "openclaw/plugin-sdk/agent-runtime", "openclaw/plugin-sdk/report-profiles"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("Investigation plugin requires the declared zod version in the reviewed base");'
+# Coordinator source uses only public package APIs from the reviewed runtime.
+RUN mkdir -p /opt/oncall/plugins/livex-gcp-readonly/node_modules/@livex /opt/oncall/plugins/livex-gcp-readonly/node_modules/@openclaw \
+    && ln -s /app /opt/oncall/plugins/livex-gcp-readonly/node_modules/openclaw \
+    && ln -s /app/node_modules/zod /opt/oncall/plugins/livex-gcp-readonly/node_modules/zod \
+    && ln -s /opt/oncall/plugins/livex-investigations /opt/oncall/plugins/livex-gcp-readonly/node_modules/@livex/investigations \
+    && ln -s /app/dist/extensions/slack /opt/oncall/plugins/livex-gcp-readonly/node_modules/@openclaw/slack \
+    && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-gcp-readonly/index.ts"); for (const spec of ["zod", "@livex/investigations/oncall-catalog", "@openclaw/slack/api.js", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/security-runtime"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("GCP plugin requires the declared zod version in the reviewed base");'
 COPY livex-agents/config/openclaw.template.json /opt/agent-build/livex-agents/config/openclaw.template.json
 COPY livex-agents/workspaces /opt/agent-build/livex-agents/workspaces
 COPY agent-skills /opt/agent-build/agent-skills

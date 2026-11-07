@@ -4,7 +4,8 @@ This package keeps agent role instructions in separate workspaces:
 
 ```text
 livex-agents/
-├── workspaces/oncall/       Existing configured investigation role
+├── workspaces/oncall/       Existing configured Debugger role
+├── workspaces/oncall-coordinator/  Scheduled Oncall coordination role
 ├── workspaces/debugger/     Inactive diagnosis-role instructions
 ├── workspaces/qa/           Existing inactive QA-role instructions
 ├── workspaces/verifier/     Inactive read-only verification example
@@ -14,7 +15,8 @@ livex-agents/
 └── tests/role-replays.md    Offline specialist-role packets
 ```
 
-The template registers only `oncall` and selects `workspaces/oncall`. The
+The template registers `oncall` and `oncall-coordinator` in separate workspaces.
+The Oncall service is disabled by default and adds no Slack binding. The
 [debugger](workspaces/debugger/AGENTS.md) and [QA](workspaces/qa/AGENTS.md)
 instructions are inactive sources: they add no registrations, tools, callers,
 schedules, automatic handoffs or runner access. Their [offline replay
@@ -35,7 +37,7 @@ Slack appearance are separate operator steps.
 are native `agents.entries` fragments, not another configuration format. Neither
 is loaded by the renderer or the release packaging input. Only entries explicitly
 added to `config/openclaw.template.json` become deployment inputs; the shipped
-template still registers only `oncall` and enables no delegation to these roles.
+template registers only `oncall` and `oncall-coordinator`; these examples remain inactive.
 
 Each example supplies its own workspace, reviewed skill selection, native
 `permissionModeDefault: "read-only"`, and an explicit tool allowlist with shell
@@ -110,10 +112,38 @@ or personal Desktop skill is changed by this source migration.
 
 # Oncall agent configuration
 
-This package configures one native OpenClaw agent named `oncall`. OpenClaw routes
-Slack channel mentions to it and keeps its thread history in the native session
-store. Native Codex App Server runs the triage or investigation. No second agent
-loop is added.
+The existing native `oncall` agent remains **LiveX Debugger**, with its workspace,
+history and wildcard Slack mention route. The separate `oncall-coordinator` entry
+is **LiveX Oncall**, with outbound identity **LiveX Reporting · Oncall**, an empty
+skill selection and a minimal read-only policy. It has no default Slack binding.
+The GCP plugin owns its deterministic native scheduled service, disabled by
+`plugins.entries.livex-gcp-readonly.config.oncall.enabled: false` in this template.
+Empty or ineligible ticks do not invoke a model.
+
+When separately configured and enabled, the service admits trusted source alerts,
+uses a bounded private capability for one native Codex App Server Debugger run,
+checks scoped history through the investigations owner's public catalog API and
+owns durable notification state. Known findings never page, remind or broadcast,
+including Critical findings. Invalid or incomplete evidence gets one nonpaging
+human-review handoff. Acknowledgment stops notifications without claiming resolution.
+See [the GCP plugin](plugins/livex-gcp-readonly/README.md#scheduled-oncall-coordinator)
+for authority and delivery limits.
+
+The Debugger's configured allowlist adds only `livex_oncall_logs_read` and
+`livex_oncall_assessment_submit`. Their factories hide both without the exact live
+service capability; an ordinary human run retains its executable tool surface.
+The service run narrows its tools to exactly that pair.
+
+VM packaging preserves existing explicit native tool overrides. Before later
+activation, an operator must verify or add those exact two names to the actual
+Debugger allowlist while preserving unrelated overrides. Source template changes
+do not update an installed override. Missing names remain denied by native policy;
+service logic must report unavailable/unclassified rather than bypass that floor.
+No live configuration, Slack send, credentials, merge or deployment is performed
+by these source changes.
+Canvas reading also requires the installed bot’s `files:read` scope and source/roster
+channel membership. The packaged scope addition does not grant live access; app
+reauthorization requires a separate operator action.
 
 The profile enables the read-only log and repository plugin. Logs use one
 configured project and caller. Repository access stays disabled until an operator
