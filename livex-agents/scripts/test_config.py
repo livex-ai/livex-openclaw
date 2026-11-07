@@ -83,6 +83,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("botToken", json.dumps(rendered))
         self.assertNotIn("appToken", json.dumps(rendered))
 
+    def test_debugger_identity_retains_existing_agent_and_route(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        agent = rendered["agents"]["entries"]["oncall"]
+        self.assertEqual(agent["name"], "LiveX Debugger")
+        self.assertEqual(agent["identity"]["name"], "LiveX Reporting · Debugger")
+        self.assertEqual(agent["workspace"], str(root / "workspaces/oncall"))
+        self.assertEqual(rendered["bindings"][0]["agentId"], "oncall")
+
     def test_report_profile_is_explicit_for_oncall_only(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
@@ -124,7 +134,10 @@ class ConfigurationTests(unittest.TestCase):
     def test_dedicated_app_has_scopes_and_account_gate_for_review_markers(self):
         root = Path(__file__).resolve().parent.parent
         manifest = json.loads((root / "slack/app-manifest.json").read_text())
+        self.assertEqual(manifest["display_information"]["name"], "LiveX Reporting")
+        self.assertEqual(manifest["features"]["bot_user"]["display_name"], "LiveX Reporting")
         scopes = manifest["oauth_config"]["scopes"]["bot"]
+        self.assertIn("chat:write.customize", scopes)
         self.assertIn("reactions:read", scopes)
         self.assertIn("reactions:write", scopes)
         cutover = json.loads((root / "slack/account-cutover.patch.json").read_text())
