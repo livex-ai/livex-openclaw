@@ -198,7 +198,7 @@
         "enabled": false
       },
       "streaming": {
-        "mode": "progress",
+        "mode": "off",
         "nativeTransport": true,
         "progress": {
           "style": "card",

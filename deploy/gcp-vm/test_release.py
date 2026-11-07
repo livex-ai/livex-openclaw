@@ -14,7 +14,7 @@ SHA = "a" * 40
 OLD = "sha256:" + "b" * 64
 NEW = "sha256:" + "c" * 64
 PROGRESS = {
-    "mode": "progress", "nativeTransport": True,
+    "mode": "off", "nativeTransport": True,
     "progress": {
         "style": "card", "nativeTaskCards": True, "toolProgress": False,
         "commandText": "status", "commentary": False, "narration": False,
@@ -170,7 +170,7 @@ class ReleaseTest(unittest.TestCase):
                     }},
                 )
                 if failure == "progress-override":
-                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["progress"]["toolProgress"] = True
+                    original["channels"]["slack"]["accounts"]["default"]["streaming"]["mode"] = "progress"
             if multi:
                 original["agents"]["entries"]["oncall"].update(
                     model="vm-selected-model",
@@ -281,7 +281,7 @@ class ReleaseTest(unittest.TestCase):
                     if failure == "agent-config-mismatch" and state["image"] == NEW:
                         active_config["agents"]["entries"]["debugger"]["skills"] = []
                     if failure == "progress-readback" and state["image"] == NEW:
-                        active_config["channels"]["slack"]["streaming"]["progress"]["nativeTaskCards"] = False
+                        active_config["channels"]["slack"]["streaming"]["mode"] = "progress"
                     output = json.dumps({
                         "valid": True,
                         "path": "/home/node/.openclaw/openclaw.json",
@@ -406,7 +406,7 @@ class ReleaseTest(unittest.TestCase):
                 original["agents"]["defaults"]["maxConcurrent"] = 7
                 if progress:
                     streaming = original.get("channels").get("slack").get("streaming")
-                    streaming.update(mode="progress", nativeTransport=True)
+                    streaming.update(mode="off", nativeTransport=True)
                     streaming.get("progress").update(PROGRESS.get("progress"))
                 if multi:
                     original["agents"]["entries"]["oncall"].update(

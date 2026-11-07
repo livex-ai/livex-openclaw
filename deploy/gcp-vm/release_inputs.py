@@ -88,14 +88,14 @@ def slack_progress_settings(streaming):
             "style", "nativeTaskCards", "toolProgress", "commandText", "commentary", "narration"
         )},
     }
-    if (settings.get("mode") != "progress"
+    if (settings.get("mode") not in ("off", "progress")
             or type(settings.get("nativeTransport")) is not bool
             or progress.get("style") not in ("card", "compact")
             or progress.get("commandText") != "status"
             or any(type(progress.get(key)) is not bool for key in (
                 "nativeTaskCards", "toolProgress", "commentary", "narration"
             ))):
-        raise ValueError("Expected complete Slack progress settings with safe commandText=status")
+        raise ValueError("Expected complete Slack streaming settings with mode off or progress and commandText=status")
     return settings
 
 

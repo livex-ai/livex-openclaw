@@ -417,15 +417,15 @@ checks establish deployment configuration, not live model/tool access or a
 successful delegated investigation; verify those separately after authorized
 activation.
 
-### Slack native progress
+### Slack native loading indicator
 
-The Git template selects OpenClaw's existing native task cards: `streaming.mode`
-is `progress`, `nativeTransport` is `true`, and `streaming.progress` uses
-`style: "card"`, `nativeTaskCards: true`, and `toolProgress: false`.
-Cards show authored plan steps or a stable summary row instead of a row per tool
-call. Investigation tools still run; this setting changes only progress display.
-`commandText: "status"` keeps raw command text off; `commentary` and `narration`
-remain `false`. These eight presentation fields are Git-owned at the Slack root.
+The Git template sets `streaming.mode` to `off`. During a threaded investigation,
+Slack displays the native loading indicator above the composer. The final answer
+appears when the turn finishes, with no streamed progress card.
+
+The deploy validator also accepts `progress` for releases that select cards.
+The existing eight streaming presentation fields remain Git-owned at the Slack
+root, including the inactive progress settings and `commandText: "status"`.
 The selected commit's template supplies them to the image receipt for both fresh
 builds and resumes. Activation merges only these fields into the VM config.
 Credentials, routing, permissions, disabled reactions, other streaming settings
@@ -444,9 +444,6 @@ This verifies applied configuration, not a successful Slack API call or UI.
 The Slack app must already have Agent messaging enabled and the required scopes.
 No further manifest change is needed for an app whose loading indicator works.
 After deployment, manually invoke one investigation in an approved thread and
-verify native progress appears, the final report remains in that thread, and the
-loading state clears. Capture sanitized before/after screenshots before marking
-visual acceptance complete. Individual tool calls are hidden; this does not expose
-internal work inside a delegated Codex request. OpenClaw uses
-Slack's grouped `plan` display, so the exact collapsed label is Slack-controlled.
-Its separate `style: "compact"` option is a temporary text draft, not this card UI.
+verify the native loading indicator appears without a progress card, the final
+report remains in that thread, and the loading state clears. Capture sanitized
+before/after screenshots before marking visual acceptance complete.

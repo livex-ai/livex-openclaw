@@ -26,7 +26,7 @@ PROMPT = b"Reviewed synthetic prompt"
 
 
 class BuildCandidateTests(unittest.TestCase):
-    def exercise(self, bundled, resume, *, invalid_progress=False):
+    def exercise(self, bundled, resume, *, invalid_progress=False, mode="off"):
         with tempfile.TemporaryDirectory() as temporary:
             base = pathlib.Path(temporary)
             upload = base / "upload"
@@ -41,7 +41,7 @@ class BuildCandidateTests(unittest.TestCase):
             )
             profile = {"agents": {"defaults": {"maxConcurrent": 5}}}
             progress = {
-                "mode": "progress", "nativeTransport": True,
+                "mode": mode, "nativeTransport": True,
                 "progress": {"style": "card", "nativeTaskCards": True,
                              "toolProgress": True, "commandText": "status",
                              "commentary": False, "narration": False},
@@ -168,8 +168,9 @@ class BuildCandidateTests(unittest.TestCase):
     def test_selected_source_controls_bundle_support_for_fresh_build_and_resume(self):
         for bundled in (False, True):
             for resume in (False, True):
-                with self.subTest(bundled=bundled, resume=resume):
-                    self.exercise(bundled, resume)
+                for mode in (("off", "progress") if bundled else ("off",)):
+                    with self.subTest(bundled=bundled, resume=resume, mode=mode):
+                        self.exercise(bundled, resume, mode=mode)
 
     def test_explicit_null_streaming_cannot_silently_skip_progress_deployment(self):
         self.exercise(True, False, invalid_progress=True)

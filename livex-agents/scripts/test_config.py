@@ -111,7 +111,8 @@ class ConfigurationTests(unittest.TestCase):
         slack = rendered["channels"]["slack"]
         self.assertTrue(slack["actions"]["reactions"])
         streaming = slack["streaming"]
-        self.assertEqual(streaming["mode"], "progress")
+        self.assertEqual(streaming["mode"], "off")
+        self.assertEqual(slack["typingReaction"], "")
         self.assertTrue(streaming["nativeTransport"])
         self.assertEqual(streaming.get("progress").get("style"), "card")
         self.assertTrue(streaming.get("progress").get("nativeTaskCards"))
