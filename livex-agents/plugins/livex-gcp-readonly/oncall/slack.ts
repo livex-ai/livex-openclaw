@@ -11,6 +11,17 @@ import type { OncallConfig } from "./config.js";
 import { resolveRoster, rotationReferences } from "./roster.js";
 import type { Roster, SlackTransport, SourceConfig } from "./types.js";
 
+const locallyPrevented = new WeakSet<object>();
+export function isLocallyPreventedSlackSend(error: unknown) {
+  return typeof error === "object" && error !== null && locallyPrevented.has(error);
+}
+
+function preventedSend() {
+  const error = new Error("Oncall send prevented before transport");
+  locallyPrevented.add(error);
+  return error;
+}
+
 const channelSchema = z.object({
   properties: z
     .object({
@@ -211,17 +222,29 @@ export function createOncallSlack(params: {
         ) ?? false
       );
     },
-    async send({ text, threadTs, channel = config.channelId }) {
+    async send({ text, threadTs, channel = config.channelId, beforeSend }) {
       if (![config.channelId, config.broadcastChannelId].includes(channel)) {
         throw new Error("Oncall delivery target is outside configured channels");
       }
+      let prevented = false;
+      let passedGuard = false;
+      const finalGuard = () => {
+        assertCurrent();
+        try {
+          beforeSend?.();
+        } catch (error) {
+          prevented = true;
+          throw error;
+        }
+        passedGuard = true;
+      };
       const write = createSlackWriteClient(
         token,
         { timeout: 15_000, retryConfig: { retries: 0 }, rejectRateLimitedCalls: true },
-        assertCurrent,
+        finalGuard,
       );
       const postSlack = write.chat.postMessage;
-      const result = await checked(() =>
+      const operation = () =>
         postSlack({
           channel,
           thread_ts: threadTs,
@@ -232,8 +255,16 @@ export function createOncallSlack(params: {
           unfurl_links: false,
           unfurl_media: false,
           metadata: { event_type: "livex_oncall", event_payload: {} },
-        }),
-      );
+        });
+      let result;
+      try {
+        result = await checked(operation);
+      } catch (error) {
+        if (prevented && !passedGuard) {
+          throw preventedSend();
+        }
+        throw error;
+      }
       if (!result.ok || !result.ts) {
         throw new Error("Oncall delivery has no confirmed message receipt");
       }

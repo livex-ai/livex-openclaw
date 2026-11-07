@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,76 @@ SPEC = importlib.util.spec_from_file_location("package_config", Path(__file__).w
 config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(config)
 
+
+CALENDAR_SCHEMA_PROBE = r"""import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const root = process.argv[1];
+const manifest = JSON.parse(
+  await fs.readFile(
+    path.join(root, "livex-agents/plugins/livex-gcp-readonly/openclaw.plugin.json"),
+    "utf8",
+  ),
+);
+const schema = manifest.configSchema.properties.oncall.properties.googleCalendar;
+assert.ok(schema, "Calendar manifest schema missing");
+const { validateJsonSchemaValue } = await import(
+  pathToFileURL(path.join(root, "src/plugins/schema-validator.ts")).href
+);
+function validate(value, sourceValue) {
+  return validateJsonSchemaValue({ schema, value, sourceValue, cache: false });
+}
+assert.equal(validate({ enabled: true }).ok, true, "Missing setup must allow Canvas fallback");
+const defaults = validateJsonSchemaValue({ schema, value: {}, applyDefaults: true, cache: false });
+assert.equal(defaults.ok, true);
+assert.deepEqual(defaults.value, { enabled: false });
+for (const source of ["env", "file", "exec", "store"]) {
+  const reference = { source, provider: "default", id: "CALENDAR_TEST_SECRET" };
+  const authored = {
+    enabled: true,
+    calendarId: "oncall@example.test",
+    oauth: { clientId: "client", clientSecret: reference, refreshToken: reference },
+  };
+  assert.equal(validate(authored).ok, true);
+  const runtime = {
+    ...authored,
+    oauth: {
+      clientId: "client",
+      clientSecret: "prepared-test-client",
+      refreshToken: "prepared-test-refresh",
+    },
+  };
+  const paired = validate(runtime, authored);
+  assert.equal(paired.ok, true);
+  assert.deepEqual(
+    paired.value,
+    runtime,
+    "Host paired validation must preserve prepared runtime strings",
+  );
+  assert.equal(validate(runtime).ok, false, "Unpaired source literals must be refused");
+}
+const malformed = [
+  "literal-source-must-fail",
+  { source: "http", provider: "default", id: "TEST" },
+  { source: "env", id: "TEST" },
+  { source: "env", provider: "", id: "TEST" },
+  { source: "env", provider: "default", id: "" },
+  { source: "env", provider: "default", id: "  " },
+  { source: "env", provider: "default", id: 1 },
+  { source: "env", provider: "default", id: "TEST", extra: true },
+];
+for (const name of ["clientSecret", "refreshToken"]) {
+  for (const value of malformed) {
+    assert.equal(
+      validate({ enabled: true, oauth: { [name]: value } }).ok,
+      false,
+      `Malformed ${name} source must be refused`,
+    );
+  }
+}
+console.log("Calendar source/ref paired validation passed");
+"""
 
 class ConfigurationTests(unittest.TestCase):
     def setUp(self):
@@ -119,10 +190,39 @@ class ConfigurationTests(unittest.TestCase):
             "profile": "minimal", "exec": {"mode": "deny"},
             "elevated": {"enabled": False}, "fs": {"workspaceOnly": True}, "allow": ["read"]})
         self.assertEqual(rendered["plugins"]["entries"]["livex-gcp-readonly"]["config"]["oncall"],
-                         {"enabled": False})
+                         {"enabled": False, "googleCalendar": {"enabled": False}})
         self.assertEqual(rendered["bindings"], [{"agentId": "oncall", "match": {
             "channel": "slack", "accountId": "default", "peer": {"kind": "channel", "id": "*"}}}])
         self.assertTrue((Path(coordinator["workspace"]) / "AGENTS.md").is_file())
+
+    def test_calendar_default_omits_credentials_and_public_identity(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        owner = rendered.get("plugins").get("entries").get("livex-gcp-readonly").get("config")
+        oncall = owner.get("oncall")
+        self.assertEqual(oncall, {"enabled": False, "googleCalendar": {"enabled": False}})
+        self.assertEqual(oncall.get("googleCalendar"), {"enabled": False})
+        self.assertNotIn("oauth", oncall.get("googleCalendar"))
+        self.assertNotIn("calendarId", oncall.get("googleCalendar"))
+
+    def test_calendar_manifest_declares_only_isolated_sensitive_secret_paths(self):
+        root = Path(__file__).resolve().parent.parent
+        manifest = json.loads((root / "plugins/livex-gcp-readonly/openclaw.plugin.json").read_text())
+        expected = [{"path": "oncall.googleCalendar.oauth." + name,
+                     "expected": "string", "ownerKind": "capability"}
+                    for name in ("clientSecret", "refreshToken")]
+        self.assertEqual(manifest.get("configContracts"), {"secretInputs": {"paths": expected}})
+        for entry in expected:
+            self.assertTrue(manifest.get("uiHints").get(entry.get("path")).get("sensitive"))
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for native schema validation")
+    def test_calendar_schema_rejects_literal_source_and_preserves_prepared_runtime(self):
+        root = Path(__file__).resolve().parents[2]
+        run = subprocess.run(["node", "--import", str(root / "scripts/tsx.mjs"),
+                              "--input-type=module", "-e", CALENDAR_SCHEMA_PROBE, str(root)],
+                             cwd=root, text=True, capture_output=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("Calendar source/ref paired validation passed", run.stdout)
 
     def test_report_profile_is_explicit_for_oncall_only(self):
         root = Path(__file__).resolve().parent.parent

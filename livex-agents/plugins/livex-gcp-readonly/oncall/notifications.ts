@@ -1,10 +1,18 @@
 import type { OncallConfig } from "./config.js";
 import { nextNotification, safeText } from "./policy.js";
-import { isDefiniteSlackRejection } from "./slack.js";
+import { isDefiniteSlackRejection, isLocallyPreventedSlackSend } from "./slack.js";
 import type { ReceiptStore } from "./state.js";
 import type { Delivery, Finding, Receipt, Roster, SlackTransport } from "./types.js";
 
-type Effect = { step: number; tier?: number; text: string; channel?: string; finding?: number };
+type Effect = {
+  step: number;
+  tier?: number;
+  text: string;
+  channel?: string;
+  finding?: number;
+  roster?: Roster;
+  render?(roster: Roster): { text: string; tier: number; channel?: string };
+};
 type Context = {
   store: ReceiptStore;
   slack: SlackTransport;
@@ -12,6 +20,7 @@ type Context = {
   now: number;
   clock(): number;
   health(message: string): void;
+  reportRosterWarning?(message?: string): void;
   assertCurrent(): void;
 };
 class EffectAlreadyOwned extends Error {}
@@ -117,7 +126,16 @@ async function settle(receipt: Receipt, effect: Effect, ctx: Context, messageTs:
   });
 }
 
-async function failed(receipt: Receipt, effect: Effect, ctx: Context, error: unknown) {
+async function failed(
+  receipt: Receipt,
+  effect: Effect,
+  ctx: Context,
+  error: unknown,
+  priorAttempts: number,
+) {
+  if (isLocallyPreventedSlackSend(error)) {
+    return notSent(receipt, effect, ctx, priorAttempts);
+  }
   await ctx.store.change(receipt.alert.key, (current) => {
     const delivery = currentDelivery(current, effect)!;
     const status = isDefiniteSlackRejection(error)
@@ -132,9 +150,88 @@ async function failed(receipt: Receipt, effect: Effect, ctx: Context, error: unk
   );
 }
 
-async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
+async function notSent(receipt: Receipt, effect: Effect, ctx: Context, attempts: number) {
+  ctx.assertCurrent();
+  await ctx.store.change(receipt.alert.key, (current) => {
+    const delivery = currentDelivery(current, effect)!;
+    return replaceDelivery(current, effect, { ...delivery, status: "rejected", attempts });
+  });
+  ctx.health("Current rotation unavailable before transport; engineer paging deferred.");
+}
+
+function rosterCurrent(roster: Roster, ctx: Context) {
+  ctx.assertCurrent();
+  if (roster.validUntil !== undefined && ctx.clock() >= roster.validUntil) {
+    return false;
+  }
   try {
-    await reserve(receipt, effect, ctx);
+    roster.assertFresh?.();
+    return true;
+  } catch {
+    ctx.assertCurrent();
+    return false;
+  }
+}
+
+async function effectRoster(effect: Effect, ctx: Context) {
+  const selected = effect.roster!;
+  const roster = rosterCurrent(selected, ctx) ? selected : await ctx.slack.roster();
+  ctx.assertCurrent();
+  if (ctx.reportRosterWarning) {
+    ctx.reportRosterWarning(roster.warning);
+  } else if (roster.warning) {
+    ctx.health(roster.warning);
+  }
+  if (!rosterCurrent(roster, ctx) || (!roster.p1 && !roster.p2)) {
+    return null;
+  }
+  return roster;
+}
+
+async function preparePage(receipt: Receipt, effect: Effect, ctx: Context, priorAttempts: number) {
+  if (!effect.roster) {
+    return undefined;
+  }
+  if (await ctx.slack.acknowledged(receipt.alert.ts)) {
+    await acknowledge(receipt, ctx);
+    return null;
+  }
+  const roster = await effectRoster(effect, ctx);
+  if (roster === null) {
+    await notSent(receipt, effect, ctx, priorAttempts);
+    return null;
+  }
+  if (effect.render) {
+    Object.assign(effect, effect.render(roster));
+  }
+  if (!targets(roster, effect.tier ?? 0)) {
+    await notSent(receipt, effect, ctx, priorAttempts);
+    return null;
+  }
+  if (await ctx.slack.acknowledged(receipt.alert.ts)) {
+    await acknowledge(receipt, ctx);
+    return null;
+  }
+  if (!rosterCurrent(roster, ctx)) {
+    await notSent(receipt, effect, ctx, priorAttempts);
+    return null;
+  }
+  return roster;
+}
+
+function finalRosterGuard(roster: Roster, ctx: Context) {
+  return () => {
+    if (!rosterCurrent(roster, ctx)) {
+      throw new Error("Oncall roster expired before transport");
+    }
+  };
+}
+
+async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
+  let priorAttempts: number;
+  try {
+    const reserved = await reserve(receipt, effect, ctx);
+    priorAttempts = currentDelivery(reserved, effect)!.attempts - 1;
   } catch (error) {
     if (error instanceof EffectAlreadyOwned) {
       return;
@@ -142,20 +239,21 @@ async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
     throw error;
   }
   try {
-    if (effect.finding !== undefined && (await ctx.slack.acknowledged(receipt.alert.ts))) {
-      await acknowledge(receipt, ctx);
+    ctx.assertCurrent();
+    const roster = await preparePage(receipt, effect, ctx, priorAttempts);
+    if (roster === null) {
       return;
     }
-    ctx.assertCurrent();
     const messageTs = await ctx.slack.send({
       text: effect.text,
       channel: effect.channel,
       threadTs: effect.channel ? undefined : receipt.alert.ts,
+      beforeSend: roster ? finalRosterGuard(roster, ctx) : undefined,
     });
     ctx.assertCurrent();
     await settle(receipt, effect, ctx, messageTs);
   } catch (error) {
-    await failed(receipt, effect, ctx, error);
+    await failed(receipt, effect, ctx, error, priorAttempts);
   }
 }
 
@@ -180,6 +278,16 @@ function pageText(finding: Finding, roster: Roster, step: number, tier: number) 
   const action =
     step === 0 ? "New unknown issue needs review." : `Unacknowledged issue, reminder ${step}.`;
   return `${prefix} ${action}${warning}\n${renderFinding(finding)}`;
+}
+
+function freshPage(finding: Finding, roster: Roster, step: number, tier: number, ctx: Context) {
+  const initialTier = !roster.p1 && roster.p2 ? 1 : 0;
+  const currentTier = finding.notifiedAt === undefined ? initialTier : Math.max(tier, initialTier);
+  return {
+    text: pageText(finding, roster, step, currentTier),
+    tier: currentTier,
+    channel: currentTier === 2 ? ctx.config.broadcastChannelId : undefined,
+  };
 }
 
 export async function notifyReceipt(receipt: Receipt, roster: Roster, ctx: Context) {
@@ -236,7 +344,14 @@ async function notifyFinding(
   const channel = next.tier === 2 ? ctx.config.broadcastChannelId : undefined;
   await deliver(
     receipt,
-    { ...next, finding: index, channel, text: pageText(finding, roster, next.step, next.tier) },
+    {
+      ...next,
+      finding: index,
+      channel,
+      text: "",
+      roster,
+      render: (current) => freshPage(finding, current, next.step, next.tier, ctx),
+    },
     ctx,
   );
 }

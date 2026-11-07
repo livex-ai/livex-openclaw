@@ -56,7 +56,15 @@ export type Receipt = {
   findings?: Finding[];
   summary?: Delivery;
 };
-export type Roster = { p1?: string; p2?: string; error?: string };
+export type Roster = {
+  p1?: string;
+  p2?: string;
+  error?: string;
+  provider?: "canvas" | "googleCalendar";
+  warning?: string;
+  validUntil?: number;
+  assertFresh?(): void;
+};
 export type SlackMessage = {
   ts?: string;
   text?: string;
@@ -71,7 +79,12 @@ export type SlackTransport = {
   history(oldest: string, cursor?: string): Promise<{ messages: SlackMessage[]; cursor?: string }>;
   roster(): Promise<Roster>;
   acknowledged(ts: string): Promise<boolean>;
-  send(params: { text: string; threadTs?: string; channel?: string }): Promise<string>;
+  send(params: {
+    text: string;
+    threadTs?: string;
+    channel?: string;
+    beforeSend?: () => void;
+  }): Promise<string>;
 };
 export type RunAgent = (
   params: Parameters<
