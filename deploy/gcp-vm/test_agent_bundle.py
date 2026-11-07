@@ -10,11 +10,31 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 class AgentBundleTests(unittest.TestCase):
     def test_build_uses_registered_agents_not_example_folders(self):
         bundle = agent_bundle.build_bundle(ROOT)
-        self.assertEqual(set(bundle['agents']), {'oncall'})
-        self.assertEqual(bundle['agents']['oncall']['config']['workspace'],
+        agents = bundle.get('agents')
+        self.assertEqual(set(agents), {'oncall', 'oncall-coordinator'})
+        debugger = agents.get('oncall')
+        self.assertEqual(debugger.get('config').get('workspace'),
                          '/home/node/.openclaw/workspace')
-        self.assertIn('reactions=off', bundle['agents']['oncall']['prompt'])
-        self.assertEqual(set(bundle['skills']), set(bundle['agents']['oncall']['config']['skills']))
+        self.assertIn('reactions=off', debugger.get('prompt'))
+        expected = (ROOT / 'deploy/gcp-vm/oncall-vm-prompt.sha256').read_text().split()[0]
+        self.assertEqual(debugger.get('sha256'), expected)
+        self.assertEqual(set(bundle.get('skills')), set(debugger.get('config').get('skills')))
+        coordinator = agents.get('oncall-coordinator')
+        definition = coordinator.get('config')
+        self.assertEqual(definition.get('workspace'),
+                         '/home/node/.openclaw/workspaces/oncall-coordinator')
+        self.assertEqual(definition.get('permissionModeDefault'), 'read-only')
+        self.assertEqual(definition.get('skills'), [])
+        self.assertEqual(definition.get('tools'), {
+            'profile': 'minimal', 'exec': {'mode': 'deny'},
+            'elevated': {'enabled': False}, 'fs': {'workspaceOnly': True}, 'allow': ['read']})
+        source = (ROOT / 'livex-agents/workspaces/oncall-coordinator/AGENTS.md').read_text()
+        self.assertEqual(coordinator.get('prompt'), source)
+        installed = {'agents': {'entries': {'oncall': {'tools': {'allow': ['vm-only']}}}}}
+        result = json.loads(agent_bundle.with_agents(json.dumps(installed).encode(), bundle, {'oncall'}))
+        entries = result.get('agents').get('entries')
+        self.assertEqual(entries.get('oncall').get('tools'), {'allow': ['vm-only']})
+        self.assertEqual(entries.get('oncall-coordinator'), definition)
 
     def test_add_agent_preserves_vm_overrides_and_unrelated_agents(self):
         bundle = agent_bundle.build_bundle(ROOT)
