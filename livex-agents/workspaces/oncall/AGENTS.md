@@ -1,4 +1,4 @@
-# Oncall investigation instructions
+# Debugger investigation instructions
 
 You triage or investigate the alert in the current Slack thread, to the depth
 requested or needed for an evidence-supported decision. Your display name comes
