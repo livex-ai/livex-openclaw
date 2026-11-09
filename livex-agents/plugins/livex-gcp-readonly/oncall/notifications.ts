@@ -37,10 +37,12 @@ function renderFinding(finding: Finding) {
   return `${title}\n${summary}\n${safeText(finding.nextAction ?? "Review the investigation outcome")}\n${caseReference} ${evidence}`;
 }
 
+function currentFinding(receipt: Receipt, effect: Effect) {
+  return effect.finding === undefined ? undefined : receipt.findings?.[effect.finding];
+}
+
 function currentDelivery(receipt: Receipt, effect: Effect) {
-  return effect.finding === undefined
-    ? receipt.summary
-    : receipt.findings?.[effect.finding]?.delivery;
+  return effect.finding === undefined ? receipt.summary : currentFinding(receipt, effect)?.delivery;
 }
 
 function replaceDelivery(receipt: Receipt, effect: Effect, delivery: Delivery): Receipt {
@@ -67,28 +69,30 @@ function assertPending(delivery: Delivery | undefined, effect: Effect, tick: num
   }
 }
 
+function reservationAttempts(
+  delivery: Delivery | undefined,
+  effect: Effect,
+  tick: number,
+  priorStep?: number,
+) {
+  if (delivery?.status === "confirmed" && priorStep !== undefined && effect.step > delivery.step) {
+    return 1;
+  }
+  assertPending(delivery, effect, tick);
+  return (delivery?.attempts ?? 0) + 1;
+}
+
 async function reserve(receipt: Receipt, effect: Effect, ctx: Context) {
   return ctx.store.change(receipt.alert.key, (current) => {
-    const delivery = currentDelivery(current, effect);
-    const priorStep =
-      effect.finding === undefined ? undefined : current.findings?.[effect.finding]?.step;
-    if (
-      delivery?.status === "confirmed" &&
-      priorStep !== undefined &&
-      effect.step > delivery.step
-    ) {
-      return replaceDelivery(current, effect, {
-        status: "reserved",
-        step: effect.step,
-        attempts: 1,
-        tick: ctx.now,
-      });
+    const finding = currentFinding(current, effect);
+    if (finding?.acknowledged) {
+      throw new EffectAlreadyOwned();
     }
-    assertPending(delivery, effect, ctx.now);
+    const delivery = currentDelivery(current, effect);
     return replaceDelivery(current, effect, {
       status: "reserved",
       step: effect.step,
-      attempts: (delivery?.attempts ?? 0) + 1,
+      attempts: reservationAttempts(delivery, effect, ctx.now, finding?.step),
       tick: ctx.now,
     });
   });
@@ -133,6 +137,11 @@ async function failed(receipt: Receipt, effect: Effect, ctx: Context, error: unk
 }
 
 async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
+  // A failed Slack read cannot make an unattempted delivery uncertain.
+  if (effect.finding !== undefined && (await ctx.slack.acknowledged(receipt.alert.ts))) {
+    await acknowledge(receipt, ctx);
+    return;
+  }
   try {
     await reserve(receipt, effect, ctx);
   } catch (error) {
@@ -142,10 +151,6 @@ async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
     throw error;
   }
   try {
-    if (effect.finding !== undefined && (await ctx.slack.acknowledged(receipt.alert.ts))) {
-      await acknowledge(receipt, ctx);
-      return;
-    }
     ctx.assertCurrent();
     const messageTs = await ctx.slack.send({
       text: effect.text,

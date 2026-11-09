@@ -223,9 +223,11 @@ admission or delivery is visible and never blindly retried. After downtime, send
 the next sequential reminder only after its nominal deadline and at least the
 configured interval (default 10 minutes) since the last confirmed notification;
 lateness stretches the full ladder and never jumps straight to final broadcast.
-Existing reactions `white_check_mark`, `eyes`, `+1` and `ok_hand` stop notifications
-without resolving
-the issue. There is no default `@channel` or `@here` broadcast.
+An active human's `white_check_mark`, `eyes`, `+1` or `ok_hand` reaction on the
+original alert stops notifications while the issue remains open. Oncall verifies
+the reactor through Slack `users.info` with the existing `users:read` scope.
+Debugger markers, other bots and unattributed reaction counts cannot acknowledge
+an alert. There is no default `@channel` or `@here` broadcast.
 
 VM source packaging links dependencies only beneath the relocated plugin's own
 `node_modules`. It uses the reviewed base's `zod` and public Slack package API,

@@ -9,7 +9,8 @@ const boundary = vi.hoisted(() => ({
   read: {
     conversations: { info: vi.fn() },
     files: { info: vi.fn() },
-    users: { list: vi.fn() },
+    reactions: { get: vi.fn() },
+    users: { info: vi.fn(), list: vi.fn() },
   },
 }));
 vi.mock("@openclaw/slack/api.js", () => ({
@@ -42,6 +43,84 @@ function transport() {
     assertCurrent() {},
   });
 }
+
+it("does not acknowledge a Debugger reaction or infer a human from the count", async () => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: { reactions: [{ name: "eyes", users: ["U111111"], count: 2 }] },
+  });
+  boundary.read.users.info.mockResolvedValue({ user: { id: "U111111", is_bot: true } });
+  await expect(transport().acknowledged("1794045600.000001")).resolves.toBe(false);
+});
+
+it("acknowledges a human reactor even when a bot added the same marker", async () => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: { reactions: [{ name: "white_check_mark", users: ["U111111", "U222222"] }] },
+  });
+  boundary.read.users.info.mockImplementation(async ({ user }) => ({
+    user: { id: user, is_bot: user === "U111111", is_app_user: true },
+  }));
+  const ts = "1794045600.000001";
+  await expect(transport().acknowledged(ts)).resolves.toBe(true);
+  expect(boundary.read.reactions.get).toHaveBeenCalledWith({
+    channel: config.channelId,
+    timestamp: ts,
+    full: true,
+  });
+  expect(boundary.read.users.info).toHaveBeenCalledWith({ user: "U222222" });
+});
+
+it("ignores Slackbot and missing or mismatched actor data", async () => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: {
+      reactions: [
+        { name: "+1", users: ["USLACKBOT", "U111111", "U222222", "U333333"] },
+        { name: "ok_hand", count: 1 },
+        { name: "warning", users: ["U444444"] },
+      ],
+    },
+  });
+  boundary.read.users.info
+    .mockResolvedValueOnce({ user: { id: "U111111" } })
+    .mockResolvedValueOnce({ user: { id: "U999999", is_bot: false } })
+    .mockResolvedValueOnce({ user: { id: "U333333", is_bot: false, deleted: true } });
+  await expect(transport().acknowledged("1794045600.000001")).resolves.toBe(false);
+  expect(boundary.read.users.info.mock.calls).toEqual([
+    [{ user: "U111111" }],
+    [{ user: "U222222" }],
+    [{ user: "U333333" }],
+  ]);
+});
+
+it.each(["user_not_found", "user_not_visible"])("checks other reactors after %s", async (error) => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: { reactions: [{ name: "eyes", users: ["U111111", "U222222"] }] },
+  });
+  boundary.read.users.info
+    .mockRejectedValueOnce({
+      code: "slack_webapi_platform_error",
+      data: { error },
+    })
+    .mockResolvedValueOnce({ user: { id: "U222222", is_bot: false } });
+  await expect(transport().acknowledged("1794045600.000001")).resolves.toBe(true);
+});
+
+it("ignores Workflow Bot even if Slack reports is_bot=false", async () => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: { reactions: [{ name: "+1", users: ["U111111"] }] },
+  });
+  boundary.read.users.info.mockResolvedValue({
+    user: { id: "U111111", is_bot: false, is_workflow_bot: true },
+  });
+  await expect(transport().acknowledged("1794045600.000001")).resolves.toBe(false);
+});
+
+it("surfaces a Slack identity lookup outage", async () => {
+  boundary.read.reactions.get.mockResolvedValue({
+    message: { reactions: [{ name: "ok_hand", users: ["U111111"] }] },
+  });
+  boundary.read.users.info.mockRejectedValueOnce(new Error("Slack unavailable"));
+  await expect(transport().acknowledged("1794045600.000001")).rejects.toThrow("Slack unavailable");
+});
 
 it("downloads full Canvas despite a P1-only preview and preserves P2 for escalation", async () => {
   boundary.file = {

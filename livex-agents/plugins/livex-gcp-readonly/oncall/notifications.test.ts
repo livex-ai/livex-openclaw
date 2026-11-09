@@ -94,6 +94,20 @@ it("uses P2 immediately when P1 is missing and rechecks original-message acknowl
   expect(app.slack.acknowledged).toHaveBeenCalledWith(alert.ts);
 });
 
+it("retries paging on a later tick when the final acknowledgment read fails before send", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  vi.mocked(app.slack.acknowledged)
+    .mockResolvedValueOnce(false)
+    .mockRejectedValueOnce(new Error("Slack identity lookup failed"));
+  await expect(app.tick()).rejects.toThrow("Slack identity lookup failed");
+  expect(app.slack.send).toHaveBeenCalledTimes(1); // Summary only.
+  expect((await app.store.list())[0]?.findings?.[0]?.delivery).toBeUndefined();
+
+  await app.tick(now + 60_000);
+  expect(app.slack.send).toHaveBeenCalledTimes(2);
+  expect((await app.store.list())[0]?.findings?.[0]?.delivery?.status).toBe("confirmed");
+});
+
 it.each(["internal_error", "request_timeout"])(
   "freezes ambiguous %s without retry or t0",
   async (error) => {

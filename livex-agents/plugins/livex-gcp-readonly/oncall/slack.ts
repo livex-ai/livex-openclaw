@@ -30,6 +30,66 @@ const channelSchema = z.object({
     .optional(),
 });
 
+const acknowledgmentNames = new Set(["white_check_mark", "eyes", "+1", "ok_hand"]);
+const reactionMessageSchema = z.object({
+  reactions: z
+    .array(z.object({ name: z.string(), users: z.array(z.string().min(1)).optional() }))
+    .optional(),
+});
+const acknowledgmentUserSchema = z.object({
+  id: z.string(),
+  is_bot: z.boolean(),
+  deleted: z.boolean().optional(),
+  is_agentforce_bot: z.boolean().optional(),
+  is_workflow_bot: z.boolean().optional(),
+  profile: z
+    .object({
+      bot_id: z.string().nullish(),
+      is_agentforce_bot: z.boolean().optional(),
+      is_sidekick_bot: z.boolean().optional(),
+    })
+    .nullish(),
+});
+
+function acknowledgmentActors(message: unknown) {
+  const { reactions = [] } = reactionMessageSchema.parse(message);
+  // Slack can omit reactor IDs, even when it reports a higher count.
+  const actors = new Set(
+    reactions.flatMap(({ name, users }) => (acknowledgmentNames.has(name) ? (users ?? []) : [])),
+  );
+  // Slackbot reports is_bot=false.
+  actors.delete("USLACKBOT");
+  return actors;
+}
+
+function isHumanReactor(actor: string, value: unknown) {
+  const result = acknowledgmentUserSchema.safeParse(value);
+  if (!result.success) {
+    return false;
+  }
+  const { profile, ...user } = result.data;
+  const { bot_id, is_agentforce_bot, is_sidekick_bot } = profile ?? {};
+  return (
+    user.id === actor &&
+    !user.is_bot &&
+    !user.deleted &&
+    !user.is_agentforce_bot &&
+    !user.is_workflow_bot &&
+    !bot_id &&
+    !is_agentforce_bot &&
+    !is_sidekick_bot
+  );
+}
+
+function isSlackUserUnavailable(error: unknown) {
+  return z
+    .object({
+      code: z.literal("slack_webapi_platform_error"),
+      data: z.object({ error: z.enum(["user_not_found", "user_not_visible"]) }),
+    })
+    .safeParse(error).success;
+}
+
 function canvasId(value: unknown) {
   const props = channelSchema.parse(value).properties;
   if (!props) {
@@ -202,14 +262,19 @@ export function createOncallSlack(params: {
       const result = await checked(() =>
         read.reactions.get({ channel: config.channelId, timestamp: ts, full: true }),
       );
-      const message = z
-        .object({ reactions: z.array(z.object({ name: z.string().optional() })).optional() })
-        .parse(result.message);
-      return (
-        message.reactions?.some((reaction) =>
-          ["white_check_mark", "eyes", "+1", "ok_hand"].includes(reaction.name ?? ""),
-        ) ?? false
-      );
+      for (const actor of acknowledgmentActors(result.message)) {
+        try {
+          const profile = await checked(() => read.users.info({ user: actor }));
+          if (isHumanReactor(actor, profile.user)) {
+            return true;
+          }
+        } catch (error) {
+          if (!isSlackUserUnavailable(error)) {
+            throw error;
+          }
+        }
+      }
+      return false;
     },
     async send({ text, threadTs, channel = config.channelId }) {
       if (![config.channelId, config.broadcastChannelId].includes(channel)) {
