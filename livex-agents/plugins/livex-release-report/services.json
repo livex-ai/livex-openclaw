@@ -1,0 +1,36 @@
+{
+  "region": "us-central1",
+  "environments": {
+    "dev": "ai-mvp-dv",
+    "stg": "livex-copilot-stg",
+    "prd": "livex-copilot-prd"
+  },
+  "services": {
+    "chatbox": { "repo": "chatbox-js", "cloudRun": "chatbox" },
+    "chat-engine": {
+      "repo": "chat-engine",
+      "cloudRun": "copilot-chat-engine",
+      "gkeProduction": true
+    },
+    "frontend": { "repo": "chat-frontend", "cloudRun": "copilot-chat-frontend" },
+    "gateway": { "repo": "copilot-api-gateway", "cloudRun": "copilot-api-gateway" },
+    "doc-processor": {
+      "repo": "doc-processor",
+      "cloudRun": "copilot-doc-processor",
+      "devCloudRun": "copilot-cloudrun-doc-processor-v2",
+      "artifact": "copilot-cloudrun-doc-processor"
+    },
+    "scheduler": { "repo": "copilot-scheduler", "cloudRun": "copilot-scheduler" },
+    "conversation-agent": {
+      "repo": "conversation-agent",
+      "cloudRun": "copilot-conversation-agent",
+      "gkeProduction": true
+    },
+    "conversation-avatar": {
+      "repo": "conversation-agent",
+      "cloudRun": "copilot-conversation-avatar",
+      "artifact": "copilot-conversation-akool",
+      "gkeProduction": true
+    }
+  }
+}
