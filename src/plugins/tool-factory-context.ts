@@ -28,6 +28,7 @@ export function createPluginToolFactoryContext(params: {
   ) => PluginToolExecutionCapabilities;
 }): OpenClawPluginToolContext {
   const { entry, registry, context } = params;
+  const { scriptAutomation, ...toolContext } = context;
   if (context.memoryAudience) {
     assertMemoryAudienceSession(context.memoryAudience, context.sessionKey);
   }
@@ -54,7 +55,18 @@ export function createPluginToolFactoryContext(params: {
     assertMemoryAudienceCurrent?.();
   };
   return {
-    ...context,
+    ...toolContext,
+    ...(entry.contextVersion === 2 && scriptAutomation
+      ? {
+          scriptAutomation: Object.freeze({
+            ...scriptAutomation,
+            assertCurrent() {
+              assertInvocationCurrent();
+              scriptAutomation.assertCurrent();
+            },
+          }),
+        }
+      : {}),
     ...(entry.contextVersion === 2
       ? params.bindExecutionCapabilities?.(
           assertInvocationCurrent,

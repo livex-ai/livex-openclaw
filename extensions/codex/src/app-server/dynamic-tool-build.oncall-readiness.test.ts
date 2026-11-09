@@ -8,9 +8,29 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { serializeCatalog } from "../../../../livex-agents/plugins/livex-investigations/schema.js";
 import { resolvePreparedRunAdmission } from "../../../../src/agents/admitted-run-context.js";
 import { createAgentHarnessHostCapabilities } from "../../../../src/agents/harness/host-capability.js";
-import { setRuntimeConfigSnapshot } from "../../../../src/config/runtime-snapshot.js";
+import { loadPreparedInboundPluginRegistry } from "../../../../src/agents/prepared-model-runtime.inbound-registry.js";
+import {
+  setAppliedRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../../../src/config/runtime-snapshot.js";
+import {
+  createCronServiceWithStateForTest,
+  createNoopLogger,
+} from "../../../../src/cron/service.test-harness.js";
+import { waitForCronRunQueue } from "../../../../src/cron/service/run-queue.js";
+import { captureCronSchedulerWakeForTest } from "../../../../src/cron/service/scheduler-actor.test-support.js";
+import { createCronScriptRuntime } from "../../../../src/cron/trigger-script.js";
+import { createScheduledGatewayRunner } from "../../../../src/gateway/scheduled-run-gateway-context.js";
+import type { GatewayRequestContext } from "../../../../src/gateway/server-methods/types.js";
+import {
+  bindLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "../../../../src/plugins/legacy-sdk-resource-host.js";
 import { loadAndActivateRootPluginRegistry } from "../../../../src/plugins/loader.js";
-import { clearActivePluginRegistry } from "../../../../src/plugins/runtime.js";
+import {
+  clearActivePluginRegistry,
+  createPluginRegistryOwner,
+} from "../../../../src/plugins/runtime.js";
 import { runPluginEmbeddedAgent } from "../../../../src/plugins/runtime/runtime-embedded-agent.runtime.js";
 import { startPluginServices } from "../../../../src/plugins/services.js";
 import {
@@ -32,6 +52,7 @@ const SERVICE_TOOLS = ["livex_oncall_logs_read", "livex_oncall_assessment_submit
 let state: any;
 let config: any;
 let debuggerTools: any;
+let coordinatorTools: any;
 let globalTools: any;
 let runCounter = 0;
 const closers: Array<() => void> = [];
@@ -52,6 +73,7 @@ beforeAll(async () => {
       (name: string) => !SERVICE_TOOLS.includes(name),
     ),
   };
+  coordinatorTools = template.agents.entries["oncall-coordinator"].tools;
   globalTools = template.tools;
   await writeFixture(state.path("probe-plugin"));
 });
@@ -242,11 +264,57 @@ it("native scheduling connects real plugin run admission to native Codex constru
   await clearActivePluginRegistry(scope.registry);
 });
 
-it("production registration owns intake, private capability, native dispatch, real bounded logs and durable handoff", async () => {
+it("the Oncall script runs headlessly across workspaces and admits only eligible Debugger work", async () => {
   const root = state.path("actual-oncall-plugin");
   const gcloud = state.path("synthetic-gcloud");
   const currentTime = Date.parse("2026-11-07T10:00:00Z");
   const audit = state.path("gcloud-argv.txt");
+  const time = createGatewaySchedulerClock(currentTime);
+  const gateway = createTestGatewayScheduler(time.clock);
+  const runIsolatedAgentJob = vi.fn(async () => {
+    throw new Error("Oncall Automation must not start a model-backed cron run");
+  });
+  const { cron, state: cronState } = createCronServiceWithStateForTest({
+    scheduler: gateway,
+    storePath: state.path("cron/jobs.json"),
+    cronEnabled: true,
+    defaultAgentId: "oncall-coordinator",
+    nowMs: time.clock.now,
+    log: createNoopLogger(),
+    enqueueSystemEvent: vi.fn(),
+    requestHeartbeat: vi.fn(),
+    runIsolatedAgentJob,
+    runScriptJob: async (params) => {
+      const result = await runScript(params);
+      return result.kind === "completed"
+        ? { status: "ok" }
+        : { status: "error", error: result.error };
+    },
+  });
+  const script = await fs.readFile(
+    new URL(
+      "../../../../livex-agents/plugins/livex-gcp-readonly/workflows/oncall/tick.automation.js",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const jobInput = {
+    agentId: "oncall-coordinator",
+    enabled: true,
+    schedule: { kind: "every", everyMs: 60_000 },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    payload: { kind: "script", script, toolsAllow: ["livex_oncall_tick"], toolBudget: 1 },
+    delivery: { mode: "none" },
+  } as const;
+  const addJob = (name: string) =>
+    cron.add({
+      ...jobInput,
+      name,
+      payload: { ...jobInput.payload, toolsAllow: [...jobInput.payload.toolsAllow] },
+    });
+  const job = await addJob("LiveX Oncall");
+  const otherJob = await addJob("Unbound Oncall job");
   const row = {
     timestamp: new Date(currentTime - 1000).toISOString(),
     severity: "ERROR",
@@ -262,6 +330,7 @@ it("production registration owns intake, private capability, native dispatch, re
   await writeProductionWrapper(root);
   const source = {
     enabled: true,
+    automationJobId: job.id,
     accountId: "default",
     teamId: "T123456",
     channelId: "C123456",
@@ -281,8 +350,9 @@ it("production registration owns intake, private capability, native dispatch, re
           tools: { ...debuggerTools, allow: [...debuggerTools.allow, ...SERVICE_TOOLS] },
         },
         "oncall-coordinator": {
-          workspace: state.workspaceDir,
+          workspace: state.path("coordinator-workspace"),
           identity: { name: "Configured Oncall" },
+          tools: coordinatorTools,
         },
       },
     },
@@ -315,9 +385,10 @@ it("production registration owns intake, private capability, native dispatch, re
   await fs.mkdir(state.path("oncall-agent"), { recursive: true });
   await fs.writeFile(state.path("oncall-agent/investigations.md"), serializeCatalog([]));
   await state.writeConfig(config);
-  setRuntimeConfigSnapshot(config, config);
+  await setAppliedRuntimeConfigSnapshot(config, config);
   const calls: Array<{ method: string; args: any }> = [];
-  const slack = await localSlackServer(currentTime, calls);
+  let alertAvailable = false;
+  const slack = await localSlackServer(currentTime, calls, () => alertAvailable);
   for (const key of [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -336,6 +407,24 @@ it("production registration owns intake, private capability, native dispatch, re
     cache: false,
     throwOnLoadError: true,
   });
+  const registryOwner = createPluginRegistryOwner(registry, state.workspaceDir);
+  // This fixture only supplies the Gateway's live Cron facade to the script runner.
+  const gatewayContext = { cron } as unknown as GatewayRequestContext;
+  const resolveGatewayContext = () => gatewayContext;
+  const sdkResourceHost = new LegacyPluginSdkResourceHost();
+  sdkResourceHost.bindScheduler(gateway);
+  bindLegacyPluginSdkResourceHost(resolveGatewayContext, sdkResourceHost);
+  const inGateway = createScheduledGatewayRunner(
+    resolveGatewayContext,
+    () => registryOwner.registry,
+  );
+  const scriptRuntime = createCronScriptRuntime({
+    config,
+    loadPluginRegistry: loadPreparedInboundPluginRegistry,
+    resolveGatewayContext,
+  });
+  const runScript: ReturnType<typeof createCronScriptRuntime>["executePayload"] = (params) =>
+    inGateway(() => scriptRuntime.executePayload(params));
   const control = (
     registry.services.find((record: any) => record.service.id === "actual-test-control")!
       .service as any
@@ -346,11 +435,45 @@ it("production registration owns intake, private capability, native dispatch, re
   core.mockReset();
   core.mockImplementation((run: any) => executeProductionRun(run));
   control.setDispatcher((run: any) => runPluginEmbeddedAgent(run));
-  const time = createGatewaySchedulerClock(currentTime);
-  const gateway = createTestGatewayScheduler(time.clock);
-  const services = await startPluginServices({ registry, config, scheduler: gateway });
+  let services: Awaited<ReturnType<typeof startPluginServices>> | undefined;
+  const assertJobStatus = async (id: string, expected: "ok" | "error") => {
+    const latest = await cron.readJob(id);
+    expect(latest?.state.lastRunStatus, latest?.state.lastError).toBe(expected);
+  };
+  const runJob = async (id: string, expected: "ok" | "error") => {
+    await expect(cron.run(id, "force")).resolves.toMatchObject({ ok: true, ran: true });
+    await assertJobStatus(id, expected);
+  };
   try {
-    await time.wake();
+    await startPluginServices({
+      registry,
+      config,
+      scheduler: gateway,
+      getCronService: () => cron,
+      throwOnStartError: true,
+      onHandle: (handle) => {
+        services = handle;
+      },
+    });
+    const { wake } = await captureCronSchedulerWakeForTest(() => cron.start());
+    expect(calls).toEqual([]);
+    await runJob(otherJob.id, "error");
+    expect((await cron.readJob(otherJob.id))?.state.lastError).toContain(
+      "livex_oncall_tick is not defined",
+    );
+    expect(calls).toEqual([]);
+    await cron.update(otherJob.id, { enabled: false });
+    const idleDueAt = (await cron.readJob(job.id))?.state.nextRunAtMs;
+    expect(idleDueAt).toBeTypeOf("number");
+    time.setTime(idleDueAt! + 5);
+    await wake(cronState);
+    await waitForCronRunQueue(cronState);
+    await assertJobStatus(job.id, "ok");
+    expect(calls.some((call) => call.method === "conversations.history")).toBe(true);
+    expect(core).not.toHaveBeenCalled();
+
+    alertAvailable = true;
+    await runJob(job.id, "ok");
     await time.wake();
     await vi.waitFor(
       () => {
@@ -360,8 +483,7 @@ it("production registration owns intake, private capability, native dispatch, re
       },
       { timeout: 10000 },
     );
-    time.setTime(currentTime + 60_000);
-    await time.wake();
+    await runJob(job.id, "ok");
     await vi.waitFor(() =>
       expect(calls.filter((call) => call.method === "chat.postMessage")).toHaveLength(2),
     );
@@ -377,16 +499,24 @@ it("production registration owns intake, private capability, native dispatch, re
     ).toBe(true);
     expect(await fs.readFile(audit, "utf8")).toContain("--project=example-prd");
     expect(core).toHaveBeenCalledOnce();
+    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
   } finally {
-    await services.stop();
+    cron.stop();
+    await cron.waitForIdle();
+    await services?.stop();
     await gateway.stop();
-    await clearActivePluginRegistry(registry);
+    await registryOwner.close();
+    await sdkResourceHost.close();
     await slack.close();
     vi.unstubAllEnvs();
   }
 });
 
-async function localSlackServer(currentTime: number, calls: Array<{ method: string; args: any }>) {
+async function localSlackServer(
+  currentTime: number,
+  calls: Array<{ method: string; args: any }>,
+  alertAvailable: () => boolean,
+) {
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
@@ -399,7 +529,7 @@ async function localSlackServer(currentTime: number, calls: Array<{ method: stri
     const method = request.url!.slice(1);
     calls.push({ method, args });
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(slackResponse(method, currentTime)));
+    response.end(JSON.stringify(slackResponse(method, currentTime, alertAvailable())));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -419,25 +549,27 @@ async function localSlackServer(currentTime: number, calls: Array<{ method: stri
   };
 }
 
-function slackResponse(method: string, currentTime: number): any {
+function slackResponse(method: string, currentTime: number, alertAvailable: boolean): any {
   const responses: Record<string, unknown> = {
     "auth.test": { ok: true, team_id: "T123456", bot_id: "B123456" },
     "conversations.history": {
       ok: true,
-      messages: [
-        {
-          ts: (currentTime / 1000).toFixed(6),
-          bot_id: "B123456",
-          team: "T123456",
-          text: "job_id=job-1 failed",
-        },
-        {
-          ts: (currentTime / 1000 + 1).toFixed(6),
-          bot_id: "B123456",
-          metadata: { event_type: "livex_oncall" },
-          text: "coordinator output",
-        },
-      ],
+      messages: alertAvailable
+        ? [
+            {
+              ts: (currentTime / 1000).toFixed(6),
+              bot_id: "B123456",
+              team: "T123456",
+              text: "job_id=job-1 failed",
+            },
+            {
+              ts: (currentTime / 1000 + 1).toFixed(6),
+              bot_id: "B123456",
+              metadata: { event_type: "livex_oncall" },
+              text: "coordinator output",
+            },
+          ]
+        : [],
     },
     "conversations.info": { ok: true, channel: { properties: { canvas: { file_id: "F123456" } } } },
     "files.info": {

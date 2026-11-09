@@ -11,7 +11,16 @@ async function setup(findings: Finding[]) {
   let clock = now;
   const slack = slackStub();
   const health = vi.fn();
-  const context = { store, slack, config, now, clock: () => clock, health, assertCurrent() {} };
+  const context = {
+    store,
+    settlementStore: store,
+    slack,
+    config,
+    now,
+    clock: () => clock,
+    health,
+    assertCurrent() {},
+  };
   const tick = async (at = clock, roster: Roster = { p1: "U123456", p2: "U765432" }) => {
     clock = at;
     await notifyReceipt((await store.list())[0]!, roster, { ...context, now: at });
@@ -157,4 +166,76 @@ it("reconciles restart reservations into visible nonpaging dispatch recovery wit
   expect(app.slack.send).toHaveBeenCalledTimes(1);
   expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).toContain("uncertain after restart");
   expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).not.toContain("<@");
+});
+
+it("settles a confirmed Slack delivery after its tick is cancelled", async () => {
+  const { store, open } = nativeStore();
+  const occurrence = new AbortController();
+  const assertCurrent = () => occurrence.signal.throwIfAborted();
+  const slack = slackStub();
+  vi.mocked(slack.send).mockImplementation(async () => {
+    occurrence.abort();
+    return "1794045601.000001";
+  });
+  await store.admit(alert);
+  const receipt = await store.change(alert.key, (current) => ({
+    ...current,
+    phase: "assessed",
+    findings: [{ ...finding, classification: "known" }],
+  }));
+  await notifyReceipt(
+    receipt,
+    {},
+    {
+      store: createReceiptStore(open(assertCurrent), "test-source"),
+      settlementStore: store,
+      slack,
+      config,
+      now,
+      clock: () => now,
+      health: vi.fn(),
+      assertCurrent,
+    },
+  );
+  expect((await store.list())[0]?.summary).toMatchObject({
+    status: "confirmed",
+    messageTs: "1794045601.000001",
+  });
+  expect(slack.send).toHaveBeenCalledOnce();
+});
+
+it("releases a page reservation when cancellation happens before calling Slack", async () => {
+  const app = await setup([{ ...finding, classification: "unknown" }]);
+  const occurrence = new AbortController();
+  const store = createReceiptStore(app.source, "test-source");
+  const change = store.change;
+  vi.spyOn(store, "change").mockImplementation(async (...args) => {
+    const receipt = await change(...args);
+    if (receipt.findings?.[0]?.delivery?.status === "reserved") {
+      occurrence.abort(new Error("Automation paused before send"));
+    }
+    return receipt;
+  });
+  await expect(
+    notifyReceipt(
+      (await app.store.list())[0]!,
+      { p1: "U123456" },
+      {
+        store,
+        settlementStore: app.store,
+        slack: app.slack,
+        config,
+        now,
+        clock: () => now,
+        health: app.health,
+        assertCurrent: () => occurrence.signal.throwIfAborted(),
+      },
+    ),
+  ).rejects.toThrow("Automation paused before send");
+
+  expect(app.slack.send).toHaveBeenCalledOnce();
+  expect((await app.store.list())[0]?.findings?.[0]?.delivery).toBeUndefined();
+  await app.tick(now + 60_000);
+  expect(app.slack.send).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(app.slack.send).mock.lastCall?.[0].text).toContain("<@U123456>");
 });

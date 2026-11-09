@@ -8,7 +8,8 @@
       "livex_gcp_logs_read",
       "livex_repository_read",
       "livex_oncall_logs_read",
-      "livex_oncall_assessment_submit"
+      "livex_oncall_assessment_submit",
+      "livex_oncall_tick"
     ]
   },
   "toolMetadata": {
@@ -28,6 +29,11 @@
       "replaySafe": false
     },
     "livex_oncall_assessment_submit": {
+      "optional": true,
+      "sideEffecting": true,
+      "replaySafe": false
+    },
+    "livex_oncall_tick": {
       "optional": true,
       "sideEffecting": true,
       "replaySafe": false
@@ -222,10 +228,17 @@
               "maxLength": 256
             }
           },
+          "automationJobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Exact enabled Script Automation job bound to LiveX Oncall."
+          },
           "tickMs": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 60000
+            "maximum": 60000,
+            "description": "Legacy setting accepted for compatibility. The Automation owns cadence."
           },
           "maxRunMs": {
             "type": "integer",

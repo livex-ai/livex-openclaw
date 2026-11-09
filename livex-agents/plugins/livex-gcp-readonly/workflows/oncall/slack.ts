@@ -286,19 +286,21 @@ export function createOncallSlack(params: {
         assertCurrent,
       );
       const postSlack = write.chat.postMessage;
-      const result = await checked(() =>
-        postSlack({
-          channel,
-          thread_ts: threadTs,
-          text: `\u2063${text}`,
-          username: senderName,
-          parse: "none",
-          link_names: false,
-          unfurl_links: false,
-          unfurl_media: false,
-          metadata: { event_type: "livex_oncall", event_payload: {} },
-        }),
-      );
+      assertCurrent();
+      signal.throwIfAborted();
+      // The client fences the request. Keep a confirmed response available for
+      // the service to settle even if the tick is cancelled while it is in flight.
+      const result = await postSlack({
+        channel,
+        thread_ts: threadTs,
+        text: `\u2063${text}`,
+        username: senderName,
+        parse: "none",
+        link_names: false,
+        unfurl_links: false,
+        unfurl_media: false,
+        metadata: { event_type: "livex_oncall", event_payload: {} },
+      });
       if (!result.ok || !result.ts) {
         throw new Error("Oncall delivery has no confirmed message receipt");
       }

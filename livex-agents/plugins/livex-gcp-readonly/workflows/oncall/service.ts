@@ -1,6 +1,6 @@
 import { createOncallCatalogReader } from "@livex/investigations/oncall-catalog";
 import type { OpenClawPluginApi, PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
-import { validateConfig } from "../core.mjs";
+import { validateConfig } from "../../core.mjs";
 import { createServiceCapabilities, type ServiceCapabilities } from "./capability.js";
 import { parseOncallConfig, type OncallConfig } from "./config.js";
 import { debuggerIdentity, runDebugger, type DebuggerIdentity } from "./debugger.js";
@@ -13,18 +13,19 @@ import {
   type Assessment,
   type Finding,
   type Receipt,
-  type Roster,
   type SlackTransport,
   type SourceConfig,
 } from "./types.js";
 
 type Catalog = Pick<ReturnType<typeof createOncallCatalogReader>, "lookup">;
-type CoordinatorParams = {
-  config: OncallConfig;
+type TickScope = {
   store: ReceiptStore;
   slack: SlackTransport;
-  scheduler: PluginServiceSchedulerV1;
   assertCurrent(): void;
+};
+type CoordinatorParams = Omit<TickScope, "slack"> & {
+  config: OncallConfig;
+  scheduler: PluginServiceSchedulerV1;
   investigate(
     receipt: Receipt,
     identity: DebuggerIdentity,
@@ -57,22 +58,14 @@ async function classify(assessment: Assessment, catalog: Catalog): Promise<Findi
 
 export function createCoordinator(params: CoordinatorParams) {
   const running = new Set<string>();
-  let roster: Roster = {};
+  let ticking = false;
 
   async function diagnose(
     receipt: Receipt,
     identity: DebuggerIdentity,
     child: PluginServiceSchedulerV1,
   ) {
-    let reserved = false;
     try {
-      await params.store.change(receipt.alert.key, (current) => {
-        if (current.phase !== "queued") {
-          throw new Error("Investigation already reserved");
-        }
-        return { ...current, phase: "dispatch_reserved", runId: identity.runId };
-      });
-      reserved = true;
       params.assertCurrent();
       const assessment = await params.investigate(receipt, identity, child.signal);
       child.signal.throwIfAborted();
@@ -82,7 +75,7 @@ export function createCoordinator(params: CoordinatorParams) {
       params.assertCurrent();
       await complete(receipt, identity, findings);
     } catch {
-      if (reserved && !child.signal.aborted) {
+      if (!child.signal.aborted) {
         await complete(
           receipt,
           identity,
@@ -104,68 +97,86 @@ export function createCoordinator(params: CoordinatorParams) {
     });
   }
 
-  function dispatch(receipt: Receipt) {
+  async function dispatch(receipt: Receipt, scope: TickScope) {
     if (running.size >= params.config.maxConcurrent || running.has(receipt.alert.key)) {
       return;
     }
     const child = params.scheduler.scope();
     const identity = debuggerIdentity(receipt.alert);
     running.add(receipt.alert.key);
-    child.schedule({ id: "debugger", delayMs: 0, run: () => diagnose(receipt, identity, child) });
+    try {
+      scope.assertCurrent();
+      await scope.store.change(receipt.alert.key, (current) => {
+        if (current.phase !== "queued") {
+          throw new Error("Investigation already reserved");
+        }
+        return { ...current, phase: "dispatch_reserved", runId: identity.runId };
+      });
+      // The live tick admitted this investigation. Its child belongs to the service
+      // so ordinary Script completion does not cancel legitimate Debugger work.
+      child.schedule({ id: "debugger", delayMs: 0, run: () => diagnose(receipt, identity, child) });
+    } catch (error) {
+      running.delete(receipt.alert.key);
+      child.beginClose();
+      throw error;
+    }
   }
 
-  async function tick() {
-    params.assertCurrent();
+  async function processTick(scope: TickScope) {
+    const { slack, store, assertCurrent } = scope;
     const now = params.scheduler.now();
-    await params.slack.verify();
+    await slack.verify();
     try {
-      await scanAlerts({ ...params, now, clock: params.scheduler.now });
+      await scanAlerts({ ...scope, config: params.config, now, clock: params.scheduler.now });
     } catch {
+      assertCurrent();
       params.health("Oncall intake incomplete or unavailable. Check source and receipt capacity.");
     }
-    params.assertCurrent();
-    roster = await params.slack.roster();
+    const roster = await slack.roster();
+    assertCurrent();
     if (roster.error) {
       params.health(roster.error);
     }
-    for (const receipt of await params.store.list()) {
+    for (const receipt of await store.list()) {
+      assertCurrent();
       try {
-        await processReceipt(receipt, now);
+        if (receipt.phase === "queued") {
+          await dispatch(receipt, scope);
+        } else if (receipt.phase === "assessed" || receipt.phase === "dispatch_uncertain") {
+          await notifyReceipt(receipt, roster, {
+            ...scope,
+            config: params.config,
+            now,
+            clock: params.scheduler.now,
+            health: params.health,
+            settlementStore: params.store,
+          });
+        }
       } catch {
+        assertCurrent();
         params.health(
           "Oncall receipt processing failed; later independent receipts remain eligible.",
         );
       }
     }
-  }
-
-  async function processReceipt(receipt: Receipt, now: number) {
-    params.assertCurrent();
-    if (receipt.phase === "queued") {
-      dispatch(receipt);
-    }
-    if (receipt.phase === "assessed" || receipt.phase === "dispatch_uncertain") {
-      await notifyReceipt(receipt, roster, { ...params, now, clock: params.scheduler.now });
-    }
+    assertCurrent();
   }
 
   return {
-    tick,
-    async start() {
-      await reconcileNotifications(params.store, params.health);
-      params.scheduler.schedule({
-        id: "tick",
-        delayMs: 0,
-        everyMs: params.config.tickMs,
-        run: async () => {
-          try {
-            await tick();
-          } catch {
-            params.health("Oncall tick failed. Inspect service state before recovery.");
-          }
-        },
-      });
+    async tick(scope: TickScope) {
+      scope.assertCurrent();
+      if (ticking) {
+        return false;
+      }
+      ticking = true;
+      try {
+        await processTick(scope);
+        return true;
+      } finally {
+        ticking = false;
+      }
     },
+    start: () => reconcileNotifications(params.store, params.health),
   };
 }
 
@@ -207,8 +218,65 @@ export function createConfigCurrency(source: SourceAuthority, current: () => Sou
   };
 }
 
+const TICK_TOOL = "livex_oncall_tick";
+const COORDINATOR_AGENT = "oncall-coordinator";
+type ActiveTick = {
+  jobId: string;
+  run(assertCurrent: () => void, signal?: AbortSignal): Promise<boolean>;
+};
+
 export function registerOncall(api: OpenClawPluginApi) {
   let capabilities: ServiceCapabilities | undefined;
+  let activeTick: ActiveTick | undefined;
+  const usedOccurrences = new WeakSet<object>();
+  api.registerTool(
+    {
+      contextVersion: 2,
+      create(context) {
+        const tick = activeTick;
+        const invocation = context.scriptAutomation;
+        if (
+          !tick ||
+          !invocation ||
+          invocation.agentId !== COORDINATOR_AGENT ||
+          invocation.jobId !== tick.jobId
+        ) {
+          return null;
+        }
+        const assertCurrent = () => {
+          if (activeTick !== tick) {
+            throw new Error("Oncall Automation binding changed");
+          }
+          context.assertInvocationCurrent();
+          invocation.assertCurrent();
+        };
+        return {
+          name: TICK_TOOL,
+          label: "Run one LiveX Oncall tick",
+          description: "Run the Oncall workflow for the configured Script Automation.",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+          execute: async (_id, _input, signal) => {
+            assertCurrent();
+            if (usedOccurrences.has(invocation)) {
+              throw new Error("Oncall Automation occurrence already ran its tick");
+            }
+            usedOccurrences.add(invocation);
+            const completed = await tick.run(assertCurrent, signal);
+            return {
+              details: { status: completed ? "completed" : "already-running" },
+              content: [
+                {
+                  type: "text",
+                  text: completed ? "Oncall tick completed." : "Oncall tick already running.",
+                },
+              ],
+            };
+          },
+        };
+      },
+    },
+    { name: TICK_TOOL, optional: true, workspaceAccess: false },
+  );
   for (const name of SERVICE_TOOLS) {
     api.registerTool(
       { contextVersion: 2, create: (context) => capabilities?.createTool(context, name) ?? null },
@@ -218,9 +286,18 @@ export function registerOncall(api: OpenClawPluginApi) {
   api.registerService({
     id: "livex-oncall-coordinator",
     apiVersion: 2,
+    reload: { configPrefixes: ["plugins.entries.livex-gcp-readonly.config.oncall"] },
     async start(context) {
-      const config = parseOncallConfig(api.pluginConfig?.oncall);
+      const pluginConfig = context.config.plugins?.entries?.["livex-gcp-readonly"]?.config;
+      const config = parseOncallConfig(pluginConfig?.oncall);
       if (!config) {
+        return;
+      }
+      const jobId = config.automationJobId;
+      if (!jobId) {
+        api.logger.warn(
+          "Oncall is paused. Bind the LiveX Oncall Script Automation before enabling it.",
+        );
         return;
       }
       const lifecycle = api.lifecycle.signal;
@@ -235,17 +312,11 @@ export function registerOncall(api: OpenClawPluginApi) {
         context.scheduler.signal.throwIfAborted();
         assertConfigCurrent();
       };
-      capabilities = createServiceCapabilities({
+      const serviceCapabilities = createServiceCapabilities({
         config,
-        gcpConfig: api.pluginConfig,
+        gcpConfig: pluginConfig,
         signal: lifecycle,
         now: context.scheduler.now,
-        assertCurrent,
-      });
-      const slack = createOncallSlack({
-        config,
-        sourceConfig: context.config,
-        signal: context.scheduler.signal,
         assertCurrent,
       });
       const catalog = createOncallCatalogReader({
@@ -261,28 +332,34 @@ export function registerOncall(api: OpenClawPluginApi) {
       });
       const sourceId = createReceiptScope(
         config,
-        validateConfig(api.pluginConfig),
+        validateConfig(pluginConfig),
         catalog.sourceIdentity,
       );
-      const source = api.runtime.state.openKeyedStoreV2<
-        Receipt | { timestamp: string; sourceId: string }
-      >(
-        {
-          namespace: "oncall-receipts",
-          maxEntries: config.maxReceipts + 1,
-          overflowPolicy: "reject-new",
-        },
-        { assertCurrent },
-      );
-      const store = createReceiptStore(source, sourceId, (count) =>
-        api.logger.warn(
-          `Oncall retained ${count} receipts outside the current source; automatic effects are suppressed.`,
-        ),
-      );
+      let quarantineReported = false;
+      const openStore = (assertStoreCurrent: () => void) =>
+        createReceiptStore(
+          api.runtime.state.openKeyedStoreV2<Receipt | { timestamp: string; sourceId: string }>(
+            {
+              namespace: "oncall-receipts",
+              maxEntries: config.maxReceipts + 1,
+              overflowPolicy: "reject-new",
+            },
+            { assertCurrent: assertStoreCurrent },
+          ),
+          sourceId,
+          (count) => {
+            if (!quarantineReported) {
+              quarantineReported = true;
+              api.logger.warn(
+                `Oncall retained ${count} receipts outside the current source; automatic effects are suppressed.`,
+              );
+            }
+          },
+        );
+      const store = openStore(assertCurrent);
       const coordinator = createCoordinator({
         config,
         store,
-        slack,
         scheduler: context.scheduler,
         catalog,
         assertCurrent,
@@ -291,14 +368,51 @@ export function registerOncall(api: OpenClawPluginApi) {
           investigate(receipt, identity, signal, {
             api,
             config,
-            capabilities: capabilities!,
+            capabilities: serviceCapabilities,
             sourceConfig: context.config,
             assertCurrent,
           }),
       });
       await coordinator.start();
+      assertCurrent();
+      capabilities = serviceCapabilities;
+      activeTick = {
+        jobId,
+        async run(assertInvocationCurrent, invocationSignal) {
+          const signal = invocationSignal
+            ? AbortSignal.any([context.scheduler.signal, invocationSignal])
+            : context.scheduler.signal;
+          const assertTickCurrent = () => {
+            assertCurrent();
+            signal.throwIfAborted();
+            assertInvocationCurrent();
+          };
+          assertTickCurrent();
+          const jobs = await context.getCron?.()?.list({ includeDisabled: true });
+          assertTickCurrent();
+          const job = jobs?.find((candidate) => candidate.id === jobId);
+          if (
+            job?.enabled !== true ||
+            job.agentId !== COORDINATOR_AGENT ||
+            job.payload?.kind !== "script"
+          ) {
+            throw new Error("Oncall requires its configured, enabled Script Automation");
+          }
+          return await coordinator.tick({
+            store: openStore(assertTickCurrent),
+            slack: createOncallSlack({
+              config,
+              sourceConfig: context.config,
+              signal,
+              assertCurrent: assertTickCurrent,
+            }),
+            assertCurrent: assertTickCurrent,
+          });
+        },
+      };
     },
     async stop() {
+      activeTick = undefined;
       capabilities = undefined;
     },
   });

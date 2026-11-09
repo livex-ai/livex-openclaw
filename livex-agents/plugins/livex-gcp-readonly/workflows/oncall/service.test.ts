@@ -73,27 +73,26 @@ it("native owned diagnosis remains pending while a later tick pages an existing 
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       }),
   );
+  const assertCurrent = () => scheduler.signal.throwIfAborted();
+  const scope = { store, slack, assertCurrent };
   const coordinator = createCoordinator({
     config,
     store,
-    slack,
     scheduler,
     investigate,
     catalog: { lookup: async () => [] },
-    assertCurrent() {
-      scheduler.signal.throwIfAborted();
-    },
+    assertCurrent,
     health: vi.fn(),
   });
   try {
-    await coordinator.tick();
+    await coordinator.tick(scope);
     void time.wake();
     await vi.waitFor(() => expect(investigate).toHaveBeenCalledOnce());
     expect((await store.list()).find((row) => row.alert.key === alert.key)?.phase).toBe(
       "dispatch_reserved",
     );
     time.setTime(now + 600_000);
-    await coordinator.tick();
+    await coordinator.tick(scope);
     expect(slack.send).toHaveBeenCalledOnce();
     expect(vi.mocked(slack.send).mock.lastCall?.[0].text).toContain("reminder 1");
     expect(investigate).toHaveBeenCalledOnce();
@@ -115,25 +114,65 @@ it("completes each admission once and skips all Slack reaction calls for a compl
   const coordinator = createCoordinator({
     config,
     store,
-    slack,
     scheduler,
     investigate,
     catalog: { lookup: async () => [{ classification: "known" }] },
     assertCurrent() {},
     health: vi.fn(),
   });
+  const scope = { store, slack, assertCurrent() {} };
+  const occurrence = new AbortController();
   try {
-    await coordinator.tick();
+    await coordinator.tick({ ...scope, assertCurrent: () => occurrence.signal.throwIfAborted() });
+    occurrence.abort();
     void time.wake();
     await vi.waitFor(async () => expect((await store.list())[0]?.phase).toBe("assessed"));
-    await coordinator.tick();
+    await coordinator.tick(scope);
     expect(slack.send).toHaveBeenCalledOnce();
     expect(slack.acknowledged).not.toHaveBeenCalled();
-    await coordinator.tick();
+    await coordinator.tick(scope);
     expect(slack.send).toHaveBeenCalledOnce();
     expect(slack.acknowledged).not.toHaveBeenCalled();
     expect(investigate).toHaveBeenCalledOnce();
   } finally {
+    await scheduler.stop();
+    await gateway.stop();
+  }
+});
+
+it("runs empty ticks without a model and coalesces overlapping calls", async () => {
+  const { store } = nativeStore();
+  const time = createGatewaySchedulerClock(now);
+  const gateway = createTestGatewayScheduler(time.clock);
+  const scheduler = createTestPluginServiceScheduler(gateway);
+  const slack = slackStub();
+  const investigate = vi.fn(async () => ({ findings: [] }));
+  const scope = { store, slack, assertCurrent() {} };
+  const coordinator = createCoordinator({
+    config,
+    store,
+    scheduler,
+    investigate,
+    catalog: { lookup: async () => [] },
+    assertCurrent() {},
+    health: vi.fn(),
+  });
+  const { promise, resolve } = Promise.withResolvers<void>();
+  vi.mocked(slack.verify).mockReturnValueOnce(promise);
+  try {
+    await coordinator.start();
+    await time.wake();
+    expect(slack.verify).not.toHaveBeenCalled();
+    const first = coordinator.tick(scope);
+    await expect(coordinator.tick(scope)).resolves.toBe(false);
+    resolve();
+    await expect(first).resolves.toBe(true);
+    await time.wake();
+    expect(slack.verify).toHaveBeenCalledOnce();
+    expect(investigate).not.toHaveBeenCalled();
+    expect(slack.send).not.toHaveBeenCalled();
+  } finally {
+    resolve();
     await scheduler.stop();
     await gateway.stop();
   }

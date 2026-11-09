@@ -96,16 +96,16 @@ it("quarantines foreign and legacy receipts across source restart without replay
   const coordinator = createCoordinator({
     config,
     store: second,
-    slack,
     scheduler,
     investigate,
     catalog: { lookup: async () => [{ classification: "unknown" }] },
     assertCurrent() {},
     health: vi.fn(),
   });
+  const scope = { store: second, slack, assertCurrent() {} };
   try {
-    await coordinator.tick();
-    await coordinator.tick();
+    await coordinator.tick(scope);
+    await coordinator.tick(scope);
     expect(investigate).not.toHaveBeenCalled();
     expect(slack.send).not.toHaveBeenCalled();
     expect(slack.acknowledged).not.toHaveBeenCalled();
@@ -117,10 +117,10 @@ it("quarantines foreign and legacy receipts across source restart without replay
     const newMessage = { ...message, ts: ((now + 60_000) / 1000).toFixed(6) };
     time.setTime(now + 60_000);
     vi.mocked(slack.history).mockResolvedValue({ messages: [newMessage] });
-    await coordinator.tick();
+    await coordinator.tick(scope);
     await time.wake();
     await vi.waitFor(() => expect(investigate).toHaveBeenCalledOnce());
-    await coordinator.tick();
+    await coordinator.tick(scope);
     expect(slack.send).toHaveBeenCalledTimes(2);
     expect(
       vi.mocked(slack.send).mock.calls.every(([post]) => post.threadTs === newMessage.ts),
@@ -140,13 +140,12 @@ it("quarantines foreign and legacy receipts across source restart without replay
     await createCoordinator({
       config,
       store: restored,
-      slack: restoredSlack,
       scheduler,
       investigate: restoredRun,
       catalog: { lookup: async () => [{ classification: "unknown" }] },
       assertCurrent() {},
       health: vi.fn(),
-    }).tick();
+    }).tick({ store: restored, slack: restoredSlack, assertCurrent() {} });
     await time.wake();
     expect(restoredRun).not.toHaveBeenCalled();
     expect(restoredSlack.send).not.toHaveBeenCalled();

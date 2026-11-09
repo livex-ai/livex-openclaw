@@ -1,4 +1,5 @@
 /** Tracks in-process cron executions so schedulers and wake paths avoid duplicate runs. */
+import { isDeepStrictEqual } from "node:util";
 import {
   resolveAdmittedRunActiveAssertion,
   type AdmittedRunContext,
@@ -9,8 +10,13 @@ import {
   prepareSessionSourceAuthority,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
+import type { GatewayContextResolver } from "../gateway/server-methods/types.js";
+import type { OpenClawPluginScriptAutomation } from "../plugins/tool-types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { tryResolveCronJobEffectiveAgentId } from "./agent-id.js";
+import type { CronCompletionDeliveryFence } from "./delivery-attempt-fence.js";
 import type { CronStandingGrantAuthority } from "./standing-grant-authority.types.js";
+import type { CronStoredJob } from "./types.js";
 
 type CronActiveJobState = {
   activeJobs: Map<string, CronActiveJobMarker>;
@@ -35,6 +41,96 @@ export function bindCronJobAdmittedRun(
   if (marker && assertActive && isCronActiveJobMarkerCurrent(marker)) {
     getCronActiveJobState().admittedJobRuns.set(marker, { context, assertActive, signal });
   }
+}
+
+/** Captures only the exact admitted owner of a live Script Automation occurrence. */
+function captureCronScriptOccurrenceAssertion(params: {
+  jobId: string;
+  agentId: string;
+  admitted: AdmittedRunContext;
+}): (() => void) | undefined {
+  const { jobId, agentId, admitted } = params;
+  const marker = getCurrentCronActiveJobMarker(jobId);
+  const { admittedJobRuns } = getCronActiveJobState();
+  const owner = marker && admittedJobRuns.get(marker);
+  if (!marker || marker.agentId !== agentId || owner?.context !== admitted) {
+    return undefined;
+  }
+  return () => {
+    if (
+      getCurrentCronActiveJobMarker(jobId) !== marker ||
+      admittedJobRuns.get(marker) !== owner ||
+      marker.scheduleMutated ||
+      marker.triggerMutated ||
+      marker.messageActionAuthorityRevoked ||
+      marker.messageSourceAuthorityRevoked ||
+      marker.jobRemoved ||
+      marker.cancellation?.kind === "requested"
+    ) {
+      throw new Error("Cron script occurrence is no longer current");
+    }
+    owner.assertActive();
+  };
+}
+
+/** Keeps a headless tool bound to the current stored job and the exact admitted run. */
+export function captureCronScriptAutomationContext(params: {
+  job: CronStoredJob;
+  agentId: string;
+  admitted: AdmittedRunContext;
+  deliveryAttemptFence: CronCompletionDeliveryFence | null;
+  resolveGatewayContext?: GatewayContextResolver;
+  assertActive: () => void;
+}): OpenClawPluginScriptAutomation | undefined {
+  const { job, agentId, admitted, deliveryAttemptFence, resolveGatewayContext, assertActive } =
+    params;
+  const cron = resolveGatewayContext?.()?.cron;
+  const storedJob = cron?.getJob(job.id);
+  if (
+    !deliveryAttemptFence ||
+    !cron ||
+    !storedJob?.enabled ||
+    storedJob.payload.kind !== "script" ||
+    storedJob.createdAtMs !== job.createdAtMs ||
+    storedJob.updatedAtMs !== job.updatedAtMs ||
+    !isDeepStrictEqual(storedJob.payload, job.payload) ||
+    tryResolveCronJobEffectiveAgentId(storedJob, cron.getDefaultAgentId()) !== agentId
+  ) {
+    return undefined;
+  }
+  const assertOccurrence = captureCronScriptOccurrenceAssertion({
+    jobId: job.id,
+    agentId,
+    admitted,
+  });
+  if (!assertOccurrence) {
+    return undefined;
+  }
+  const { createdAtMs, updatedAtMs } = storedJob;
+  let retired = false;
+  return {
+    jobId: job.id,
+    agentId,
+    assertCurrent() {
+      assertActive();
+      deliveryAttemptFence.assertCurrent();
+      assertOccurrence();
+      const currentJob = cron.getJob(job.id);
+      // Reloading an unrelated row can rebuild the store with the same Oncall job.
+      if (
+        retired ||
+        resolveGatewayContext?.()?.cron !== cron ||
+        !currentJob?.enabled ||
+        currentJob.createdAtMs !== createdAtMs ||
+        currentJob.updatedAtMs !== updatedAtMs ||
+        !isDeepStrictEqual(currentJob.payload, job.payload) ||
+        tryResolveCronJobEffectiveAgentId(currentJob, cron.getDefaultAgentId()) !== agentId
+      ) {
+        retired = true;
+        throw new Error("Cron script job binding is no longer current");
+      }
+    },
+  };
 }
 
 /** Captures one occurrence before admission without granting another prompt its authority. */

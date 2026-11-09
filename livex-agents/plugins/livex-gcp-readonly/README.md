@@ -203,8 +203,28 @@ Canvas reading requires the installed bot’s `files:read` scope and membership 
 the source/roster channels. The packaged manifest declares that scope; actual app
 reauthorization remains a separate operator action, with no live grant here.
 
-The native scheduled service owns trusted intake, SQLite receipts, one Debugger
-admission per alert, scoped catalog matching and notification recovery. The native
+Create one paused, headless OpenClaw Automation from the reviewed checkout.
+
+```bash
+openclaw automations create --name "LiveX Oncall tick" --every 1m \
+  --agent oncall-coordinator --session isolated \
+  --script livex-agents/plugins/livex-gcp-readonly/workflows/oncall/tick.automation.js \
+  --tools livex_oncall_tick --script-tool-budget 1 --no-deliver --disabled --json
+```
+
+Set `plugins.entries.livex-gcp-readonly.config.oncall.automationJobId` to the
+returned job ID. Verify that the job belongs to **LiveX Oncall** and that the
+installed coordinator uses the `full` tool profile with the exact allowlist
+`["read", "livex_oncall_tick"]`. Reconcile existing VM tool overrides before
+cutover because deployment preserves them. Enable the Oncall plugin configuration
+and the job during the cutover. Manage cadence,
+pause, and run history under **Agents → LiveX Oncall → Scheduling**. The Automation
+owns the cadence. A legacy `tickMs` setting has no scheduling effect, and an
+enabled Oncall configuration needs the job binding before it can process alerts.
+
+Each admitted Script payload calls one tick. The plugin owns trusted intake,
+SQLite receipts, one Debugger admission per eligible alert, scoped catalog
+matching, and notification recovery. Idle ticks start zero model runs. The native
 Debugger run allows exactly `livex_oncall_logs_read` and
 `livex_oncall_assessment_submit`; both factories require a live private capability
 for the exact run, agent, session, owner generation and scope. No grant enters the

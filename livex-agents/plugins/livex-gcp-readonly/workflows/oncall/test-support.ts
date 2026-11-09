@@ -62,17 +62,18 @@ export function slackStub(): SlackTransport {
 }
 export function nativeStore(maxEntries = 2001) {
   const root = mkdtempSync(join(tmpdir(), "oncall-state-"));
-  const source: OncallStore = createPluginStateKeyedStoreV2ForTests<
-    Receipt | { timestamp: string; sourceId: string }
-  >(
-    "livex-gcp-readonly",
-    {
-      namespace: `oncall-${randomUUID()}`,
-      maxEntries,
-      overflowPolicy: "reject-new",
-      env: { OPENCLAW_STATE_DIR: root },
-    },
-    { assertCurrent() {} },
-  );
-  return { source, store: createReceiptStore(source, "test-source"), root };
+  const namespace = `oncall-${randomUUID()}`;
+  const open = <T = Receipt | { timestamp: string; sourceId: string }>(assertCurrent: () => void) =>
+    createPluginStateKeyedStoreV2ForTests<T>(
+      "livex-gcp-readonly",
+      {
+        namespace,
+        maxEntries,
+        overflowPolicy: "reject-new",
+        env: { OPENCLAW_STATE_DIR: root },
+      },
+      { assertCurrent },
+    );
+  const source: OncallStore = open(() => {});
+  return { source, store: createReceiptStore(source, "test-source"), root, open };
 }

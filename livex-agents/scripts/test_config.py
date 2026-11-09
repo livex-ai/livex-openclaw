@@ -116,8 +116,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(coordinator["skills"], [])
         self.assertEqual(coordinator["permissionModeDefault"], "read-only")
         self.assertEqual(coordinator["tools"], {
-            "profile": "minimal", "exec": {"mode": "deny"},
-            "elevated": {"enabled": False}, "fs": {"workspaceOnly": True}, "allow": ["read"]})
+            "profile": "full", "exec": {"mode": "deny"},
+            "elevated": {"enabled": False}, "fs": {"workspaceOnly": True},
+            "allow": ["read", "livex_oncall_tick"]})
         self.assertEqual(rendered["plugins"]["entries"]["livex-gcp-readonly"]["config"]["oncall"],
                          {"enabled": False})
         self.assertEqual(rendered["bindings"], [{"agentId": "oncall", "match": {

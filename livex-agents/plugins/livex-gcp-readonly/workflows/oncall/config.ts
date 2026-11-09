@@ -6,6 +6,7 @@ const limited = (maximum: number, fallback: number) =>
 
 export const oncallSchema = z.strictObject({
   enabled: z.literal(true),
+  automationJobId: z.string().min(1).max(128).optional(),
   accountId: z.string().trim().min(1).max(64),
   teamId: slackId("T"),
   channelId: slackId("CG"),
@@ -18,7 +19,8 @@ export const oncallSchema = z.strictObject({
     .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/), z.string().min(1).max(256))
     .refine((labels) => Object.keys(labels).length > 0 && Object.keys(labels).length <= 16),
   broadcastChannelId: slackId("CG").optional(),
-  tickMs: limited(60_000, 60_000),
+  // Accepted for older installations. The native Automation owns cadence.
+  tickMs: z.number().int().min(1).max(60_000).optional(),
   maxRunMs: limited(600_000, 600_000),
   maxLogCalls: limited(10, 10),
   maxLogBytes: limited(307_200, 307_200),

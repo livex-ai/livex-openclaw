@@ -31,6 +31,8 @@ import {
 import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { bindCronJobAdmittedRun, clearCronJobActive, markCronJobActive } from "./active-jobs.js";
+import { makeCronJob } from "./delivery.test-helpers.js";
 import { createCronScriptRuntimeFixture as createCronScriptRuntime } from "./trigger-script.test-helpers.js";
 
 type HeadlessParams = Parameters<
@@ -46,7 +48,10 @@ const invocation = (jobId: string, agentId = "main", toolsAllow = ["*"]) => ({
   state: null,
 });
 const expectPayload = (result: ReturnType<Runtime["executePayload"]>, state: unknown) =>
-  expect(result).resolves.toMatchObject({ kind: "completed", state });
+  expect(result).resolves.toMatchObject({
+    kind: "completed",
+    ...(state === undefined ? {} : { state }),
+  });
 const registration = (artifact: string, mode: string) => ({ artifact, mode });
 
 let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
@@ -73,10 +78,26 @@ beforeEach(async () => {
             name: "cold_probe", label: "Cold probe", description: "Fixture preparation probe",
             parameters: { type: "object", properties: {} },
             async execute() {
-              return { content: [], details: { artifact: ${JSON.stringify(artifact)}, generation, calls: ++calls, agentId: ctx.agentId, sessionKey: ctx.sessionKey } };
+              return { content: [], details: { artifact: ${JSON.stringify(artifact)}, generation, calls: ++calls, agentId: ctx.agentId, sessionKey: ctx.sessionKey, hasScriptAutomation: Boolean(ctx.scriptAutomation) } };
             }
           };
         }, { names: ["cold_probe"] });
+        api.registerTool({
+          contextVersion: 2,
+          create(ctx) {
+            const authority = ctx.scriptAutomation;
+            if (!authority) return null;
+            return {
+              name: "livex_oncall_tick", label: "Script probe", description: "Fixture Script Automation authority",
+              parameters: { type: "object", properties: {} },
+              async execute() {
+                ctx.assertInvocationCurrent();
+                authority.assertCurrent();
+                return { content: [], details: { jobId: authority.jobId, agentId: authority.agentId } };
+              }
+            };
+          }
+        }, { names: ["livex_oncall_tick"] });
       }
     };`;
     writePlugin({
@@ -95,7 +116,7 @@ beforeEach(async () => {
     JSON.stringify({
       id: "cold-probe",
       configSchema: { type: "object", properties: { generation: { type: "integer" } } },
-      contracts: { tools: ["cold_probe"] },
+      contracts: { tools: ["cold_probe", "livex_oncall_tick"] },
     }),
   );
   config = {
@@ -127,6 +148,75 @@ afterEach(async () => {
 });
 
 afterAll(cleanupPluginLoaderFixturesForTest);
+
+it.each([false, true])(
+  "runs a registered V2 tick through the headless runner (packaged=%s)",
+  async (packaged) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const input = invocation(
+      "script-tool-context",
+      "other",
+      packaged ? ["livex_oncall_tick"] : ["cold_probe", "livex_oncall_tick"],
+    );
+    const script = packaged
+      ? fs.readFileSync(
+          new URL(
+            "../../livex-agents/plugins/livex-gcp-readonly/workflows/oncall/tick.automation.js",
+            import.meta.url,
+          ),
+          "utf8",
+        )
+      : "return { state: { script: await livex_oncall_tick({}), legacy: await cold_probe({}) } };";
+    const timeoutSeconds = 20;
+    const toolBudget = packaged ? 1 : 2;
+    const job = makeCronJob({
+      id: input.jobId,
+      agentId: input.agentId,
+      payload: { kind: "script", script, toolsAllow: input.toolsAllow, timeoutSeconds, toolBudget },
+    });
+    const gateway = {
+      cron: {
+        getJob: (id: string) => (id === job.id ? job : undefined),
+        getDefaultAgentId: () => "main",
+      },
+    } as unknown as NonNullable<
+      ReturnType<
+        NonNullable<Parameters<typeof createCronScriptRuntime>[0]["resolveGatewayContext"]>
+      >
+    >;
+    const runtime = createCronScriptRuntime({
+      config,
+      resolveGatewayContext: () => gateway,
+    });
+    const controller = new AbortController();
+    const marker = markCronJobActive(input.jobId, { agentId: input.agentId });
+    try {
+      await expectPayload(
+        runtime.executePayload({
+          ...input,
+          script,
+          timeoutSeconds,
+          toolBudget,
+          deliveryAttemptFence: { beforeAttempt: async () => {}, assertCurrent: () => {} },
+          executionIdentity: {
+            ingress: { kind: "schedule", boundary: "cron.script", state: "present" },
+            onPostAdmission: (context) => {
+              bindCronJobAdmittedRun(marker, context, controller.signal);
+            },
+          },
+        }),
+        packaged
+          ? undefined
+          : {
+              script: { jobId: input.jobId, agentId: input.agentId },
+              legacy: expect.objectContaining({ hasScriptAutomation: false }),
+            },
+      );
+    } finally {
+      clearCronJobActive(input.jobId, marker);
+    }
+  },
+);
 
 function readRegistrations() {
   return fs

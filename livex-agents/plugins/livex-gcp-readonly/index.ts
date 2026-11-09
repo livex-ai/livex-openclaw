@@ -1,12 +1,12 @@
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { runUtf8CommandWithTimeout } from "openclaw/plugin-sdk/process-runtime";
 import { createLogsTool } from "./core.mjs";
-import { registerOncall } from "./oncall/service.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createPageLedger, PAGE_CACHE_ENTRIES } from "./page-store.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 import { createRecoveryCommand } from "./recovery.mjs";
 import { createRepositoryTool } from "./repository.mjs";
+import { registerOncall } from "./workflows/oncall/service.js";
 
 export default definePluginEntry({
   id: manifest.id,

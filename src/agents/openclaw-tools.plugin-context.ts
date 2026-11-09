@@ -4,11 +4,28 @@ import {
   assertMemoryAudienceCurrent,
   assertMemoryAudienceSession,
 } from "../plugins/memory-audience.js";
+import type { OpenClawPluginScriptAutomation } from "../plugins/tool-types.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
+import type { OperationalRunInstanceRef } from "./admitted-run-context.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "./agent-scope.js";
 import { modelKey } from "./model-ref-shared.js";
 import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
+
+const hostScriptAutomations = new WeakMap<
+  OpenClawPluginScriptAutomation,
+  OperationalRunInstanceRef
+>();
+
+/** Only the admitted script runner supplies the host-bound guard. */
+export function bindHostScriptAutomation(
+  context: OpenClawPluginScriptAutomation,
+  operationalRunInstance: OperationalRunInstanceRef,
+): OpenClawPluginScriptAutomation {
+  const bound = Object.freeze({ ...context });
+  hostScriptAutomations.set(bound, operationalRunInstance);
+  return bound;
+}
 
 export type OpenClawPluginToolOptions = Pick<
   OpenClawToolsOptions,
@@ -16,6 +33,7 @@ export type OpenClawPluginToolOptions = Pick<
   | "runSessionKey"
   | "runId"
   | "assertInvocationCurrent"
+  | "scriptAutomation"
   | "assertInputCommitAllowed"
   | "agentChannel"
   | "agentAccountId"
@@ -51,7 +69,11 @@ export type OpenClawPluginToolOptions = Pick<
   | "abortSignal"
   | "pluginExecutionSkillsSnapshot"
   | "pluginExecutionAuthority"
-> & { activeProjectKeys?: readonly string[]; approvalReviewerDeviceId?: string };
+> & {
+  activeProjectKeys?: readonly string[];
+  approvalReviewerDeviceId?: string;
+  operationalRunInstance?: OperationalRunInstanceRef;
+};
 
 export function resolveOpenClawPluginToolInputs(params: {
   options?: OpenClawPluginToolOptions;
@@ -84,6 +106,7 @@ export function resolveOpenClawPluginToolInputs(params: {
           ...(modelProvider && modelId ? { modelRef: modelKey(modelProvider, modelId) } : {}),
         }
       : undefined;
+  const scriptAutomation = options?.scriptAutomation;
   // Delivery context is normalized once here so plugin tools receive the same
   // channel/account/thread shape as gateway-delivered agent tools.
   const deliveryContext = normalizeDeliveryContext({
@@ -99,6 +122,12 @@ export function resolveOpenClawPluginToolInputs(params: {
       runtimeConfig,
       getRuntimeConfig,
       assertInputCommitAllowed: options?.assertInputCommitAllowed,
+      ...(scriptAutomation &&
+      options?.operationalRunInstance &&
+      scriptAutomation.agentId === sessionAgentId &&
+      hostScriptAutomations.get(scriptAutomation) === options.operationalRunInstance
+        ? { scriptAutomation }
+        : {}),
       fsPolicy: options?.fsPolicy,
       workspaceDir,
       agentDir: options?.agentDir,

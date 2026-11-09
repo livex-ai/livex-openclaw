@@ -7,6 +7,7 @@ import type { Delivery, Finding, Receipt, Roster, SlackTransport } from "./types
 type Effect = { step: number; tier?: number; text: string; channel?: string; finding?: number };
 type Context = {
   store: ReceiptStore;
+  settlementStore: ReceiptStore;
   slack: SlackTransport;
   config: OncallConfig;
   now: number;
@@ -45,7 +46,11 @@ function currentDelivery(receipt: Receipt, effect: Effect) {
   return effect.finding === undefined ? receipt.summary : currentFinding(receipt, effect)?.delivery;
 }
 
-function replaceDelivery(receipt: Receipt, effect: Effect, delivery: Delivery): Receipt {
+function replaceDelivery(
+  receipt: Receipt,
+  effect: Effect,
+  delivery: Delivery | undefined,
+): Receipt {
   if (effect.finding === undefined) {
     return { ...receipt, summary: delivery };
   }
@@ -83,24 +88,46 @@ function reservationAttempts(
 }
 
 async function reserve(receipt: Receipt, effect: Effect, ctx: Context) {
-  return ctx.store.change(receipt.alert.key, (current) => {
+  let previous: Delivery | undefined;
+  const reserved = await ctx.store.change(receipt.alert.key, (current) => {
     const finding = currentFinding(current, effect);
     if (finding?.acknowledged) {
       throw new EffectAlreadyOwned();
     }
-    const delivery = currentDelivery(current, effect);
+    previous = currentDelivery(current, effect);
     return replaceDelivery(current, effect, {
       status: "reserved",
       step: effect.step,
-      attempts: reservationAttempts(delivery, effect, ctx.now, finding?.step),
+      attempts: reservationAttempts(previous, effect, ctx.now, finding?.step),
       tick: ctx.now,
     });
+  });
+  return { previous, delivery: currentDelivery(reserved, effect)! };
+}
+
+async function releaseUnattempted(
+  receipt: Receipt,
+  effect: Effect,
+  ctx: Context,
+  reservation: Awaited<ReturnType<typeof reserve>>,
+) {
+  await ctx.settlementStore.change(receipt.alert.key, (current) => {
+    const delivery = currentDelivery(current, effect);
+    if (
+      delivery?.status !== "reserved" ||
+      delivery.step !== reservation.delivery.step ||
+      delivery.tick !== reservation.delivery.tick ||
+      delivery.attempts !== reservation.delivery.attempts
+    ) {
+      return current;
+    }
+    return replaceDelivery(current, effect, reservation.previous);
   });
 }
 
 async function settle(receipt: Receipt, effect: Effect, ctx: Context, messageTs: string) {
   const deliveredAt = ctx.clock();
-  await ctx.store.change(receipt.alert.key, (current) => {
+  await ctx.settlementStore.change(receipt.alert.key, (current) => {
     const delivery = currentDelivery(current, effect)!;
     const confirmed: Delivery = { ...delivery, status: "confirmed", messageTs };
     const updated = replaceDelivery(current, effect, confirmed);
@@ -122,7 +149,7 @@ async function settle(receipt: Receipt, effect: Effect, ctx: Context, messageTs:
 }
 
 async function failed(receipt: Receipt, effect: Effect, ctx: Context, error: unknown) {
-  await ctx.store.change(receipt.alert.key, (current) => {
+  await ctx.settlementStore.change(receipt.alert.key, (current) => {
     const delivery = currentDelivery(current, effect)!;
     const status = isDefiniteSlackRejection(error)
       ? delivery.attempts >= 3
@@ -142,8 +169,9 @@ async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
     await acknowledge(receipt, ctx);
     return;
   }
+  let reservation: Awaited<ReturnType<typeof reserve>>;
   try {
-    await reserve(receipt, effect, ctx);
+    reservation = await reserve(receipt, effect, ctx);
   } catch (error) {
     if (error instanceof EffectAlreadyOwned) {
       return;
@@ -152,12 +180,18 @@ async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
   }
   try {
     ctx.assertCurrent();
+  } catch (error) {
+    // The transport was never called. Preserve the prior retry or reminder state.
+    await releaseUnattempted(receipt, effect, ctx, reservation);
+    throw error;
+  }
+  // Once transport is called, its response or uncertainty belongs to the service.
+  try {
     const messageTs = await ctx.slack.send({
       text: effect.text,
       channel: effect.channel,
       threadTs: effect.channel ? undefined : receipt.alert.ts,
     });
-    ctx.assertCurrent();
     await settle(receipt, effect, ctx, messageTs);
   } catch (error) {
     await failed(receipt, effect, ctx, error);

@@ -26,8 +26,9 @@ class AgentBundleTests(unittest.TestCase):
         self.assertEqual(definition.get('permissionModeDefault'), 'read-only')
         self.assertEqual(definition.get('skills'), [])
         self.assertEqual(definition.get('tools'), {
-            'profile': 'minimal', 'exec': {'mode': 'deny'},
-            'elevated': {'enabled': False}, 'fs': {'workspaceOnly': True}, 'allow': ['read']})
+            'profile': 'full', 'exec': {'mode': 'deny'},
+            'elevated': {'enabled': False}, 'fs': {'workspaceOnly': True},
+            'allow': ['read', 'livex_oncall_tick']})
         source = (ROOT / 'livex-agents/workspaces/oncall-coordinator/AGENTS.md').read_text()
         self.assertEqual(coordinator.get('prompt'), source)
         installed = {'agents': {'entries': {'oncall': {'tools': {'allow': ['vm-only']}}}}}
