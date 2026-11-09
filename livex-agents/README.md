@@ -23,6 +23,14 @@ This repository relocation does not reconfigure or restart any deployment.
 
 ## Inactive native agent examples
 
+The existing agent keeps its internal `oncall` ID and workspace while displaying
+as **LiveX Debugger**. Its native `identity.name` supplies
+**LiveX Reporting · Debugger** for final Slack messages. This per-message sender
+name requires the Slack app's `chat:write.customize` scope. Without that grant,
+Slack delivery can fall back to the app's identity. The native working indicator
+also uses the app identity. Installing the updated manifest and verifying live
+Slack appearance are separate operator steps.
+
 [Debugger](config/examples/debugger.json) and [Verifier](config/examples/verifier.json)
 are native `agents.entries` fragments, not another configuration format. Neither
 is loaded by the renderer or the release packaging input. Only entries explicitly
