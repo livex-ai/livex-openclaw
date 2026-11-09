@@ -1,3 +1,4 @@
+import { isCaptureTimestamp, isGkeObservation } from "./capture.mjs";
 import { createGitHubComparator } from "./compare-deployed-commits.mjs";
 import registry from "./services.json" with { type: "json" };
 
@@ -9,12 +10,23 @@ const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const environmentNames = { dev: "Dev", stg: "STG", prd: "US production" };
 const serviceIds = Object.keys(registry.services);
+const versionServices = ["frontend", "gateway"];
+const servingVersionSource = "cloud-run-version";
 const comparisons = [
   { base: "prd", head: "stg", label: "STG vs US production", title: "STG changes" },
   { base: "stg", head: "dev", label: "Dev vs STG", title: "Dev-only changes (vs STG)" },
 ];
 const captureReasons = {
   "artifact-unavailable": "Artifact Registry metadata unavailable",
+  "cloud-run-version-unavailable": "serving /version unavailable",
+  "cloud-run-version-unverified": "serving /version evidence unverified",
+  "cloud-run-version-unstable": "serving /version evidence changed",
+  "gke-read-unavailable": "GKE read unavailable",
+  "gke-route-unverified": "GKE route unverified",
+  "gke-workload-unverified": "GKE workload unverified",
+  "gke-mixed-images": "GKE mixed serving images",
+  "gke-evidence-changed": "GKE evidence changed during capture",
+  "image-commit-conflict": "image commit metadata conflicts",
   "image-commit-missing": "image has no exact commit metadata",
   "invalid-traffic": "invalid serving traffic",
   "no-serving-traffic": "serving traffic unavailable",
@@ -35,18 +47,10 @@ function lookupReason(reasons, code, fallback) {
   return typeof code === "string" && Object.hasOwn(reasons, code) ? reasons[code] : fallback;
 }
 
-function isoTimestamp(value) {
-  return (
-    typeof value === "string" &&
-    Number.isFinite(Date.parse(value)) &&
-    new Date(value).toISOString() === value
-  );
-}
-
 function indexCapture(capture) {
   if (
-    !isoTimestamp(capture?.captureStartedAt) ||
-    !isoTimestamp(capture?.capturedAt) ||
+    !isCaptureTimestamp(capture?.captureStartedAt) ||
+    !isCaptureTimestamp(capture?.capturedAt) ||
     capture.captureStartedAt > capture.capturedAt ||
     !Array.isArray(capture.paths) ||
     capture.paths.length > serviceIds.length * Object.keys(environmentNames).length
@@ -70,21 +74,43 @@ function indexCapture(capture) {
     const binding = registry.services[row.service];
     const expectedCloudRun =
       row.environment === "dev" ? (binding.devCloudRun ?? binding.cloudRun) : binding.cloudRun;
-    const gkePending = row.environment === "prd" && binding.gkeProduction === true;
-    if (row.cloudRunService !== expectedCloudRun || (row.status === "gke-pending") !== gkePending) {
+    const expectsGke = row.environment === "prd" && binding.gkeProduction === true;
+    const gke = isGkeObservation(row);
+    const validSource =
+      row.source === "gke"
+        ? expectsGke && gke
+        : row.source === undefined &&
+          row.workloads === undefined &&
+          (row.status === "gke-pending") === expectsGke;
+    if (row.cloudRunService !== expectedCloudRun || !validSource) {
       throw new Error("Invalid Cloud Run capture route");
     }
     if (
-      row.status === "verified" &&
-      (!isoTimestamp(row.observedAt) ||
+      (row.status === "verified" || gke) &&
+      (!isCaptureTimestamp(row.observedAt) ||
         row.observedAt < capture.captureStartedAt ||
-        row.observedAt > capture.capturedAt ||
-        typeof row.digest !== "string" ||
+        row.observedAt > capture.capturedAt)
+    ) {
+      throw new Error("Invalid Cloud Run capture observation time");
+    }
+    const servingVersion = row.commitSource === servingVersionSource;
+    if (
+      servingVersion &&
+      (row.status !== "verified" ||
+        row.source !== undefined ||
+        !versionServices.includes(row.service) ||
+        row.commit == null)
+    ) {
+      throw new Error("Invalid Cloud Run capture evidence");
+    }
+    if (
+      row.status === "verified" &&
+      (typeof row.digest !== "string" ||
         !digestPattern.test(row.digest) ||
         (row.commit != null &&
           (typeof row.commit !== "string" ||
             !shaPattern.test(row.commit) ||
-            row.commitSource !== "artifact-registry-config")))
+            (row.commitSource !== "artifact-registry-config" && !servingVersion))))
     ) {
       throw new Error("Invalid Cloud Run capture evidence");
     }
@@ -105,7 +131,9 @@ function describeGap(row) {
     return "GKE evidence pending";
   }
   if (row.status === "unresolved") {
-    return lookupReason(captureReasons, row.reason, "serving evidence unresolved");
+    const fallback =
+      row.source === "gke" ? "GKE serving evidence unresolved" : "serving evidence unresolved";
+    return lookupReason(captureReasons, row.reason, fallback);
   }
   return null;
 }
@@ -127,6 +155,15 @@ async function comparePath(paths, service, { base, head }, compare) {
     return { service, gap: gaps.join(", ") };
   }
   if (before.digest === after.digest) {
+    if (
+      (before.commitSource === servingVersionSource ||
+        after.commitSource === servingVersionSource) &&
+      before.commit &&
+      after.commit &&
+      before.commit !== after.commit
+    ) {
+      return { service, gap: "same image digest but conflicting commit SHAs" };
+    }
     return { service, note: "same image digest" };
   }
   if (!before.commit || !after.commit) {
@@ -249,6 +286,13 @@ function renderChanges({ count, bullets }, budget) {
   return lines.join("\n");
 }
 
+function observedTimes(rows) {
+  const times = rows.map(({ observedAt }) => observedAt).toSorted();
+  const first = times[0];
+  const last = times.at(-1);
+  return first === last ? first : first + " to " + last;
+}
+
 function verifiedChangeCount(count) {
   return count + (count === 1 ? " verified change" : " verified changes");
 }
@@ -303,6 +347,38 @@ export async function formatReleaseReport(capture, compare) {
     "*Evidence*",
     "Capture window (UTC) · " + capture.captureStartedAt + " to " + capture.capturedAt,
   );
+  const versionEvidence = versionServices.flatMap((service) => {
+    const environments = Object.keys(environmentNames)
+      .filter((env) => paths.get(service + "/" + env)?.commitSource === servingVersionSource)
+      .map((env) => environmentNames[env]);
+    return environments.length > 0 ? [service + " (" + environments.join(", ") + ")"] : [];
+  });
+  if (versionEvidence.length > 0) {
+    lines.push("• Serving /version commit evidence · " + versionEvidence.join(", "));
+  }
+  const verifiedGke = [...paths.values()].filter(
+    (row) => row.source === "gke" && row.status === "verified",
+  );
+  if (verifiedGke.length > 0) {
+    const verifiedCloudRun = [...paths.values()].filter(
+      (row) => row.source === undefined && row.status === "verified",
+    );
+    if (verifiedCloudRun.length > 0) {
+      lines.push("• Cloud Run observed (UTC) · " + observedTimes(verifiedCloudRun));
+    }
+    lines.push("• GKE observed (UTC) · " + observedTimes(verifiedGke));
+  }
+  if (verifiedGke.some(({ service }) => service === "chat-engine")) {
+    lines.push("• GKE · Chat Engine web and avatar route digests agree.");
+  }
+  const readyWorkers = verifiedGke
+    .filter(({ service }) => service !== "chat-engine")
+    .map(({ service }) => service);
+  if (readyWorkers.length > 0) {
+    lines.push(
+      "• GKE · " + readyWorkers.join(", ") + " · ready workers verified. Job pickup unverified.",
+    );
+  }
   const ranges = [];
   for (const { label, results } of views) {
     const matches = results.filter(({ note }) => note === "same image digest");

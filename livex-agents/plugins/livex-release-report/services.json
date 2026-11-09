@@ -32,5 +32,48 @@
       "artifact": "copilot-conversation-akool",
       "gkeProduction": true
     }
+  },
+  "gke": {
+    "cluster": "copilot-prd-cluster",
+    "urlMap": "copilot-lb",
+    "workloads": {
+      "chat-engine": [
+        {
+          "name": "chat-engine",
+          "container": "chat-engine",
+          "route": {
+            "hosts": [
+              "chat.copilot.livex.ai"
+            ],
+            "path": "/api/*",
+            "backend": "copilot-chat-backend-gke",
+            "inactiveBackend": "copilot-chat-backend-cloudrun"
+          }
+        },
+        {
+          "name": "chat-engine-avatar",
+          "container": "chat-engine",
+          "route": {
+            "hosts": [
+              "chat-avatar.copilot.livex.ai",
+              "chat-avatar.agent.livex.ai"
+            ],
+            "backend": "copilot-chat-avatar-backend-gke"
+          }
+        }
+      ],
+      "conversation-agent": [
+        {
+          "name": "conversation-agent",
+          "container": "conversation-agent"
+        }
+      ],
+      "conversation-avatar": [
+        {
+          "name": "conversation-avatar",
+          "container": "conversation-avatar"
+        }
+      ]
+    }
   }
 }

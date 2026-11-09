@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runCapture } from "./capture.mjs";
 import { formatReleaseReport, runReport } from "./report.mjs";
 import registry from "./services.json" with { type: "json" };
 
@@ -21,11 +22,12 @@ function capture(overrides = {}) {
           cloudRunService: environment === "dev" && devCloudRun ? devCloudRun : cloudRun,
           observedAt: capturedAt,
         };
+        const override = overrides[service + "/" + environment];
         const evidence =
-          environment === "prd" && gkeProduction
+          environment === "prd" && gkeProduction && override?.source !== "gke"
             ? { status: "gke-pending", reason: "production-route-served-by-gke" }
             : { status: "verified", digest: digest("a"), commit: null };
-        return Object.assign(identity, evidence, overrides[service + "/" + environment]);
+        return Object.assign(identity, evidence, override);
       }),
   );
   return { captureStartedAt, capturedAt, paths };
@@ -33,6 +35,12 @@ function capture(overrides = {}) {
 
 function exact(digit, commit = sha(digit)) {
   return { digest: digest(digit), commit, commitSource: "artifact-registry-config" };
+}
+
+const engineWorkloads = ["chat-engine", "chat-engine-avatar"];
+
+function gke(workloads, overrides = {}) {
+  return { source: "gke", workloads, status: "verified", digest: digest("a"), ...overrides };
 }
 
 function comparison(commits, linkStatus = "complete") {
@@ -110,6 +118,74 @@ test("separates artifact differences, unavailable SHAs, changed traffic, and una
   assert.match(report, /scheduler.*traffic changed during capture/);
   assert.match(report, /chatbox.*GitHub comparison unavailable/);
   assert.match(report, /No changes verified for covered paths/);
+});
+
+test("uses exact Frontend and Gateway serving version evidence with explicit provenance", async () => {
+  const version = (digit) => ({ ...exact(digit), commitSource: "cloud-run-version" });
+  const snapshot = capture({
+    "frontend/prd": version("b"),
+    "frontend/stg": version("c"),
+    "frontend/dev": exact("c"),
+    "gateway/dev": version("a"),
+  });
+  const calls = [];
+  const report = await formatReleaseReport(snapshot, async (request) => {
+    calls.push(request);
+    return comparison([{ sha: sha("c"), subject: "Frontend change", pullRequests: [] }]);
+  });
+
+  assert.deepEqual(calls, [{ repo: "chat-frontend", base: sha("b"), head: sha("c") }]);
+  assert.match(report, /1 verified change · 5\/8 STG paths covered/);
+  assert.match(
+    report,
+    /Serving \/version commit evidence · frontend \(STG, US production\), gateway \(Dev\)/,
+  );
+  assert.match(report, /gateway.*same image digest/);
+});
+
+test("flags conflicting serving SHAs for an equal image digest", async () => {
+  const snapshot = capture({
+    "frontend/prd": exact("a", sha("b")),
+    "frontend/stg": { ...exact("a", sha("c")), commitSource: "cloud-run-version" },
+    "frontend/dev": exact("a", sha("c")),
+  });
+  const report = await formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call"));
+
+  assert.match(report, /4\/8 STG paths covered/);
+  assert.match(
+    report,
+    /STG vs US production · frontend · same image digest but conflicting commit SHAs/,
+  );
+  assert.doesNotMatch(report, /STG vs US production · .*frontend.*same image digest$/m);
+  assert.ok(report.length <= 4_000);
+});
+
+test("rejects serving version provenance outside verified eligible Cloud Run rows", async () => {
+  const version = { ...exact("b"), commitSource: "cloud-run-version" };
+  const snapshots = [
+    capture({ "scheduler/stg": version }),
+    capture({ "chat-engine/prd": gke(engineWorkloads, version) }),
+    capture({ "frontend/stg": { ...version, status: "unresolved" } }),
+    capture({ "gateway/stg": { ...version, commit: null } }),
+    capture({ "gateway/stg": { ...version, commit: "bad" } }),
+  ];
+  for (const snapshot of snapshots) {
+    await assert.rejects(
+      formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call")),
+      /Invalid Cloud Run capture evidence/,
+    );
+  }
+});
+
+test("qualifies a gap when the serving version evidence changes", async () => {
+  const snapshot = capture({
+    "frontend/prd": { digest: digest("b"), commitReason: "cloud-run-version-unstable" },
+    "frontend/stg": exact("c"),
+    "frontend/dev": exact("c"),
+  });
+  const report = await formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call"));
+  assert.match(report, /frontend.*US production.*serving \/version evidence changed/);
+  assert.doesNotMatch(report, /Serving \/version commit evidence/);
 });
 
 test("counts multiple commits linked to one merged PR as one reported change", async () => {
@@ -194,7 +270,10 @@ test("keeps coverage and reserves change summaries when range evidence fills the
       const value = (++index).toString(16);
       path.digest = "sha256:" + value.padStart(64, "0");
       path.commit = value.padStart(40, "0");
-      path.commitSource = "artifact-registry-config";
+      path.commitSource =
+        path.service === "frontend" || path.service === "gateway"
+          ? "cloud-run-version"
+          : "artifact-registry-config";
     }
   }
   const report = await formatReleaseReport(snapshot, async ({ head }) => ({
@@ -205,12 +284,173 @@ test("keeps coverage and reserves change summaries when range evidence fills the
   assert.match(report, /GKE evidence pending/);
   assert.match(report, /PR lookup incomplete/);
   assert.match(report, /additional SHA ranges omitted/);
+  assert.match(report, /Serving \/version commit evidence/);
   assert.match(report, /Capture window/);
   const [, stg, dev] = report.split(
     /\*STG changes\*|\*Dev-only changes \(vs STG\)\*|\*Coverage gaps\*/,
   );
   assert.match(stg, /\/commit\//);
   assert.match(dev, /\/commit\//);
+});
+
+test("uses verified production GKE evidence for all eight paths and qualifies ready workers", async () => {
+  const snapshot = capture({
+    "chat-engine/prd": gke(engineWorkloads, exact("b")),
+    "chat-engine/stg": exact("c"),
+    "chat-engine/dev": exact("c"),
+    "conversation-agent/prd": gke(["conversation-agent"]),
+    "conversation-avatar/prd": gke(["conversation-avatar"]),
+  });
+  const calls = [];
+  const report = await formatReleaseReport(snapshot, async (request) => {
+    calls.push(request);
+    return comparison([{ sha: sha("c"), subject: "Engine change", pullRequests: [] }]);
+  });
+
+  assert.deepEqual(calls, [{ repo: "chat-engine", base: sha("b"), head: sha("c") }]);
+  assert.match(report, /1 verified change · 8\/8 STG paths covered/);
+  assert.match(report, /Full change coverage/);
+  assert.match(report, /Cloud Run observed \(UTC\).*2026-11-09T18:01:00.000Z/);
+  assert.match(report, /GKE observed \(UTC\).*2026-11-09T18:01:00.000Z/);
+  assert.match(report, /Chat Engine web and avatar route digests agree/);
+  assert.match(
+    report,
+    /conversation-agent, conversation-avatar.*ready workers.*job pickup unverified/i,
+  );
+  assert.doesNotMatch(report, /GKE evidence pending/);
+});
+
+test("retains explicit gaps for unresolved GKE workloads", async () => {
+  const snapshot = capture({
+    "chat-engine/prd": gke(engineWorkloads, { status: "unresolved", reason: "gke-mixed-images" }),
+  });
+  const report = await formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call"));
+  assert.match(report, /Partial coverage/);
+  assert.match(report, /chat-engine.*GKE.*mixed serving images/i);
+  assert.match(report, /conversation-agent.*GKE evidence pending/);
+  assert.doesNotMatch(report, /route digests agree/);
+});
+
+test("rejects unapproved GKE source and workload identities", async () => {
+  const invalid = [
+    capture({ "gateway/prd": gke(["gateway"]) }),
+    capture({ "chat-engine/dev": gke(engineWorkloads) }),
+    capture({ "chat-engine/prd": gke(["chat-engine"]) }),
+    capture({ "chat-engine/prd": gke(["chat-engine", "chat-engine"]) }),
+    capture({ "chat-engine/prd": gke(["chat-engine", "other-avatar"]) }),
+    capture({
+      "chat-engine/prd": gke(engineWorkloads, { observedAt: "2026-11-09T18:01:01.000Z" }),
+    }),
+  ];
+  for (const snapshot of invalid) {
+    await assert.rejects(
+      formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call")),
+      /Invalid .*capture/,
+    );
+  }
+});
+
+test("capture CLI merges only matching GKE placeholders from overlapping observation windows", async () => {
+  const output = [];
+  const now = Date.now();
+  const gkeStart = new Date(now - 60_000).toISOString();
+  const gkeEnd = new Date(now + 60_000).toISOString();
+  const input = capture({
+    "chat-engine/prd": gke(engineWorkloads, {
+      ...exact("b"),
+      observedAt: new Date(now).toISOString(),
+    }),
+  });
+  const path = input.paths.find(
+    (row) => row.service === "chat-engine" && row.environment === "prd",
+  );
+  const errors = [];
+  const requests = [];
+  const options = {
+    output: (message) => output.push(JSON.parse(message)),
+    error: (message) => errors.push(message),
+    collectGke: async (selection) => {
+      requests.push({ ...selection });
+      return {
+        captureStartedAt: gkeStart,
+        capturedAt: gkeEnd,
+        paths: [path, { ...path, service: "gateway" }],
+      };
+    },
+  };
+  const args = ["--service", "chat-engine", "--environment", "prd"];
+  assert.equal(await runCapture(args, options, {}), 0);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(requests, [{ service: "chat-engine", environment: "prd" }]);
+  assert.equal(output.length, 1);
+  assert.deepEqual(output[0].paths, [path]);
+  assert.equal(output[0].captureStartedAt, gkeStart);
+  assert.equal(output[0].capturedAt, gkeEnd);
+
+  const wrong = {
+    ...options,
+    collectGke: async () => ({
+      captureStartedAt: gkeStart,
+      capturedAt: gkeEnd,
+      paths: [{ ...path, repo: "other" }],
+    }),
+  };
+  assert.equal(await runCapture(args, wrong, {}), 0);
+  assert.equal(output[1].paths[0].status, "gke-pending");
+
+  const disjoint = {
+    ...options,
+    collectGke: async () => ({
+      captureStartedAt,
+      capturedAt,
+      paths: [{ ...path, observedAt: capturedAt }],
+    }),
+  };
+  assert.equal(await runCapture(args, disjoint, {}), 0);
+  assert.equal(output[2].paths[0].status, "gke-pending");
+});
+
+test("capture CLI starts eligible GKE alongside Cloud Run and keeps pending evidence on failure", async () => {
+  const output = [];
+  let gkeReads = 0;
+  const options = {
+    output: (message) => output.push(JSON.parse(message)),
+    error: () => {},
+    async collectGke() {
+      gkeReads += 1;
+      throw new Error("private provider failure");
+    },
+  };
+  const readers = {
+    async readService(target) {
+      const revisionName = target.cloudRunService + "-00001-xyz";
+      return { status: { traffic: [{ revisionName, percent: 100 }] } };
+    },
+    async readRevision(target, revision) {
+      return {
+        metadata: { name: revision },
+        status: { imageDigest: target.imagePrefix + "@" + digest("a") },
+      };
+    },
+    async readImageCommit() {
+      return gkeReads === 1 ? sha("b") : null;
+    },
+  };
+  assert.equal(await runCapture(["--service", "chat-engine"], options, readers), 0);
+  assert.equal(gkeReads, 1);
+  assert.equal(output[0].paths.find(({ environment }) => environment === "stg").commit, sha("b"));
+  assert.equal(
+    output[0].paths.find(({ environment }) => environment === "prd").status,
+    "gke-pending",
+  );
+  assert.equal(await runCapture(["--service", "unapproved"], options, readers), 2);
+  assert.equal(await runCapture(["--environment", "unapproved"], options, readers), 2);
+  assert.equal(await runCapture(["--service", "gateway"], options, readers), 0);
+  assert.equal(
+    await runCapture(["--service", "chat-engine", "--environment", "stg"], options, readers),
+    0,
+  );
+  assert.equal(gkeReads, 1);
 });
 
 test("rejects mismatched or duplicate identities before any comparison", async () => {
