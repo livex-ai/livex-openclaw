@@ -76,6 +76,52 @@ def reviewed_prompt_hash(manifest):
     return match[1]
 
 
+def slack_progress_settings(streaming):
+    """Select only the Git-owned presentation fields, never channel policy or secrets."""
+    if not isinstance(streaming, dict) or not isinstance(streaming.get("progress"), dict):
+        raise ValueError("Expected explicit Slack streaming and progress objects")
+    progress = streaming.get("progress", {})
+    settings = {
+        "mode": streaming.get("mode"),
+        "nativeTransport": streaming.get("nativeTransport"),
+        "progress": {key: progress.get(key) for key in (
+            "style", "nativeTaskCards", "toolProgress", "commandText", "commentary", "narration"
+        )},
+    }
+    if (settings.get("mode") not in ("off", "progress")
+            or type(settings.get("nativeTransport")) is not bool
+            or progress.get("style") not in ("card", "compact")
+            or progress.get("commandText") != "status"
+            or any(type(progress.get(key)) is not bool for key in (
+                "nativeTaskCards", "toolProgress", "commentary", "narration"
+            ))):
+        raise ValueError("Expected complete Slack streaming settings with mode off or progress and commandText=status")
+    return settings
+
+
+def require_slack_progress(config, target):
+    slack = config.get("channels", {}).get("slack", {})
+    root = slack.get("streaming", {})
+    for account in [slack, *slack.get("accounts", {}).values()]:
+        streaming = account.get("streaming", {})
+        effective = {**root, **streaming,
+                     "progress": {**root.get("progress", {}), **streaming.get("progress", {})}}
+        if slack_progress_settings(effective) != target:
+            raise ValueError("Slack progress differs from Git settings; reconcile account overrides")
+
+
+def with_slack_progress(content, target):
+    target = slack_progress_settings(target)
+    config = json.loads(content)
+    streaming = config.setdefault("channels", {}).setdefault("slack", {}).setdefault("streaming", {})
+    streaming.update(mode=target.get("mode"), nativeTransport=target.get("nativeTransport"))
+    streaming.setdefault("progress", {}).update(target.get("progress"))
+    # Account overrides remain operator-owned. A conflicting override must not
+    # silently defeat the selected presentation or be overwritten during deploy.
+    require_slack_progress(config, target)
+    return (json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
+
+
 def require_vm_policies(content):
     config = json.loads(content)
     agent = config["agents"]["entries"]["oncall"]

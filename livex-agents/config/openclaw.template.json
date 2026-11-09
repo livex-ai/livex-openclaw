@@ -95,7 +95,10 @@
     },
     "entries": {
       "oncall": {
-        "name": "LiveX Oncall",
+        "name": "LiveX Debugger",
+        "identity": {
+          "name": "LiveX Reporting · Debugger"
+        },
         "description": "Mention-triggered production investigations with reviewed local execution and evidence-backed next actions.",
         "workspace": "${PACKAGE_ROOT}/workspaces/oncall",
         "skills": [
@@ -198,11 +201,11 @@
         "enabled": false
       },
       "streaming": {
-        "mode": "progress",
+        "mode": "off",
         "nativeTransport": true,
         "progress": {
-          "style": "compact",
-          "nativeTaskCards": false,
+          "style": "card",
+          "nativeTaskCards": true,
           "toolProgress": false,
           "commandText": "status",
           "commentary": false,

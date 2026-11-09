@@ -83,6 +83,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("botToken", json.dumps(rendered))
         self.assertNotIn("appToken", json.dumps(rendered))
 
+    def test_debugger_identity_retains_existing_agent_and_route(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        agent = rendered["agents"]["entries"]["oncall"]
+        self.assertEqual(agent["name"], "LiveX Debugger")
+        self.assertEqual(agent["identity"]["name"], "LiveX Reporting · Debugger")
+        self.assertEqual(agent["workspace"], str(root / "workspaces/oncall"))
+        self.assertEqual(rendered["bindings"][0]["agentId"], "oncall")
+
     def test_report_profile_is_explicit_for_oncall_only(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
@@ -101,7 +111,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn(str(root / "plugins/livex-investigations"), plugins.get("load", {}).get("paths", []))
         self.assertNotIn("investigationCatalog", plugins.get("entries", {}).get("slack", {}).get("config", {}))
 
-    def test_review_profile_limits_message_actions_and_keeps_compact_native_progress(self):
+    def test_review_profile_limits_message_actions_and_enables_native_task_progress(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
         tools = rendered["agents"]["entries"]["oncall"]["tools"]
@@ -111,17 +121,23 @@ class ConfigurationTests(unittest.TestCase):
         slack = rendered["channels"]["slack"]
         self.assertTrue(slack["actions"]["reactions"])
         streaming = slack["streaming"]
-        self.assertEqual(streaming["mode"], "progress")
+        self.assertEqual(streaming["mode"], "off")
+        self.assertEqual(slack["typingReaction"], "")
         self.assertTrue(streaming["nativeTransport"])
-        self.assertEqual(streaming["progress"]["style"], "compact")
-        self.assertFalse(streaming["progress"]["nativeTaskCards"])
-        for key in ("toolProgress", "commentary", "narration"):
+        self.assertEqual(streaming.get("progress").get("style"), "card")
+        self.assertTrue(streaming.get("progress").get("nativeTaskCards"))
+        self.assertFalse(streaming.get("progress").get("toolProgress"))
+        self.assertEqual(streaming.get("progress").get("commandText"), "status")
+        for key in ("commentary", "narration"):
             self.assertFalse(streaming["progress"][key])
 
     def test_dedicated_app_has_scopes_and_account_gate_for_review_markers(self):
         root = Path(__file__).resolve().parent.parent
         manifest = json.loads((root / "slack/app-manifest.json").read_text())
+        self.assertEqual(manifest["display_information"]["name"], "LiveX Reporting")
+        self.assertEqual(manifest["features"]["bot_user"]["display_name"], "LiveX Reporting")
         scopes = manifest["oauth_config"]["scopes"]["bot"]
+        self.assertIn("chat:write.customize", scopes)
         self.assertIn("reactions:read", scopes)
         self.assertIn("reactions:write", scopes)
         cutover = json.loads((root / "slack/account-cutover.patch.json").read_text())

@@ -1,11 +1,11 @@
 {
   "display_information": {
-    "name": "LiveX Oncall",
-    "description": "Mention LiveX Oncall for a bounded, read-only incident investigation."
+    "name": "LiveX Reporting",
+    "description": "Agent-backed on-call coordination and read-only incident investigation."
   },
   "features": {
     "bot_user": {
-      "display_name": "LiveX Oncall",
+      "display_name": "LiveX Reporting",
       "always_online": false
     }
   },
@@ -16,6 +16,7 @@
         "channels:history",
         "channels:read",
         "chat:write",
+        "chat:write.customize",
         "groups:history",
         "groups:read",
         "reactions:read",
