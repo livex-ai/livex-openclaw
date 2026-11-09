@@ -379,3 +379,233 @@ test("follows only a same-project Artifact Registry blob download without forwar
     assert.equal(rejected.paths[0].commitReason, "artifact-unavailable");
   }
 });
+
+function versionFixture(
+  service,
+  { body, status = 200, first, second, env = [], corrupt = false } = {},
+) {
+  const cloudRunService = service === "frontend" ? "copilot-chat-frontend" : "copilot-api-gateway";
+  const url = "https://" + cloudRunService + "-fixtureabc-uc.a.run.app";
+  const revision = cloudRunService + "-00001-xyz";
+  const config = registryDocument({ config: { Env: env } });
+  const manifest = registryDocument({ config: { digest: config.digest } });
+  const requests = [];
+  let reads = 0;
+  const readers = createCloudRunReaders({
+    async runGcloud(args) {
+      if (args[0] === "auth") {
+        return "fixture-token";
+      }
+      if (args[1] === "services") {
+        reads += 1;
+        const update = reads === 1 ? first : second;
+        return JSON.stringify({
+          metadata: { name: cloudRunService, generation: 5, ...update?.metadata },
+          status: {
+            traffic: [traffic(revision)],
+            observedGeneration: 5,
+            conditions: [{ type: "Ready", status: "True" }],
+            url,
+            ...update?.status,
+          },
+        });
+      }
+      return JSON.stringify({
+        metadata: { name: revision },
+        status: {
+          imageDigest:
+            "us-central1-docker.pkg.dev/livex-copilot-stg/copilot/" +
+            cloudRunService +
+            "@" +
+            manifest.digest,
+        },
+      });
+    },
+    async fetchRegistry(path) {
+      const data = path.includes("/manifests/") ? manifest.body : config.body;
+      return new Response(corrupt && path.includes("/blobs/") ? data + " " : data);
+    },
+    async fetchVersion(path, options) {
+      requests.push({ path, options });
+      return new Response(body ?? commit, { status });
+    },
+  });
+  return { readers, requests, url };
+}
+
+test("uses an anonymous stable serving version for frontend plaintext and gateway JSON", async () => {
+  for (const [service, body] of [
+    ["frontend", commit + "\n"],
+    ["gateway", JSON.stringify({ version: commit })],
+  ]) {
+    const fixture = versionFixture(service, { body });
+    const { paths } = await collectCloudRunServingImages(
+      { service, environment: "stg" },
+      fixture.readers,
+    );
+    assert.equal(paths[0].commit, commit);
+    assert.equal(paths[0].commitSource, "cloud-run-version");
+    assert.equal(paths[0].status, "verified");
+    assert.equal(fixture.requests.length, 1);
+    const { path, options } = fixture.requests[0];
+    assert.equal(path, fixture.url + "/version");
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.headers, undefined);
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.doesNotMatch(JSON.stringify(paths), /fixtureabc|fixture-token/);
+  }
+});
+
+test("binds a deterministic service URL to the project number from the same Cloud Run read", async () => {
+  const namespace = "123456789012";
+  const origin = "https://copilot-chat-frontend-" + namespace + ".us-central1.run.app";
+  const observation = { metadata: { namespace }, status: { url: origin } };
+  const selection = { service: "frontend", environment: "stg" };
+  const valid = versionFixture("frontend", { first: observation, second: observation });
+  const {
+    paths: [row],
+  } = await collectCloudRunServingImages(selection, valid.readers);
+  assert.equal(row.commit, commit);
+  assert.equal(row.commitSource, "cloud-run-version");
+  assert.equal(valid.requests.length, 1);
+  assert.equal(valid.requests[0].path, origin + "/version");
+
+  const changed = versionFixture("frontend", {
+    first: observation,
+    second: { metadata: { namespace: "999999999999" }, status: { url: origin } },
+  });
+  const {
+    paths: [terminal],
+  } = await collectCloudRunServingImages(selection, changed.readers);
+  assert.equal(changed.requests.length, 1);
+  assert.equal(terminal.commitReason, "cloud-run-version-unstable");
+  assert.equal(terminal.commit, null);
+
+  for (const url of [
+    origin.replace(namespace, "999999999999"),
+    origin.replace("us-central1", "europe-west1"),
+    origin.replace("https://", "https://tag---"),
+    origin + ":443",
+    origin + "/version",
+    origin.replace("https://", "https://user:secret@"),
+  ]) {
+    const fixture = versionFixture("frontend", {
+      first: { metadata: { namespace }, status: { url } },
+    });
+    const {
+      paths: [untrusted],
+    } = await collectCloudRunServingImages(selection, fixture.readers);
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(untrusted.commit, null);
+    assert.equal(untrusted.commitReason, "cloud-run-version-unverified");
+  }
+});
+
+test("does not read a serving version on untrusted origins or unreconciled generations", async () => {
+  for (const first of [
+    { status: { url: "https://copilot-chat-frontend-other-uc.a.run.app.evil.invalid" } },
+    { status: { url: "https://copilot-api-gateway-fixtureabc-uc.a.run.app" } },
+    { status: { url: "https://copilot-chat-frontend-fixtureabc-uc.a.run.app/?path=version" } },
+    { status: { observedGeneration: 4 } },
+  ]) {
+    const fixture = versionFixture("frontend", { first });
+    const { paths } = await collectCloudRunServingImages(
+      { service: "frontend", environment: "stg" },
+      fixture.readers,
+    );
+    assert.equal(paths[0].commit, null);
+    assert.equal(paths[0].commitReason, "cloud-run-version-unverified");
+    assert.equal(fixture.requests.length, 0);
+  }
+});
+
+test("requires one completed Ready condition on both reads before accepting a serving version", async () => {
+  for (const conditions of [
+    undefined,
+    [{ type: "Ready", status: "Unknown" }],
+    [
+      { type: "Ready", status: "True" },
+      { type: "Ready", status: "Unknown" },
+    ],
+  ]) {
+    for (const read of ["first", "second"]) {
+      const fixture = versionFixture("frontend", { [read]: { status: { conditions } } });
+      const { paths } = await collectCloudRunServingImages(
+        { service: "frontend", environment: "stg" },
+        fixture.readers,
+      );
+      assert.equal(paths[0].status, "verified");
+      assert.equal(paths[0].commit, null);
+      assert.equal(
+        paths[0].commitReason,
+        read === "first" ? "cloud-run-version-unverified" : "cloud-run-version-unstable",
+      );
+      assert.equal(fixture.requests.length, read === "first" ? 0 : 1);
+    }
+  }
+});
+
+test("discards a serving version when the terminal service binding changes", async () => {
+  for (const [second, reason] of [
+    [
+      { status: { url: "https://copilot-chat-frontend-changed-uc.a.run.app" } },
+      "cloud-run-version-unstable",
+    ],
+    [
+      { metadata: { generation: 6 }, status: { observedGeneration: 6 } },
+      "cloud-run-version-unstable",
+    ],
+    [{ status: { observedGeneration: 4 } }, "cloud-run-version-unstable"],
+    [{ status: { traffic: [traffic("copilot-chat-frontend-00002-xyz")] } }, "traffic-changed"],
+  ]) {
+    const fixture = versionFixture("frontend", { second });
+    const { paths } = await collectCloudRunServingImages(
+      { service: "frontend", environment: "stg" },
+      fixture.readers,
+    );
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(paths[0].commitReason ?? paths[0].reason, reason);
+    assert.equal(paths[0].commitSource, undefined);
+    assert.equal(paths[0].commit == null, true);
+  }
+});
+
+test("does not publish versions from redirects, denial, oversize bodies, or incorrect response shapes", async () => {
+  for (const [service, body, status] of [
+    ["frontend", commit, 302],
+    ["frontend", commit, 403],
+    ["frontend", commit + " ".repeat(1024), 200],
+    ["frontend", JSON.stringify({ version: commit }), 200],
+    ["gateway", commit, 200],
+    ["gateway", JSON.stringify({ version: "abc123" }), 200],
+  ]) {
+    const fixture = versionFixture(service, { body, status });
+    const { paths } = await collectCloudRunServingImages(
+      { service, environment: "stg" },
+      fixture.readers,
+    );
+    assert.equal(paths[0].commit, null);
+    assert.equal(paths[0].commitReason, "cloud-run-version-unavailable");
+    assert.equal(fixture.requests.length, 1);
+  }
+});
+
+test("prefers exact OCI provenance and never uses versions after conflicting or corrupt OCI evidence", async () => {
+  for (const [opts, expected, reason] of [
+    [{ env: ["COMMIT_ID=" + commit] }, commit, undefined],
+    [{ env: ["COMMIT_ID=" + commit, "GIT_SHA=" + "c".repeat(40)] }, null, "image-commit-conflict"],
+    [{ corrupt: true }, null, "artifact-unavailable"],
+  ]) {
+    const fixture = versionFixture("frontend", opts);
+    const { paths } = await collectCloudRunServingImages(
+      { service: "frontend", environment: "stg" },
+      fixture.readers,
+    );
+    assert.equal(paths[0].commit, expected);
+    assert.equal(paths[0].commitReason, reason);
+    assert.equal(paths[0].commitSource, expected ? "artifact-registry-config" : undefined);
+    assert.equal(fixture.requests.length, 0);
+  }
+});
