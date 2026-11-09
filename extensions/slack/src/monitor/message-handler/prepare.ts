@@ -90,7 +90,7 @@ import { resolveSlackRoutingContext } from "./prepare-routing.js";
 import { resolveSlackGroupSessionSubject } from "./prepare-session-presentation.js";
 import { resolveSlackThreadContextData } from "./prepare-thread-context.js";
 import { resolveSlackThreadMentionPolicy } from "./prepare-thread-mentions.js";
-import { editRequest, slackReplyTurnQuery } from "./priority-card.js";
+import { slackReportEditRequest, slackReplyTurnQuery } from "./reply-turn-input.js";
 import {
   collectSlackMentionIds,
   isSlackSubteamMentionForBot,
@@ -1351,7 +1351,11 @@ export async function prepareSlackMessage(params: {
     senderId,
     sessionKey,
     isDirectMessage,
-    amendmentRequest: editRequest(message, ctx.botUserId, commandAuthorized && !isBotMessage),
+    amendmentRequest: slackReportEditRequest(
+      message,
+      ctx.botUserId,
+      commandAuthorized && !isBotMessage,
+    ),
     query: slackReplyTurnQuery(threadStarterBody, threadHistoryBody, textWithId),
     assertCurrent: assertHistoryCurrent,
     signal: opts.abortSignal,

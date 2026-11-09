@@ -15,6 +15,7 @@ import type {
   PluginRecord,
   PluginTextTransformsRegistration,
 } from "./registry-types.js";
+import { registerLinkedReportEditAuthority } from "./reply-turn-report-edits.js";
 import type { ReplyTurnProvider } from "./reply-turn.types.js";
 import type { AgentReportProfile } from "./report-profile.types.js";
 import { validateStorageProviderContract } from "./storage-provider-registry.js";
@@ -230,6 +231,7 @@ export function createProviderRegistrars(state: PluginRegistryState) {
       !profile.instructions?.trim() ||
       typeof profile.prepare !== "function" ||
       typeof profile.appendNotice !== "function" ||
+      (profile.amend !== undefined && typeof profile.amend !== "function") ||
       (profile.prepareLegacy !== undefined && typeof profile.prepareLegacy !== "function")
     ) {
       reportRegistrationError(record, "invalid agent report profile contract");
@@ -261,7 +263,9 @@ export function createProviderRegistrars(state: PluginRegistryState) {
       provider.id !== provider.id.trim() ||
       !validNames(provider.agentIds) ||
       !validNames(provider.channels) ||
-      typeof provider.prepare !== "function"
+      typeof provider.prepare !== "function" ||
+      (provider.allowLinkedReportEdits !== undefined &&
+        typeof provider.allowLinkedReportEdits !== "boolean")
     ) {
       reportRegistrationError(record, "invalid reply turn provider contract");
       return;
@@ -293,9 +297,9 @@ export function createProviderRegistrars(state: PluginRegistryState) {
       "releaseImmediate",
       "createDelivery",
     ]);
-    registry.replyTurnProviders.push(
-      createRegistration(record, { provider: { ...provider, prepare } }),
-    );
+    const registration = createRegistration(record, { provider: { ...provider, prepare } });
+    registerLinkedReportEditAuthority(registration);
+    registry.replyTurnProviders.push(registration);
   };
 
   const registerEmbeddingProvider = (record: PluginRecord, adapter: EmbeddingProviderAdapter) => {

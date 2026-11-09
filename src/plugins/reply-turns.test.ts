@@ -8,15 +8,19 @@ import { createTestPluginRegistry } from "./registry-runtime.test-helpers.js";
 import { createReplyTurnDelivery } from "./reply-turn-delivery.js";
 import type {
   ReplyTurnDeliveryHost,
+  ReportEdit,
   ReplyTurnInput,
   ReplyTurnProvider,
 } from "./reply-turn.types.js";
 import {
   prepareAgentReplyTurn,
-  resolveReplyTurnProviderFromRegistry,
+  resolveReplyTurnProviderRegistration,
 } from "./reply-turns.runtime.js";
 import { disposePluginRegistryInstances } from "./runtime.js";
-import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeRegistryScope,
+} from "./runtime/gateway-request-scope.js";
 
 function input(overrides: Partial<ReplyTurnInput> = {}): ReplyTurnInput {
   return {
@@ -91,7 +95,7 @@ describe("scoped reply turn providers", () => {
       owners[0]!.api.registerReplyTurnProvider(provider("first"));
       owners[1]!.api.registerReplyTurnProvider(provider("second"));
       expect(
-        resolveReplyTurnProviderFromRegistry(builder.registry, "oncall", "slack"),
+        resolveReplyTurnProviderRegistration(builder.registry, "oncall", "slack"),
       ).toBeUndefined();
       expect(builder.registry.diagnostics).toEqual(
         expect.arrayContaining([
@@ -462,50 +466,32 @@ describe("scoped reply turn providers", () => {
     captured.api.registerReplyTurnProvider(value);
     expect(captured.replyTurnProviders).toEqual([value]);
   });
-});
 
-it.each(["livex-investigations", "foreign"])(
-  "binds linked priority owner to registered instance %s",
-  async (pluginId) => {
+  it("revokes in-flight report edits when the host route changes", async () => {
     const { builder, register } = fixture();
-    const owner = register(pluginId);
-    const urls = [
-      "https://example.slack.com/archives/C1/p1000000001000000?thread_ts=1000000000.000000",
-      "https://example.slack.com/archives/C1/p1000000002000000?thread_ts=1000000000.000001",
-    ];
-    let escaped: ReplyTurnDeliveryHost | undefined;
-    owner.api.registerReplyTurnProvider({
+    const url = "https://example.invalid/report";
+    const project = vi.fn<ReportEdit["project"]>((content) => content);
+    const request: ReportEdit = {
+      url,
+      linkedReports: [url, "https://example.invalid/linked"],
+      project,
+    };
+    const revoked = new Error("channel policy revoked");
+    let current = true;
+    register("owner").api.registerReplyTurnProvider({
       ...provider(),
+      allowLinkedReportEdits: true,
       async prepare() {
         return {
           context: "",
           toolBindings: {},
           assertCurrent() {},
           releaseImmediate() {},
-          lifecycle() {
-            return {};
-          },
+          lifecycle: () => ({ onAdopted() {} }),
           createDelivery(transport) {
-            escaped = transport;
             return {
-              deliver: async () => {
-                await transport.amendOwnReport!(
-                  urls[0]!,
-                  { priority: "Medium" },
-                  undefined,
-                  undefined,
-                  urls,
-                  "forged-owner",
-                );
-                await expect(
-                  transport.amendOwnReport!(
-                    urls[0]!,
-                    { priority: "Medium" },
-                    undefined,
-                    undefined,
-                    urls,
-                  ),
-                ).rejects.toThrow("admitted final");
+              async deliver() {
+                await transport.amendOwnReport!(request);
                 return { visibleReplySent: true };
               },
             };
@@ -515,22 +501,126 @@ it.each(["livex-investigations", "foreign"])(
     });
     try {
       const prepared = await withPluginRuntimeRegistryScope(builder.registry, () =>
-        prepareAgentReplyTurn(input()),
+        prepareAgentReplyTurn(
+          input({
+            assertCurrent() {
+              if (!current) {
+                throw revoked;
+              }
+            },
+          }),
+        ),
       );
-      const amendOwnReport = vi.fn(async () => "1000000001.000000");
+      const amendOwnReport = vi.fn<NonNullable<ReplyTurnDeliveryHost["amendOwnReport"]>>(
+        async (edit, _receipt, assertAdmission) => {
+          await Promise.resolve();
+          current = false;
+          expect(assertAdmission).toThrow(revoked);
+          edit.project({ text: "original", blocks: [], attachments: [] });
+          return "edited";
+        },
+      );
       const delivery = createReplyTurnDelivery(prepared, { ...host(), amendOwnReport });
-      await expect(
-        escaped!.amendOwnReport!(urls[0]!, { priority: "Medium" }, undefined, undefined, urls),
-      ).rejects.toThrow("admitted final");
-      await delivery.deliver({ text: "priority" }, { kind: "final" });
-      expect(amendOwnReport).toHaveBeenCalledWith(
-        urls[0],
-        { priority: "Medium" },
-        undefined,
-        expect.any(Function),
-        urls,
-        pluginId,
+      await expect(delivery.deliver({ text: "edit" }, { kind: "final" })).rejects.toBe(revoked);
+      expect(amendOwnReport).toHaveBeenCalledOnce();
+      expect(project).not.toHaveBeenCalled();
+    } finally {
+      await disposePluginRegistryInstances(builder.registry);
+    }
+  });
+});
+
+it.each([
+  { allowLinkedReportEdits: undefined, scopeChanged: false },
+  { allowLinkedReportEdits: false, scopeChanged: false },
+  { allowLinkedReportEdits: true, scopeChanged: false },
+  { allowLinkedReportEdits: true, scopeChanged: true },
+])(
+  "uses only registered linked edit grants ($allowLinkedReportEdits) and scope ($scopeChanged)",
+  async ({ allowLinkedReportEdits, scopeChanged }) => {
+    const granted = allowLinkedReportEdits && !scopeChanged;
+    const { builder, register } = fixture();
+    const owner = register("arbitrary-plugin");
+    const urls = ["report", "linked-report"];
+    const original = { text: "original", blocks: [], attachments: [] };
+    const project = vi.fn<ReportEdit["project"]>((content) => ({ ...content, text: "edited" }));
+    const edit: ReportEdit = { url: urls[0]!, linkedReports: urls, project };
+    let escaped: ReplyTurnDeliveryHost | undefined;
+    owner.api.registerReplyTurnProvider({
+      ...provider("arbitrary-provider"),
+      allowLinkedReportEdits,
+      async prepare(preparedInput: ReplyTurnInput) {
+        if (scopeChanged) {
+          preparedInput.agentId = "oncall";
+        }
+        return {
+          // Data returned from prepare cannot grant permissions.
+          allowLinkedReportEdits: true,
+          context: "",
+          toolBindings: {},
+          assertCurrent() {},
+          releaseImmediate() {},
+          lifecycle() {
+            return { onAdopted() {} };
+          },
+          createDelivery(transport: ReplyTurnDeliveryHost) {
+            escaped = transport;
+            return {
+              deliver: async () => {
+                const request = transport.amendOwnReport!(
+                  edit,
+                  { messageId: "forged", text: "forged" },
+                  () => {
+                    throw new Error("forged check");
+                  },
+                );
+                if (granted) {
+                  await expect(request).resolves.toBe("edited-message");
+                  await expect(transport.amendOwnReport!(edit)).rejects.toThrow("admitted final");
+                } else {
+                  await expect(request).rejects.toThrow("linked report edits");
+                }
+                return { visibleReplySent: true };
+              },
+            };
+          },
+        };
+      },
+    });
+    try {
+      const prepared = await withPluginRuntimeRegistryScope(builder.registry, () => {
+        const registered =
+          getPluginRuntimeGatewayRequestScope()!.pluginRegistry!.replyTurnProviders[0]!.provider;
+        registered.allowLinkedReportEdits = true;
+        if (scopeChanged) {
+          registered.agentIds = ["forged-agent"];
+        }
+        return prepareAgentReplyTurn(input(scopeChanged ? { agentId: "forged-agent" } : {}));
+      });
+      expect(prepared).toBeDefined();
+      let retainedProject: ReportEdit["project"] | undefined;
+      const amendOwnReport = vi.fn<NonNullable<ReplyTurnDeliveryHost["amendOwnReport"]>>(
+        async (accepted, receipt, assertAdmission) => {
+          expect(receipt).toBeUndefined();
+          assertAdmission!();
+          edit.url = "changed";
+          urls[1] = "changed";
+          edit.project = () => original;
+          expect(accepted.url).toBe("report");
+          expect(accepted.linkedReports).toEqual(["report", "linked-report"]);
+          expect(accepted.project(original).text).toBe("edited");
+          retainedProject = accepted.project;
+          return "edited-message";
+        },
       );
+      const delivery = createReplyTurnDelivery(prepared, { ...host(), amendOwnReport });
+      await expect(escaped!.amendOwnReport!(edit)).rejects.toThrow("admitted final");
+      await delivery.deliver({ text: "edit" }, { kind: "final" });
+      expect(amendOwnReport).toHaveBeenCalledTimes(granted ? 1 : 0);
+      expect(project).toHaveBeenCalledTimes(granted ? 1 : 0);
+      if (granted) {
+        expect(() => retainedProject!(original)).toThrow("closed");
+      }
     } finally {
       await disposePluginRegistryInstances(builder.registry);
     }

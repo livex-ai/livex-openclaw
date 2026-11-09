@@ -8,6 +8,7 @@ import {
   createPluginRegistry,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import type { ReplyTurnDeliveryHost, ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
 import type { AgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { resolveAgentReportProfile } from "openclaw/plugin-sdk/report-profiles";
 import { afterEach, expect, it, vi } from "vitest";
@@ -371,7 +372,7 @@ it.each(["unchanged", "changed-text", "changed-card"] as const)(
   },
 );
 
-it.each(["immediate", "queued", "changed", "partial"] as const)(
+it.each(["immediate", "queued", "changed", "partial", "no projector", "unauthorized"] as const)(
   "amends one existing case through %s delivery",
   async (mode) => {
     install();
@@ -400,20 +401,39 @@ it.each(["immediate", "queued", "changed", "partial"] as const)(
       changes: { priority: "Medium", acceptOwnership: true },
     });
     const payload = { text: f.value.amendment!.finalText };
-    const amendOwnReport = vi.fn(async () => ts);
+    const original = { text: "existing report", blocks: [], attachments: [] };
+    const projectedChanges: ReportAmendment[] = [];
+    const amend = vi.fn<NonNullable<AgentReportProfile["amend"]>>((content, changes) => {
+      projectedChanges.push({ ...changes });
+      changes.priority = "High";
+      return content;
+    });
+    f.value.reportProfile = {
+      ...f.value.reportProfile!,
+      amend: mode === "no projector" ? undefined : amend,
+    };
+    if (mode === "unauthorized") {
+      f.value.amendmentRequest = { ...req, text: "I'll own this; make it High." };
+    }
+    const amendOwnReport = vi.fn<NonNullable<ReplyTurnDeliveryHost["amendOwnReport"]>>(
+      async (edit) => {
+        edit.project(original);
+        return ts;
+      },
+    );
     const send = vi.fn(async () => ({ visibleReplySent: true }));
+    const reportError = vi.fn();
     const owner = createInvestigationDelivery({
       turn: f.value,
       sourceMessageIds: [root, req.messageId],
       amendOwnReport,
       resolvePermalink: vi.fn(),
-      reportError: vi.fn(),
+      reportError,
       annotateAcceptedFinal: vi.fn(),
       deliver: send,
     });
-    if (mode === "immediate") {
+    if (mode === "immediate" || mode === "no projector" || mode === "unauthorized") {
       await owner.deliver(payload, { kind: "final" });
-      expect(send).not.toHaveBeenCalled();
     } else {
       owner.queuedCorrelation!.prepareReply!(payload, { kind: "final" });
       await owner.queuedCorrelation!.onReplyDelivered!(
@@ -423,13 +443,23 @@ it.each(["immediate", "queued", "changed", "partial"] as const)(
     }
     const applied = mode === "immediate" || mode === "queued";
     expect(amendOwnReport).toHaveBeenCalledTimes(applied ? 1 : 0);
+    if (applied) {
+      expect(amendOwnReport.mock.calls[0]?.[0]).toMatchObject({ url });
+      expect(amend).toHaveBeenCalledWith(original, expect.any(Object), "U1");
+      expect(projectedChanges).toEqual([{ priority: "Medium", acceptOwnership: true }]);
+      expect(send).not.toHaveBeenCalled();
+    }
+    if (mode === "no projector" || mode === "unauthorized") {
+      expect(reportError).toHaveBeenCalledWith(expect.stringContaining("Could not confirm"));
+    }
     const issue = (await readCatalog({ filePath: f.filePath, scope: f.scope })).issues[0]!;
     expect(issue.whatWeDidLast).toHaveLength(applied ? 2 : 1);
-    if (applied)
+    if (applied) {
       expect(issue.whatWeDidLast.at(-1)!.facts).toMatchObject({
         priority: "Medium",
         owner: { name: "U1" },
       });
+    }
   },
 );
 

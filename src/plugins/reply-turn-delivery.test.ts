@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
 import { createReplyTurnDelivery } from "./reply-turn-delivery.js";
 import type { PreparedReplyTurn, ReplyTurnDeliveryHost } from "./reply-turn.types.js";
+import type { ReportEditContent } from "./report-profile.types.js";
 
 function fixture(
   result: LivePreviewDeliveryResult = { visibleReplySent: true, messageIds: ["final"] },
@@ -52,11 +53,12 @@ describe("reply turn accepted transport authority", () => {
   it("grants the editor only during policy-admitted finals and revokes it after settlement", async () => {
     const f = fixture();
     const writer = vi.fn(async () => "updated");
+    const edit = { url: "target", project: (content: ReportEditContent) => content };
     let bound: ReplyTurnDeliveryHost | undefined;
     let stillCurrent: (() => void) | undefined;
     const persisted = {
       ...f.host,
-      amendOwnReport: vi.fn(async (_url, _patch, _receipt, check) => {
+      amendOwnReport: vi.fn(async (_edit, _receipt, check) => {
         stillCurrent = check;
         return writer();
       }),
@@ -68,10 +70,8 @@ describe("reply turn accepted transport authority", () => {
           bound = host;
           return {
             deliver: async () => {
-              await host.amendOwnReport!("target", { priority: "Low" });
-              await expect(host.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
-                "admitted final",
-              );
+              await host.amendOwnReport!(edit);
+              await expect(host.amendOwnReport!(edit)).rejects.toThrow("admitted final");
               return { visibleReplySent: true };
             },
           };
@@ -79,9 +79,7 @@ describe("reply turn accepted transport authority", () => {
       },
       persisted,
     );
-    await expect(bound!.amendOwnReport!("target", { priority: "Low" })).rejects.toThrow(
-      "admitted final",
-    );
+    await expect(bound!.amendOwnReport!(edit)).rejects.toThrow("admitted final");
     await expect(owner.deliver({ text: "progress" }, { kind: "block" })).rejects.toThrow(
       "admitted final",
     );

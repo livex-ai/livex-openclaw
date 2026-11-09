@@ -2,6 +2,7 @@
 export type {
   PreparedReplyTurn,
   ReportAmendment,
+  ReportEdit,
   ReplyTurnDelivery,
   ReplyTurnDeliveryHost,
   ReplyTurnInput,
@@ -9,5 +10,3 @@ export type {
 } from "../plugins/reply-turn.types.js";
 export { prepareAgentReplyTurn } from "../plugins/reply-turns.runtime.js";
 export { createReplyTurnDelivery } from "../plugins/reply-turn-delivery.js";
-
-export { assertReportAmendmentAuthorized } from "../plugins/report-amendment.js";

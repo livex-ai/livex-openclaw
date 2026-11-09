@@ -1,5 +1,7 @@
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import type { ReplyTurnDeliveryHost } from "openclaw/plugin-sdk/reply-turns";
+import type { ReportEditContent } from "openclaw/plugin-sdk/report-profiles";
+import { assertReportAmendmentAuthorized } from "./amendment-authorization.js";
 import type { InvestigationTurn } from "./runtime.js";
 import { editCatalogReport } from "./store.js";
 
@@ -24,23 +26,28 @@ export async function applyAmendment(
 ) {
   const staged = turn.amendment;
   const request = turn.amendmentRequest;
-  if (!staged || !request || !edit) {
+  const amend = turn.reportProfile?.amend;
+  if (!staged || !request || !edit || !amend) {
     throw new Error("No active reporter or amendment");
   }
+  const changes = { ...staged.changes };
+  assertReportAmendmentAuthorized(request.text, changes);
+  const senderId = turn.scope.senderId;
+  const project = (original: ReportEditContent) => amend(original, { ...changes }, senderId);
   let messageId: string | undefined;
   await editCatalogReport({
     filePath: turn.filePath,
     scope: turn.scope,
     threadId: request.threadId,
     messageId: request.messageId,
-    changes: staged.changes,
+    changes,
     snapshot: staged.snapshot,
     assertCurrent: turn.assertCurrent,
-    editLinked: async (urls) => {
-      messageId = await edit(urls[0]!, staged.changes, undefined, undefined, urls);
+    editLinked: async (linkedReports) => {
+      messageId = await edit({ url: linkedReports[0]!, linkedReports, project });
     },
     edit: async (url) => {
-      messageId = await edit(url, staged.changes);
+      messageId = await edit({ url, project });
     },
   });
   return messageId;

@@ -1,5 +1,5 @@
-import { assertReportAmendmentAuthorized } from "openclaw/plugin-sdk/reply-turns";
 import { describe, expect, it } from "vitest";
+import { assertReportAmendmentAuthorized } from "./amendment-authorization.js";
 import { prepareAmendment } from "./amendment.js";
 import type { CatalogSnapshot } from "./schema.js";
 const snapshot: CatalogSnapshot = {

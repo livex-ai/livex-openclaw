@@ -181,6 +181,13 @@ credentials. A provider may prepare a report and record a confirmed outcome, but
 model completion alone is not delivery evidence. Report formatting can continue
 to use an independently registered pure report profile.
 
+A channel can expose `amendOwnReport` during an admitted final reply. The provider
+owns edit intent and supplies a synchronous projection of verified message
+content. The channel validates the output and verifies the write. Slack requires
+nonblank fallback text within its edit limit. A provider must register
+`allowLinkedReportEdits: true` to propose a linked batch. The channel verifies each
+target using the same transport identity and scope checks.
+
 ## Storing runtime references
 
 Synchronous storage compatibility calls retain their synchronous return contract.

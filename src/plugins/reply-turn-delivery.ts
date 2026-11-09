@@ -1,11 +1,22 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
-import { getPluginValueInstance } from "./plugin-instance-scope.js";
+import { assertLinkedReportEditAuthority } from "./reply-turn-report-edits.js";
 import type {
   PreparedReplyTurn,
   ReplyTurnDelivery,
   ReplyTurnDeliveryHost,
 } from "./reply-turn.types.js";
+
+function snapshotLinkedReports(targets: readonly string[]): string[] {
+  if (!Array.isArray(targets)) {
+    throw new Error("Linked report targets must be an array");
+  }
+  const snapshot = [...targets];
+  if (snapshot.some((target) => typeof target !== "string")) {
+    throw new Error("Linked report targets must be strings");
+  }
+  return snapshot;
+}
 
 /** Only transport receipts can grant this plugin access to an accepted final message. */
 export function createReplyTurnDelivery(
@@ -55,26 +66,45 @@ export function createReplyTurnDelivery(
     ...host,
     amendOwnReport:
       host.amendOwnReport &&
-      (async (url, changes, _receipt, _check, linkedReports) => {
+      (async (edit) => {
         const permit = admission.getStore();
         if (!permit?.open || permit.used) {
           throw new Error("Report edit requires its own admitted final");
         }
         turn.assertCurrent();
         permit.used = true;
-        return host.amendOwnReport!(
-          url,
-          changes,
-          permit.queuedReceipt,
-          () => {
-            if (!permit.open) {
-              throw new Error("Report edit admission closed");
-            }
-            turn.assertCurrent();
+        const { url, linkedReports, project } = edit;
+        if (typeof url !== "string" || typeof project !== "function") {
+          throw new Error("Invalid report edit target or projector");
+        }
+        const assertCurrent = () => {
+          if (!permit.open) {
+            throw new Error("Report edit admission closed");
+          }
+          if (linkedReports !== undefined) {
+            assertLinkedReportEditAuthority(turn);
+          }
+          turn.assertCurrent();
+        };
+        assertCurrent();
+        const targets =
+          linkedReports === undefined ? undefined : snapshotLinkedReports(linkedReports);
+        const result = await host.amendOwnReport!(
+          {
+            url,
+            linkedReports: targets,
+            project(original) {
+              assertCurrent();
+              const next = project(original);
+              assertCurrent();
+              return next;
+            },
           },
-          linkedReports && [...linkedReports],
-          getPluginValueInstance(turn.createDelivery)?.pluginId,
+          permit.queuedReceipt,
+          assertCurrent,
         );
+        assertCurrent();
+        return result;
       }),
     verifyTrendSource:
       host.verifyTrendSource &&

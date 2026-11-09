@@ -1,15 +1,19 @@
 import { PluginInstanceUnavailableError } from "./plugin-instance-error.js";
 import { getPluginValueInstance } from "./plugin-instance-scope.js";
 import type { PluginRegistry } from "./registry-types.js";
-import type { PreparedReplyTurn, ReplyTurnInput, ReplyTurnProvider } from "./reply-turn.types.js";
+import {
+  bindLinkedReportEditAuthority,
+  type ReplyTurnProviderRegistration,
+} from "./reply-turn-report-edits.js";
+import type { PreparedReplyTurn, ReplyTurnInput } from "./reply-turn.types.js";
 import { getPluginRegistryForContext } from "./runtime/gateway-request-scope.js";
 
 /** Select one admitted owner without loading plugins or depending on registration order. */
-export function resolveReplyTurnProviderFromRegistry(
+export function resolveReplyTurnProviderRegistration(
   registry: PluginRegistry,
   agentId: string,
   channel: string,
-): ReplyTurnProvider | undefined {
+): ReplyTurnProviderRegistration | undefined {
   const active = registry.replyTurnProviders.filter((entry) => {
     const owner = registry.plugins.find((plugin) => plugin.id === entry.pluginId);
     return owner?.enabled && owner.status === "loaded";
@@ -18,8 +22,9 @@ export function resolveReplyTurnProviderFromRegistry(
     (entry) =>
       entry.provider.agentIds.includes(agentId) && entry.provider.channels.includes(channel),
   );
-  const selected = matches.length === 1 ? matches[0]?.provider : undefined;
-  return selected && active.filter((entry) => entry.provider.id === selected.id).length === 1
+  const selected = matches.length === 1 ? matches[0] : undefined;
+  return selected &&
+    active.filter((entry) => entry.provider.id === selected.provider.id).length === 1
     ? selected
     : undefined;
 }
@@ -30,7 +35,10 @@ function onceTerminal(callback?: () => void | Promise<void>): () => Promise<void
 }
 
 /** Host custody must settle even when the plugin can no longer admit cleanup calls. */
-function withHostReplyTurnCleanup(contribution: PreparedReplyTurn): PreparedReplyTurn {
+function withHostReplyTurnCleanup(
+  contribution: PreparedReplyTurn,
+  assertHostCurrent: () => void,
+): PreparedReplyTurn {
   const owner = getPluginValueInstance(contribution.releaseImmediate);
   const isOwnerRetirement = (error: unknown) =>
     owner &&
@@ -39,6 +47,10 @@ function withHostReplyTurnCleanup(contribution: PreparedReplyTurn): PreparedRepl
       (owner.lifecycle.signal.aborted && error === owner.lifecycle.signal.reason));
   return {
     ...contribution,
+    assertCurrent() {
+      assertHostCurrent();
+      contribution.assertCurrent();
+    },
     lifecycle(upstream) {
       const abandoned = onceTerminal(upstream?.onAbandoned);
       const settled = onceTerminal(upstream?.onSettled);
@@ -94,21 +106,30 @@ function withHostReplyTurnCleanup(contribution: PreparedReplyTurn): PreparedRepl
 export async function prepareAgentReplyTurn(
   input: ReplyTurnInput,
 ): Promise<PreparedReplyTurn | undefined> {
-  input.assertCurrent();
-  input.signal?.throwIfAborted();
+  const { agentId, channel, assertCurrent, signal } = input;
+  const assertHostCurrent = () => {
+    assertCurrent.call(input);
+    signal?.throwIfAborted();
+  };
+  assertHostCurrent();
   const registry = getPluginRegistryForContext();
-  const provider = registry
-    ? resolveReplyTurnProviderFromRegistry(registry, input.agentId, input.channel)
+  const registration = registry
+    ? resolveReplyTurnProviderRegistration(registry, agentId, channel)
     : undefined;
-  if (!provider) {
+  if (!registration) {
     return undefined;
   }
-  const contribution = await provider.prepare(input);
-  const turn = contribution ? withHostReplyTurnCleanup(contribution) : undefined;
+  const { provider } = registration;
+  const { prepare } = provider;
+  const contribution = await prepare.call(provider, input);
+  const turn = contribution ? withHostReplyTurnCleanup(contribution, assertHostCurrent) : undefined;
   try {
-    input.assertCurrent();
-    input.signal?.throwIfAborted();
-    turn?.assertCurrent();
+    if (turn) {
+      turn.assertCurrent();
+      bindLinkedReportEditAuthority(registration, prepare, { agentId, channel }, turn);
+    } else {
+      assertHostCurrent();
+    }
     return turn;
   } catch (error) {
     try {

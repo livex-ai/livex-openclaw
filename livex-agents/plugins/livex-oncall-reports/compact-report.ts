@@ -6,7 +6,13 @@ import {
   type ReportFinding as FindingComparison,
   type ReportInvestigation as CompletedInvestigation,
 } from "./report-context.js";
-import { escapeSlackMrkdwn, SLACK_EDIT_TEXT_MAX_BYTES } from "./style.js";
+import {
+  compactReportColor,
+  COMPACT_REPORT_FIELDS,
+  escapeSlackMrkdwn,
+  SLACK_EDIT_TEXT_MAX_BYTES,
+  SLACK_SECTION_TEXT_LIMIT,
+} from "./style.js";
 
 export type CompactReport = {
   title: string;
@@ -332,15 +338,15 @@ function renderCompactReport(
     ...(form.evidence.note ? [escapeSlackMrkdwn(form.evidence.note)] : []),
   ].join(" · ");
   const sections = [
-    `*Title:* ${escapeSlackMrkdwn(form.title)}`,
-    `*Priority:* ${priority}${badge ? ` · ${badge}` : ""}`,
-    `*Next action:* ${escapeSlackMrkdwn(actionWithOwners(form, updates))}`,
-    `*Summary:* ${escapeSlackMrkdwn(form.summary)}`,
-    `*Evidence:* ${evidence}`,
+    COMPACT_REPORT_FIELDS.title + escapeSlackMrkdwn(form.title),
+    COMPACT_REPORT_FIELDS.priority + priority + (badge ? ` · ${badge}` : ""),
+    COMPACT_REPORT_FIELDS.action + escapeSlackMrkdwn(actionWithOwners(form, updates)),
+    COMPACT_REPORT_FIELDS.summary + escapeSlackMrkdwn(form.summary),
+    COMPACT_REPORT_FIELDS.evidence + evidence,
   ];
   const text = sections.join("\n\n");
   if (
-    sections.some((section) => section.length > 3_000) ||
+    sections.some((section) => section.length > SLACK_SECTION_TEXT_LIMIT) ||
     Buffer.byteLength(text, "utf8") > SLACK_EDIT_TEXT_MAX_BYTES
   ) {
     throw new Error(
@@ -359,14 +365,7 @@ function renderCompactReport(
       blocks: blocks.slice(0, 1),
       // Verified recovery takes precedence over the displayed priority color.
       attachment: {
-        color:
-          form.badge?.kind === "resolved"
-            ? "#2E8B57"
-            : form.priority === "high" || form.priority === "critical"
-              ? "#D92D20"
-              : form.priority === "medium"
-                ? "#D99A00"
-                : "#9CA3AF",
+        color: compactReportColor(priority, form.badge?.kind === "resolved"),
         blocks: blocks.slice(1),
       },
       fallbackText: text,

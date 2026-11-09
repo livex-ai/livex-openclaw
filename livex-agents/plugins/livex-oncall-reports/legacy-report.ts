@@ -7,7 +7,12 @@ import type {
   Block,
   KnownBlock,
 } from "@slack/types";
-import { SLACK_EDIT_TEXT_MAX_BYTES, escapeSlackMrkdwn } from "./style.js";
+import {
+  escapeSlackMrkdwn,
+  REPORT_COLORS,
+  SLACK_EDIT_TEXT_MAX_BYTES,
+  SLACK_SECTION_TEXT_LIMIT,
+} from "./style.js";
 
 type SlackBlock = Block | KnownBlock;
 
@@ -50,13 +55,12 @@ const FIELD_NAMES = new Set([
   "revision",
   "markers verified",
 ]);
-const SECTION_TEXT_LIMIT = 3_000;
 const TITLE_TEXT_LIMIT = 150;
 const COLORS = {
-  critical: "#D92D20",
-  action: "#D99A00",
-  "no-action": "#2E8B57",
-  unclassified: "#9CA3AF",
+  critical: REPORT_COLORS.high,
+  action: REPORT_COLORS.medium,
+  "no-action": REPORT_COLORS.resolved,
+  unclassified: REPORT_COLORS.default,
 } as const;
 
 function readDisposition(header: string): Disposition | null {
@@ -271,7 +275,9 @@ export function buildSlackThreadSummaryCard(
     },
   });
   if (
-    body.some((block) => block.type !== "context" && block.text.text.length > SECTION_TEXT_LIMIT)
+    body.some(
+      (block) => block.type !== "context" && block.text.text.length > SLACK_SECTION_TEXT_LIMIT,
+    )
   ) {
     return null;
   }

@@ -1,6 +1,6 @@
-import { assertReportAmendmentAuthorized } from "openclaw/plugin-sdk/reply-turns";
 import type { ReportAmendment, ReplyTurnInput } from "openclaw/plugin-sdk/reply-turns";
 import { z } from "zod";
+import { assertReportAmendmentAuthorized } from "./amendment-authorization.js";
 import { assertNoSensitiveContent, type CatalogSnapshot } from "./schema.js";
 
 export type AmendmentRequest = NonNullable<ReplyTurnInput["amendmentRequest"]>;
@@ -23,24 +23,25 @@ export function prepareAmendment(
   snapshot: CatalogSnapshot,
 ): StagedAmendment | { clarification: string } {
   const changes = fields.parse(raw);
-  if (!request || snapshot.status !== "ready" || !Object.keys(changes).length)
+  if (!request || snapshot.status !== "ready" || !Object.keys(changes).length) {
     throw new Error("A scoped human request and readable case are required");
+  }
   assertNoSensitiveContent(changes);
   try {
     assertReportAmendmentAuthorized(request.text, changes);
   } catch {
     // Let the model interpret unfamiliar language. The human can attest the proposed
     // fields in a fresh direct reply without a pending intent or a new grammar rule.
-    const fields = [
+    const confirmation = [
       ...(changes.priority ? ["set priority to " + changes.priority] : []),
       ...(changes.acceptOwnership ? ["assign this to me"] : []),
       ...(changes.nextAction ? ["set next action to " + changes.nextAction] : []),
     ].join("; ");
-    assertReportAmendmentAuthorized(fields, changes);
+    assertReportAmendmentAuthorized(confirmation, changes);
     return {
       clarification:
         "Clarify the requested change. If these values are correct, mention the bot in this thread and say: " +
-        fields,
+        confirmation,
     };
   }
   return {

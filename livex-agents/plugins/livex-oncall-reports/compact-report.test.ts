@@ -5,6 +5,7 @@ import {
   resolveSlackReplyDeliveryMessages,
 } from "../../../extensions/slack/src/reply-blocks.js";
 import type { SlackThreadSummaryCard } from "./legacy-report.js";
+import { createOncallReportProfile } from "./profile.js";
 import type { ReportFinding, ReportInvestigation } from "./report-context.js";
 
 const logUrl = "https://logs.example.test/view?id=event-1";
@@ -61,6 +62,117 @@ function visible(card: SlackThreadSummaryCard): string {
 
 describe("typed compact investigation report", () => {
   it.each([
+    { separator: "\n\n", normalizeTitle: false },
+    { separator: " ", normalizeTitle: true },
+  ])(
+    "edits the actual priority when the title quotes an action label (%j)",
+    async ({ separator, normalizeTitle }) => {
+      const render = await prepare();
+      const titleUrl = "https://docs.example.test/runbook";
+      const prepared = render(
+        {
+          ...form(),
+          title: `Quoted *Next action:* label 🎉 ${titleUrl}`,
+          priority: "low",
+          evidence: { ...form().evidence, note: "Earlier report read *Priority:* Low." },
+        },
+        [update()],
+        [finding()],
+      );
+      const originalFallback = prepared.text.replaceAll("\n\n", separator);
+      const fallback = normalizeTitle
+        ? originalFallback
+            .replace(titleUrl, `<${titleUrl}>`)
+            .replace("🎉", ":tada:")
+            .replace(`<${logUrl}|Logs>`, logUrl)
+        : originalFallback;
+      const original = {
+        text: fallback,
+        blocks: prepared.card.blocks,
+        attachments: [{ ...prepared.card.attachment, fallback }],
+      };
+      const profile = createOncallReportProfile(["oncall"]);
+      const edited = profile.amend!(original, { priority: "Medium" }, "U1");
+      const expected = fallback.replace("*Priority:* Low", "*Priority:* Medium");
+
+      expect(edited.text).toBe(expected);
+      expect(edited.blocks).toEqual(original.blocks);
+      expect(edited.attachments).toMatchObject([
+        {
+          color: "#D99A00",
+          fallback: expected,
+          blocks: [
+            { text: { text: "*Priority:* Medium" } },
+            ...(prepared.card.attachment.blocks ?? []).slice(1),
+          ],
+        },
+      ]);
+      expect(original.attachments[0]?.fallback).toBe(fallback);
+    },
+  );
+
+  it("does not edit a quoted priority and action when the real fallback fields differ", async () => {
+    const render = await prepare();
+    const titleUrl = "https://docs.example.test/title";
+    const actionUrl = "https://docs.example.test/action";
+    const nextAction = `Check ${actionUrl}`;
+    const prepared = render(
+      {
+        ...form(),
+        title: `Proxy investigation ${titleUrl}`,
+        priority: "low",
+        nextAction,
+        summary: `Earlier report:\n*Priority:* Low\n*Next action:* ${nextAction} · Owner: Unassigned`,
+      },
+      [update()],
+      [finding()],
+    );
+    const fallback = prepared.text
+      .replace(titleUrl, `<${titleUrl}>`)
+      .replace(actionUrl, `<${actionUrl}>`);
+    expect(() =>
+      createOncallReportProfile(["oncall"]).amend!(
+        {
+          text: fallback,
+          blocks: prepared.card.blocks,
+          attachments: [{ ...prepared.card.attachment, fallback }],
+        },
+        { priority: "Medium" },
+        "U1",
+      ),
+    ).toThrow("Unrecognized report fallback");
+  });
+
+  it("edits the action and owner while preserving rendered evidence", async () => {
+    const render = await prepare();
+    const prepared = render(form(), [update()], [finding()]);
+    const edited = createOncallReportProfile(["oncall"]).amend!(
+      {
+        text: prepared.text,
+        blocks: prepared.card.blocks,
+        attachments: [{ ...prepared.card.attachment, fallback: prepared.text }],
+      },
+      { nextAction: "Review logs", acceptOwnership: true },
+      "U1",
+    );
+    const expected = prepared.text.replace(
+      "*Next action:* Validate field handling. · Owner: Unassigned",
+      "*Next action:* Review logs · Owner: U1",
+    );
+    expect(edited.text).toBe(expected);
+    expect(edited.attachments).toMatchObject([
+      {
+        fallback: expected,
+        blocks: [
+          prepared.card.attachment.blocks?.[0],
+          { text: { text: "*Next action:* Review logs · Owner: U1" } },
+          ...(prepared.card.attachment.blocks ?? []).slice(2),
+        ],
+      },
+    ]);
+  });
+
+  it.each([
     ["unknown", false, "#9CA3AF"],
     ["low", false, "#9CA3AF"],
     ["medium", false, "#D99A00"],
@@ -90,7 +202,7 @@ describe("typed compact investigation report", () => {
         [finding()],
       );
       expect(prepared.text).toContain(
-        `*Priority:* ${priority[0].toUpperCase()}${priority.slice(1)}${resolved ? " · Resolved" : ""}`,
+        `*Priority:* ${priority.charAt(0).toUpperCase()}${priority.slice(1)}${resolved ? " · Resolved" : ""}`,
       );
       const reply = prepareSlackReply({
         text: prepared.text,

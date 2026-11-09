@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { MessageAttachment } from "@slack/types";
 import type { Block, KnownBlock, WebClient } from "@slack/web-api";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
@@ -17,6 +18,21 @@ type SlackReadbackMessage = {
   blocks?: unknown[];
   attachments?: unknown[];
 };
+
+export function matchesSlackPlainTextBlocks(blocks: unknown, text: string): boolean {
+  if (blocks === undefined || (Array.isArray(blocks) && blocks.length === 0)) {
+    return true;
+  }
+  if (!Array.isArray(blocks) || blocks.length !== 1) {
+    return false;
+  }
+  const { block_id: _id, ...block } = blocks[0] ?? {};
+  // Slack may generate this exact rich-text representation for a plain reply.
+  return isDeepStrictEqual(block, {
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  });
+}
 
 function normalizeCardReadback(value: unknown, expected: unknown, attachment = false): unknown {
   if (Array.isArray(value)) {
@@ -146,6 +162,7 @@ export async function didSlackReplyEditApply(
     blocks?: (Block | KnownBlock)[];
     attachments?: MessageAttachment[];
     threadTs?: string;
+    exactContent?: boolean;
   },
   observed?: SlackReadbackMessage,
 ): Promise<boolean> {
@@ -163,6 +180,16 @@ export async function didSlackReplyEditApply(
     text: params.text,
     blocks: params.blocks,
   });
+  const actualText = normalizeSlackOutboundText((readback.text ?? "").trim());
+  if (params.exactContent || params.attachments?.length) {
+    const blocks = params.blocks ?? [];
+    const matchesBlocks =
+      params.exactContent && blocks.length === 0
+        ? matchesSlackPlainTextBlocks(readback.blocks, readback.text ?? "")
+        : JSON.stringify(normalizeCardReadback(readback.blocks ?? [], blocks)) ===
+          JSON.stringify(normalizeCardReadback(blocks, blocks));
+    return actualText === expectedText && matchesBlocks;
+  }
   const acceptedTexts = new Set([
     expectedText,
     normalizeSlackOutboundText(
@@ -178,14 +205,6 @@ export async function didSlackReplyEditApply(
     for (const message of fallbackPlan.fallbackMessages) {
       acceptedTexts.add(normalizeSlackOutboundText(message.text));
     }
-  }
-  const actualText = normalizeSlackOutboundText((readback.text ?? "").trim());
-  if (params.attachments?.length) {
-    return (
-      actualText === expectedText &&
-      JSON.stringify(normalizeCardReadback(readback.blocks ?? [], params.blocks ?? [])) ===
-        JSON.stringify(normalizeCardReadback(params.blocks ?? [], params.blocks ?? []))
-    );
   }
   if (params.blocks?.length) {
     return acceptedTexts.has(actualText) && blocksMatch(params.blocks, readback.blocks);

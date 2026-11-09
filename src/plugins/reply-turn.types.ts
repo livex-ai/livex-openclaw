@@ -4,12 +4,14 @@ import type { ReplyDispatchRuntimeInfo } from "../auto-reply/reply/reply-dispatc
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { LivePreviewDeliveryResult } from "../channels/message/live.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { AgentReportProfile } from "./report-profile.types.js";
+import type { AgentReportProfile, ReportEditContent } from "./report-profile.types.js";
 
-export type ReportAmendment = {
-  priority?: "Unknown" | "Low" | "Medium" | "High" | "Critical";
-  nextAction?: string;
-  acceptOwnership?: true;
+export type { ReportAmendment } from "./report-profile.types.js";
+
+export type ReportEdit = {
+  url: string;
+  linkedReports?: readonly string[];
+  project: (original: ReportEditContent) => ReportEditContent;
 };
 
 /** Authenticated channel facts and bounded context for one prepared reply turn. */
@@ -33,12 +35,9 @@ export type ReplyTurnInput = {
 /** Transport operations are bound to this turn's accepted receipts by the host. */
 export type ReplyTurnDeliveryHost = {
   amendOwnReport?: (
-    url: string,
-    changes: ReportAmendment,
+    edit: ReportEdit,
     queuedReceipt?: { messageId: string; text: string },
     assertAdmission?: () => void,
-    linkedReports?: readonly string[],
-    ownerPluginId?: string,
   ) => Promise<string>;
   verifyTrendSource?: (
     reportUrls: readonly string[],
@@ -86,5 +85,7 @@ export type ReplyTurnProvider = {
   id: string;
   agentIds: readonly string[];
   channels: readonly string[];
+  /** Permit edits to verified linked targets outside the requesting thread. */
+  allowLinkedReportEdits?: boolean;
   prepare: (input: ReplyTurnInput) => Promise<PreparedReplyTurn | undefined>;
 };

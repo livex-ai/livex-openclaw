@@ -1,5 +1,6 @@
 import type { AgentReportProfile, PreparedAgentReport } from "openclaw/plugin-sdk/report-profiles";
 import { z } from "zod";
+import { amendCompactReport } from "./compact-report-edit.js";
 import {
   appendCompactReportNotice,
   compactReportParameters,
@@ -41,6 +42,7 @@ export function createOncallReportProfile(agentIds: readonly string[]): AgentRep
       const { updates, findings } = readReportContext(context);
       return projectCompactReport(prepareCompactReport(input, updates, findings));
     },
+    amend: amendCompactReport,
     appendNotice(prepared, notice, context) {
       const { updates } = readReportContext(context);
       const form = readPreparedCompactReport(prepared.state);

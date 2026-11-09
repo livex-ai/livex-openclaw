@@ -1,24 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import type { MessageAttachment } from "@slack/types";
-import type { Block, WebClient } from "@slack/web-api";
-import type { ReportAmendment } from "openclaw/plugin-sdk/reply-turns";
-import { didSlackReplyEditApply } from "./preview-finalize.js";
-import { updateReportCard } from "./priority-card.js";
-
-function matchesAckBlocks(blocks: unknown, text: string) {
-  if (blocks === undefined || (Array.isArray(blocks) && blocks.length === 0)) {
-    return true;
-  }
-  if (!Array.isArray(blocks) || blocks.length !== 1) {
-    return false;
-  }
-  const { block_id: _id, ...block } = blocks[0] ?? {};
-  // Slack may generate this exact rich-text representation for a plain reply.
-  return isDeepStrictEqual(block, {
-    type: "rich_text",
-    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
-  });
-}
+import type { Block, KnownBlock, WebClient } from "@slack/web-api";
+import type { ReportEditContent } from "openclaw/plugin-sdk/report-profiles";
+import { validateSlackBlocksArray } from "../../blocks-input.js";
+import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
+import { didSlackReplyEditApply, matchesSlackPlainTextBlocks } from "./preview-finalize.js";
 
 type EditParams = {
   client: WebClient;
@@ -26,14 +12,30 @@ type EditParams = {
   channel: string;
   thread: string;
   requestId: string;
-  changes: ReportAmendment;
-  sender: string;
+  project: (original: ReportEditContent) => ReportEditContent;
   queuedReceipt?: { messageId: string; text: string };
   requestThread?: string;
   team: string;
   botUser: string;
   assertCurrent: () => void;
 };
+
+function outboundBlocks(blocks: unknown): (Block | KnownBlock)[] {
+  return Array.isArray(blocks) && blocks.length === 0 ? [] : validateSlackBlocksArray(blocks);
+}
+
+function outboundAttachments(attachments: unknown): MessageAttachment[] {
+  if (!Array.isArray(attachments)) {
+    throw new Error("Report edit attachments must be an array");
+  }
+  return attachments.map((attachment) => {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
+      throw new Error("Each report edit attachment must be an object");
+    }
+    const { blocks, ...content } = attachment as MessageAttachment;
+    return blocks === undefined ? content : { ...content, blocks: outboundBlocks(blocks) };
+  });
+}
 
 export function editOwnThreadReply(params: EditParams): (permalink: string) => Promise<string> {
   return async (permalink) => (await prepareOwnThreadReply(params, permalink)).apply();
@@ -90,7 +92,7 @@ export async function prepareOwnThreadReply(params: EditParams, permalink: strin
       ack.bot_id !== auth.bot_id ||
       ack.thread_ts !== (params.requestThread ?? thread) ||
       ack.text !== receipt.text ||
-      !matchesAckBlocks(ack.blocks, receipt.text) ||
+      !matchesSlackPlainTextBlocks(ack.blocks, receipt.text) ||
       ack.attachments?.length ||
       ack.files?.length
     ) {
@@ -126,13 +128,25 @@ export async function prepareOwnThreadReply(params: EditParams, permalink: strin
   ) {
     throw new Error("Expected own report in the bound thread");
   }
-  const next = updateReportCard(
-    { text: message.text, blocks: message.blocks ?? [], attachments: message.attachments ?? [] },
-    params.changes,
-    params.sender,
+  assertCurrent();
+  const next = structuredClone(
+    params.project(
+      structuredClone({
+        text: message.text,
+        blocks: message.blocks ?? [],
+        attachments: message.attachments ?? [],
+      }),
+    ),
   );
-  const blocks = next.blocks as Block[];
-  const attachments = next.attachments as MessageAttachment[];
+  assertCurrent();
+  if (typeof next?.text !== "string" || !next.text.trim()) {
+    throw new Error("Report edit text must be a nonblank string");
+  }
+  if (Buffer.byteLength(next.text) > SLACK_EDIT_TEXT_MAX_BYTES) {
+    throw new Error("Report edit text exceeds Slack fallback limit");
+  }
+  const blocks = outboundBlocks(next.blocks);
+  const attachments = outboundAttachments(next.attachments);
   const expected = {
     client,
     token,
@@ -142,12 +156,13 @@ export async function prepareOwnThreadReply(params: EditParams, permalink: strin
     text: next.text,
     blocks,
     attachments,
+    exactContent: true,
   };
   return {
     verify: async () => {
       assertCurrent();
       if (!(await didSlackReplyEditApply(expected))) {
-        throw new Error("Linked priority readback changed");
+        throw new Error("Linked report readback changed");
       }
       assertCurrent();
     },
@@ -174,6 +189,7 @@ export async function prepareOwnThreadReply(params: EditParams, permalink: strin
           throw new Error("Linked report identity changed");
         }
         if (await didSlackReplyEditApply(expected, current)) {
+          assertCurrent();
           return ts;
         }
         if (

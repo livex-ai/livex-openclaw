@@ -18,8 +18,9 @@ export default {
       api.on(
         "after_tool_call",
         (event, ctx) => {
-          if (ctx.agentId === agentId)
+          if (ctx.agentId === agentId) {
             tryGetInvestigationTurnRegistry()?.observeTrendTool(event, ctx);
+          }
         },
         { matcher: ["slack_investigation_record", "livex_gcp_logs_read"] },
       );
@@ -27,6 +28,7 @@ export default {
         id: "livex-investigations",
         agentIds: [agentId],
         channels: ["slack"],
+        allowLinkedReportEdits: true,
         prepare: prepareInvestigationReplyTurn,
       });
     }

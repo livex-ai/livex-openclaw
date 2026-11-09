@@ -1,6 +1,14 @@
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 
+export type ReportAmendment = {
+  priority?: "Unknown" | "Low" | "Medium" | "High" | "Critical";
+  nextAction?: string;
+  acceptOwnership?: true;
+};
+
+export type ReportEditContent = { text: string; blocks: unknown[]; attachments: unknown[] };
+
 /** Pure plugin-owned projection; channel delivery and durable effects stay host-owned. */
 export type PreparedAgentReport = {
   profileId: string;
@@ -23,5 +31,10 @@ export type AgentReportProfile = {
     notice: string,
     context: AgentReportContext,
   ) => PreparedAgentReport;
+  amend?: (
+    original: ReportEditContent,
+    changes: ReportAmendment,
+    senderId: string,
+  ) => ReportEditContent;
   prepareLegacy?: (text: string, context: AgentReportContext) => PreparedAgentReport | undefined;
 };
