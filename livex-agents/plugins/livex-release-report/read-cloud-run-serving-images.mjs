@@ -8,6 +8,9 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const registryHost = registry.region + "-docker.pkg.dev";
 const commandTimeoutMs = 15_000;
 const maxResponseBytes = 512 * 1024;
+const maxVersionBytes = 512;
+const versionTimeoutMs = 4_000;
+const versionServices = new Set(["frontend", "gateway"]);
 const concurrency = 4;
 const execFileAsync = promisify(execFile);
 const manifestTypes = [
@@ -89,18 +92,64 @@ function servingRevision(response, service) {
   return { revision };
 }
 
+class ImageCommitConflict extends Error {}
+
+function versionOrigin(target, url, projectNumber) {
+  if (
+    !versionServices.has(target.service) ||
+    target.cloudRunService !== registry.services[target.service].cloudRun ||
+    target.region !== registry.region ||
+    typeof url !== "string"
+  ) {
+    return null;
+  }
+  const prefix = "https://" + target.cloudRunService + "-";
+  if (
+    typeof projectNumber === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(projectNumber) &&
+    url === prefix + projectNumber + "." + target.region + ".run.app"
+  ) {
+    return url;
+  }
+  const suffix = "-uc.a.run.app";
+  const label = url.slice(prefix.length, -suffix.length);
+  return url.startsWith(prefix) && url.endsWith(suffix) && /^[a-z0-9]{1,40}$/.test(label)
+    ? url
+    : null;
+}
+
+function versionBinding(response, target) {
+  const generation = response?.metadata?.generation;
+  const projectNumber = response?.metadata?.namespace;
+  const origin = versionOrigin(target, response?.status?.url, projectNumber);
+  const conditions = response?.status?.conditions;
+  const ready = Array.isArray(conditions)
+    ? conditions.filter((condition) => condition?.type === "Ready")
+    : [];
+  return origin &&
+    ready.length === 1 &&
+    ready[0].status === "True" &&
+    response.metadata?.name === target.cloudRunService &&
+    Number.isSafeInteger(generation) &&
+    generation > 0 &&
+    response.status.observedGeneration === generation
+    ? { origin, generation, projectNumber }
+    : null;
+}
+
 async function collectTarget(target, readers) {
   const { gkePending, imagePrefix, ...path } = target;
   if (gkePending) {
     return { path: { ...path, status: "gke-pending", reason: "production-route-served-by-gke" } };
   }
   const unresolved = (reason) => ({ path: { ...path, status: "unresolved", reason } });
-  let first;
+  let initial;
   try {
-    first = servingRevision(await readers.readService(target), path.cloudRunService);
+    initial = await readers.readService(target);
   } catch {
     return unresolved("service-unavailable");
   }
+  const first = servingRevision(initial, path.cloudRunService);
   if (!first.revision) {
     return unresolved(first.reason);
   }
@@ -127,25 +176,49 @@ async function collectTarget(target, readers) {
 
   let commit;
   let commitReason = "image-commit-missing";
+  let binding;
   try {
     commit = await readers.readImageCommit(target, digest);
-  } catch {
-    commitReason = "artifact-unavailable";
+  } catch (error) {
+    commitReason =
+      error instanceof ImageCommitConflict ? "image-commit-conflict" : "artifact-unavailable";
+  }
+  if (
+    commit === null &&
+    versionServices.has(target.service) &&
+    typeof readers.readVersion === "function"
+  ) {
+    const initialBinding = versionBinding(initial, target);
+    if (initialBinding) {
+      commitReason = "cloud-run-version-unavailable";
+      try {
+        const version = await readers.readVersion(target, initialBinding);
+        if (typeof version === "string" && shaPattern.test(version)) {
+          commit = version;
+          binding = initialBinding;
+        }
+      } catch {
+        // Digest evidence remains usable when the serving version cannot be read.
+      }
+    } else {
+      commitReason = "cloud-run-version-unverified";
+    }
   }
 
   return {
     path,
+    binding,
     evidence: {
       revision: first.revision,
       digest,
       ...(typeof commit === "string" && shaPattern.test(commit)
-        ? { commit, commitSource: "artifact-registry-config" }
+        ? { commit, commitSource: binding ? "cloud-run-version" : "artifact-registry-config" }
         : { commit: null, commitReason }),
     },
   };
 }
 
-async function recheckTarget({ path, evidence }, readers) {
+async function recheckTarget({ path, binding, evidence }, readers) {
   if (!evidence) {
     return path;
   }
@@ -155,16 +228,36 @@ async function recheckTarget({ path, evidence }, readers) {
     reason,
     observedAt: new Date().toISOString(),
   });
-  let second;
+  let terminal;
   try {
-    second = servingRevision(await readers.readService(path), path.cloudRunService);
+    terminal = await readers.readService(path);
   } catch {
     return unresolved("traffic-recheck-unavailable");
   }
+  const second = servingRevision(terminal, path.cloudRunService);
   if (second.revision !== evidence.revision) {
     return unresolved("traffic-changed");
   }
-  return { ...path, ...evidence, status: "verified", observedAt: new Date().toISOString() };
+  const observedAt = new Date().toISOString();
+  if (binding) {
+    const latest = versionBinding(terminal, path);
+    if (
+      latest?.origin !== binding.origin ||
+      latest.generation !== binding.generation ||
+      latest.projectNumber !== binding.projectNumber
+    ) {
+      return {
+        ...path,
+        status: "verified",
+        observedAt,
+        revision: evidence.revision,
+        digest: evidence.digest,
+        commit: null,
+        commitReason: "cloud-run-version-unstable",
+      };
+    }
+  }
+  return { ...path, ...evidence, status: "verified", observedAt };
 }
 
 async function readInBatches(items, read) {
@@ -200,10 +293,10 @@ async function gcloud(args) {
   return stdout;
 }
 
-async function readDocument(response, expectedDigest) {
+async function readResponseBytes(response, limit) {
   if (!response.ok || !response.body) {
     await response.body?.cancel();
-    throw new Error("Registry response unavailable");
+    throw new Error("Response unavailable");
   }
   const stream = response.body.getReader();
   const chunks = [];
@@ -215,16 +308,20 @@ async function readDocument(response, expectedDigest) {
         break;
       }
       bytes += value.byteLength;
-      if (bytes > maxResponseBytes) {
+      if (bytes > limit) {
         await stream.cancel();
-        throw new Error("Registry response too large");
+        throw new Error("Response too large");
       }
       chunks.push(value);
     }
   } finally {
     stream.releaseLock();
   }
-  const body = Buffer.concat(chunks, bytes);
+  return Buffer.concat(chunks, bytes);
+}
+
+async function readDocument(response, expectedDigest) {
+  const body = await readResponseBytes(response, maxResponseBytes);
   if ("sha256:" + createHash("sha256").update(body).digest("hex") !== expectedDigest) {
     throw new Error("Registry digest mismatch");
   }
@@ -232,8 +329,16 @@ async function readDocument(response, expectedDigest) {
 }
 
 function configCommit(document) {
-  const env = Array.isArray(document?.config?.Env) ? document.config.Env : [];
-  const values = [document?.config?.Labels?.["org.opencontainers.image.revision"]];
+  const config = document?.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Image config unavailable");
+  }
+  const env = config.Env ?? [];
+  const labels = config.Labels ?? {};
+  if (!Array.isArray(env) || typeof labels !== "object" || Array.isArray(labels)) {
+    throw new Error("Image config unavailable");
+  }
+  const values = [labels["org.opencontainers.image.revision"]];
   for (const item of env) {
     if (typeof item === "string") {
       const match = /^(?:COMMIT_ID|COMMIT_SHA|GIT_SHA)=([a-f0-9]{40})$/.exec(item);
@@ -245,11 +350,18 @@ function configCommit(document) {
   const shas = [
     ...new Set(values.filter((value) => typeof value === "string" && shaPattern.test(value))),
   ];
-  return shas.length === 1 ? shas[0] : null;
+  if (shas.length > 1) {
+    throw new ImageCommitConflict("Conflicting image commit metadata");
+  }
+  return shas[0] ?? null;
 }
 
 // Each reader instance uses the active gcloud credential for one capture.
-export function createCloudRunReaders({ runGcloud = gcloud, fetchRegistry = fetch } = {}) {
+export function createCloudRunReaders({
+  runGcloud = gcloud,
+  fetchRegistry = fetch,
+  fetchVersion = fetch,
+} = {}) {
   let accessToken;
   async function registryDocument(target, kind, digest) {
     const path = target.imagePrefix.slice(registryHost.length + 1);
@@ -304,7 +416,7 @@ export function createCloudRunReaders({ runGcloud = gcloud, fetchRegistry = fetc
           project,
           "--region",
           region,
-          "--format=json(status.traffic)",
+          "--format=json(metadata.name,metadata.namespace,metadata.generation,status.traffic,status.url,status.observedGeneration,status.conditions)",
         ]),
       );
     },
@@ -323,6 +435,28 @@ export function createCloudRunReaders({ runGcloud = gcloud, fetchRegistry = fetc
         ]),
       );
     },
+    async readVersion(target, { origin: url, projectNumber }) {
+      const origin = versionOrigin(target, url, projectNumber);
+      if (!origin) {
+        throw new Error("Version origin unavailable");
+      }
+      const response = await fetchVersion(origin + "/version", {
+        method: "GET",
+        redirect: "error",
+        credentials: "omit",
+        signal: AbortSignal.timeout(versionTimeoutMs),
+      });
+      if (response.status !== 200) {
+        await response.body?.cancel();
+        throw new Error("Version response unavailable");
+      }
+      const text = (await readResponseBytes(response, maxVersionBytes)).toString("utf8").trim();
+      const commit = target.service === "frontend" ? text : JSON.parse(text)?.version;
+      if (typeof commit !== "string" || !shaPattern.test(commit)) {
+        throw new Error("Version response unavailable");
+      }
+      return commit;
+    },
     async readImageCommit(target, digest) {
       let manifest = await registryDocument(target, "manifests", digest);
       if (Array.isArray(manifest?.manifests)) {
@@ -330,7 +464,7 @@ export function createCloudRunReaders({ runGcloud = gcloud, fetchRegistry = fetc
           ({ platform } = {}) => platform?.os === "linux" && platform?.architecture === "amd64",
         );
         if (runnable.length !== 1) {
-          return null;
+          throw new Error("Image platform unavailable");
         }
         manifest = await registryDocument(target, "manifests", runnable[0].digest);
       }

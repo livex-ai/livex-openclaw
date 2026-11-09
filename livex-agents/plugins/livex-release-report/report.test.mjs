@@ -120,6 +120,74 @@ test("separates artifact differences, unavailable SHAs, changed traffic, and una
   assert.match(report, /No changes verified for covered paths/);
 });
 
+test("uses exact Frontend and Gateway serving version evidence with explicit provenance", async () => {
+  const version = (digit) => ({ ...exact(digit), commitSource: "cloud-run-version" });
+  const snapshot = capture({
+    "frontend/prd": version("b"),
+    "frontend/stg": version("c"),
+    "frontend/dev": exact("c"),
+    "gateway/dev": version("a"),
+  });
+  const calls = [];
+  const report = await formatReleaseReport(snapshot, async (request) => {
+    calls.push(request);
+    return comparison([{ sha: sha("c"), subject: "Frontend change", pullRequests: [] }]);
+  });
+
+  assert.deepEqual(calls, [{ repo: "chat-frontend", base: sha("b"), head: sha("c") }]);
+  assert.match(report, /1 verified change · 5\/8 STG paths covered/);
+  assert.match(
+    report,
+    /Serving \/version commit evidence · frontend \(STG, US production\), gateway \(Dev\)/,
+  );
+  assert.match(report, /gateway.*same image digest/);
+});
+
+test("flags conflicting serving SHAs for an equal image digest", async () => {
+  const snapshot = capture({
+    "frontend/prd": exact("a", sha("b")),
+    "frontend/stg": { ...exact("a", sha("c")), commitSource: "cloud-run-version" },
+    "frontend/dev": exact("a", sha("c")),
+  });
+  const report = await formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call"));
+
+  assert.match(report, /4\/8 STG paths covered/);
+  assert.match(
+    report,
+    /STG vs US production · frontend · same image digest but conflicting commit SHAs/,
+  );
+  assert.doesNotMatch(report, /STG vs US production · .*frontend.*same image digest$/m);
+  assert.ok(report.length <= 4_000);
+});
+
+test("rejects serving version provenance outside verified eligible Cloud Run rows", async () => {
+  const version = { ...exact("b"), commitSource: "cloud-run-version" };
+  const snapshots = [
+    capture({ "scheduler/stg": version }),
+    capture({ "chat-engine/prd": gke(engineWorkloads, version) }),
+    capture({ "frontend/stg": { ...version, status: "unresolved" } }),
+    capture({ "gateway/stg": { ...version, commit: null } }),
+    capture({ "gateway/stg": { ...version, commit: "bad" } }),
+  ];
+  for (const snapshot of snapshots) {
+    await assert.rejects(
+      formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call")),
+      /Invalid Cloud Run capture evidence/,
+    );
+  }
+});
+
+test("qualifies a gap when the serving version evidence changes", async () => {
+  const snapshot = capture({
+    "frontend/prd": { digest: digest("b"), commitReason: "cloud-run-version-unstable" },
+    "frontend/stg": exact("c"),
+    "frontend/dev": exact("c"),
+  });
+  const report = await formatReleaseReport(snapshot, () => assert.fail("unexpected GitHub call"));
+  assert.match(report, /frontend.*US production.*serving \/version evidence changed/);
+  assert.doesNotMatch(report, /Serving \/version commit evidence/);
+});
+
 test("counts multiple commits linked to one merged PR as one reported change", async () => {
   const snapshot = capture({
     "scheduler/prd": exact("b"),
@@ -202,7 +270,10 @@ test("keeps coverage and reserves change summaries when range evidence fills the
       const value = (++index).toString(16);
       path.digest = "sha256:" + value.padStart(64, "0");
       path.commit = value.padStart(40, "0");
-      path.commitSource = "artifact-registry-config";
+      path.commitSource =
+        path.service === "frontend" || path.service === "gateway"
+          ? "cloud-run-version"
+          : "artifact-registry-config";
     }
   }
   const report = await formatReleaseReport(snapshot, async ({ head }) => ({
@@ -213,6 +284,7 @@ test("keeps coverage and reserves change summaries when range evidence fills the
   assert.match(report, /GKE evidence pending/);
   assert.match(report, /PR lookup incomplete/);
   assert.match(report, /additional SHA ranges omitted/);
+  assert.match(report, /Serving \/version commit evidence/);
   assert.match(report, /Capture window/);
   const [, stg, dev] = report.split(
     /\*STG changes\*|\*Dev-only changes \(vs STG\)\*|\*Coverage gaps\*/,
