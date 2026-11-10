@@ -39,7 +39,7 @@
     {
       "name": "debug",
       "path": "skills/debug/SKILL.md",
-      "sha256": "ec96bba6fbcc9882a7d50cd53b469e146444f00ad0060446d737c388fcd7cecf",
+      "sha256": "2112862597560aa9d59eb52cec19c60e19d81e6d259eb0cbd85debf2fb42030e",
       "importedSha256": "f22c77eed85189317c14102ef0615ea3fc7d8187b943ed6050aef0e2e6f4bf96",
       "adaptation": {
         "scope": "shared-source",

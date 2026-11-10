@@ -20,10 +20,20 @@ CORRELATION_FIELDS = ("conversation_id", "job_id", "room_id", "room", "agent_id"
 DIAGNOSTIC_FIELDS = ("message", "error", "stack", "filename", "lineno", "funcName", "exc_info")
 API_FIELDS = (
     "entries(logName,timestamp,severity,insertId,resource(type,labels),trace,textPayload,"
-    "jsonPayload),nextPageToken"
+    "httpRequest(status),jsonPayload),nextPageToken"
 )
 # jsonPayload is a protobuf Struct, not a schema of selectable application keys.
 # Request the parent; project_entry still filters and bounds what leaves here.
+
+GEMINI_REQUEST_PREFIX = "[DEBUG] Gemini stream_generate_content request:\n"
+MAX_MODEL_REQUEST_BYTES = 65536
+MAX_TOOL_OFFER_BYTES = 1024
+TOOL_IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Only token forms that could pass TOOL_IDENTIFIER need this second check.
+CREDENTIAL_IDENTIFIER = re.compile(
+    r"\b(?:xox[baprs]-[A-Za-z0-9-]+|xapp-[A-Za-z0-9-]+|"
+    r"AIza[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{12,})\b"
+)
 
 
 class PageValidationError(ValueError):
@@ -94,6 +104,53 @@ def identity_scalar(value):
     return value
 
 
+def tool_identifier(value):
+    return (isinstance(value, str) and TOOL_IDENTIFIER.fullmatch(value) is not None
+            and CREDENTIAL_IDENTIFIER.search(value) is None)
+
+
+def unique_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("Duplicate key in model request")
+    return value
+
+
+def project_tool_offer(message):
+    if len(message) > MAX_MODEL_REQUEST_BYTES:
+        return None
+    try:
+        if len(message.encode("utf-8")) > MAX_MODEL_REQUEST_BYTES:
+            return None
+        envelope = json.loads(message[len(GEMINI_REQUEST_PREFIX):], object_pairs_hook=unique_object)
+        tools = envelope["tools_config"]["tools"]
+        if not isinstance(envelope["model"], str) or not isinstance(envelope["messages"], list):
+            return None
+        if not isinstance(tools, list) or len(tools) > 32:
+            return None
+        offer = []
+        for tool in tools:
+            function = tool["function"]
+            name = function["name"]
+            if tool["type"] != "function" or not tool_identifier(name):
+                return None
+            item = {"name": name}
+            properties = function.get("parameters", {}).get("properties", {})
+            operation = properties.get("operation", {})
+            if not isinstance(operation, dict):
+                return None
+            if "enum" in operation:
+                operations = operation["enum"]
+                if (not isinstance(operations, list) or len(operations) > 16
+                        or not all(tool_identifier(value) for value in operations)):
+                    return None
+                item["operations"] = operations
+            offer.append(item)
+    except (AttributeError, KeyError, RecursionError, TypeError, ValueError):
+        return None
+    return offer if json_size(offer) <= MAX_TOOL_OFFER_BYTES else None
+
+
 def project_entry(raw, project):
     if not isinstance(raw, dict):
         raise PageValidationError("Invalid log entry")
@@ -115,11 +172,29 @@ def project_entry(raw, project):
         raise PageValidationError("Invalid log payload")
     row["jsonPayload"] = {key: identity_scalar(payload[key]) for key in
                           (*CORRELATION_FIELDS, "level", "levelname") if key in payload}
+    http_request = raw.get("httpRequest")
+    token_log = (raw["logName"] == f"projects/{project}/logs/requests"
+                 and resource.get("type") == "http_load_balancer")
+    if token_log and isinstance(http_request, dict):
+        status = http_request.get("status")
+        if type(status) is int and 100 <= status <= 599:
+            row["httpRequest"] = {"status": status}
+    message = payload.get("message")
+    model_request = isinstance(message, str) and message.startswith(GEMINI_REQUEST_PREFIX)
+    if (model_request and resource.get("type") == "k8s_container"
+            and labels.get("container_name") == "chat-engine"
+            and payload.get("filename") == "google_vertex_ai.py"
+            and payload.get("funcName") == "_log_gemini_request"):
+        offer = project_tool_offer(message)
+        if offer is not None and json_size(row) + json_size({"toolOffer": offer}) <= MAX_IDENTITY_BYTES:
+            row["toolOffer"] = offer
     if json_size(row) > MAX_IDENTITY_BYTES:
         raise PageValidationError("Log identity exceeds its bounded projection; no page was emitted")
 
-    diagnostics = [(row, "textPayload", raw["textPayload"])] if "textPayload" in raw else []
-    diagnostics += [(row["jsonPayload"], key, payload[key]) for key in DIAGNOSTIC_FIELDS if key in payload]
+    diagnostics = [(row, "textPayload", raw["textPayload"])] if "textPayload" in raw and not model_request else []
+    if not model_request:
+        diagnostics += [(row["jsonPayload"], key, payload[key])
+                        for key in DIAGNOSTIC_FIELDS if key in payload]
     # Error objects can carry unrelated customer fields; preserve only the
     # declared diagnostic members before shortening their representation.
     diagnostic_text = []

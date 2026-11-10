@@ -18,6 +18,22 @@ const CORRELATION_FIELDS = {
   insertId: "insertId",
 };
 const CORRELATION_KEYS = [...Object.keys(CORRELATION_FIELDS), "traceId"];
+const KIOSK_SELECTORS = {
+  kiosk_renderer: { deviceSerial: "^[a-fA-F0-9]{32}$" },
+  mappedin_token_request: {
+    agentId: "^pub-[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$",
+    mapId: "^[a-fA-F0-9]{24}$",
+  },
+};
+export const KIOSK_MODES = Object.keys(KIOSK_SELECTORS);
+export const KIOSK_FIELDS = Object.fromEntries(
+  Object.entries({
+    ...KIOSK_SELECTORS.kiosk_renderer,
+    ...KIOSK_SELECTORS.mappedin_token_request,
+  }).map(([key, pattern]) => [key, { type: "string", pattern }]),
+);
+const TOOL_IDENTIFIER = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_TOOL_OFFER_BYTES = 1024;
 // Shorten large plain-text errors before stdout capture. One extra character
 // lets the existing egress truncation mark the returned evidence as incomplete.
 const FORMAT =
@@ -82,11 +98,47 @@ function literal(value, field) {
   return value;
 }
 
-export function queryArgs(params, config) {
+function kioskQueryArgs(params) {
+  const selectors = KIOSK_SELECTORS[params.mode];
+  const keys = Object.keys(selectors);
   if (
-    !params ||
-    typeof params !== "object" ||
-    Array.isArray(params) ||
+    Object.keys(params).some((key) => !["mode", "start", "end", "limit", ...keys].includes(key))
+  ) {
+    throw new Error("Invalid kiosk profile selectors");
+  }
+  const selection = Object.fromEntries(
+    keys.map((key) => {
+      const value = literal(params[key], key);
+      if (!new RegExp(selectors[key]).test(value)) throw new Error(`Invalid ${key}`);
+      return [key, value];
+    }),
+  );
+  return { ...selection, ...queryWindow(params, 10), mode: params.mode };
+}
+
+function queryWindow(params, minutes) {
+  const start = utc(params.start);
+  const end = utc(params.end);
+  if (
+    end.nanoseconds <= start.nanoseconds ||
+    end.nanoseconds - start.nanoseconds > BigInt(minutes) * 60_000_000_000n
+  ) {
+    const maximum = minutes === 60 ? "one hour" : `${minutes} minutes`;
+    throw new Error(`Invalid query window: use at most ${maximum}`);
+  }
+  const limit = params.limit === undefined ? 20 : params.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new Error("Invalid row limit: use 1 to 50");
+  }
+  return { start: start.value, end: end.value, limit };
+}
+
+export function queryArgs(params, config, { paged = false } = {}) {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new Error("Invalid query arguments");
+  }
+  if (paged && KIOSK_MODES.includes(params.mode)) return kioskQueryArgs(params);
+  if (
     Object.keys(params).some(
       (k) =>
         ![
@@ -158,27 +210,40 @@ export function queryArgs(params, config) {
     );
     selection = { resourceType: params.resourceType, resourceLabels };
   }
-  const start = utc(params.start);
-  const end = utc(params.end);
-  if (end.nanoseconds <= start.nanoseconds || end.nanoseconds - start.nanoseconds > 3600000000000n)
-    throw new Error("Invalid query window: use at most one hour");
-  const limit = params.limit === undefined ? 20 : params.limit;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 50)
-    throw new Error("Invalid row limit: use 1 to 50");
   return {
     ...selection,
     ...correlation,
-    start: start.value,
-    end: end.value,
-    limit,
+    ...queryWindow(params, 60),
     mode,
     ...(errorProfile ? { errorProfile } : {}),
   };
 }
 
+function kioskFilter(query) {
+  if (query.mode === "kiosk_renderer") {
+    return [
+      'resource.type="global"',
+      'log_id("avatai-electron")',
+      `jsonPayload.serialNumber="${query.deviceSerial}"`,
+      'jsonPayload.message=~"NetworkMonitor|MappedinView|UiStateReporter|sendDeviceHeartbeat"',
+    ];
+  }
+  return [
+    'resource.type="http_load_balancer"',
+    'log_id("requests")',
+    'httpRequest.requestMethod="GET"',
+    `httpRequest.requestUrl=~"^https://api[.]copilot[.]livex[.]ai/api/v1/mappedin/auth-token/agents/${query.agentId}[?]map_id=${query.mapId}$"`,
+  ];
+}
+
 // Callers pass a query admitted by queryArgs and configuration by validateConfig.
 export function buildLogFilter(query, config) {
   const projectPattern = config.project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const projectScope = `logName =~ ${JSON.stringify(`^projects/${projectPattern}/logs/`)}`;
+  const window = [`timestamp>="${query.start}"`, `timestamp<="${query.end}"`];
+  if (KIOSK_MODES.includes(query.mode)) {
+    return [projectScope, ...kioskFilter(query), ...window].join(" AND ");
+  }
   const traceClauses =
     query.traceId === undefined ? [] : [`jsonPayload.trace_id=${JSON.stringify(query.traceId)}`];
   if (query.traceId && /^[a-fA-F0-9]{32}$/.test(query.traceId) && !/^0{32}$/.test(query.traceId)) {
@@ -206,10 +271,9 @@ export function buildLogFilter(query, config) {
         ];
   return [
     // --project selects the read scope; logName also excludes imported logs from other projects.
-    `logName =~ ${JSON.stringify(`^projects/${projectPattern}/logs/`)}`,
+    projectScope,
     ...resourceScope,
-    `timestamp>="${query.start}"`,
-    `timestamp<="${query.end}"`,
+    ...window,
     ...(query.mode === "errors" ? [query.errorProfile ? TAB_DELIMITED_ERRORS : ERRORS] : []),
     ...(query.mode === "discover" ? [`(${correlation.join(" OR ")})`] : correlation),
   ].join(" AND ");
@@ -285,13 +349,52 @@ function selectedLabels(raw, state) {
   );
 }
 
-export function selectedEntry(raw, state) {
+function toolIdentifier(value) {
+  return (
+    typeof value === "string" &&
+    TOOL_IDENTIFIER.test(value) &&
+    !CONTROL_CHARACTERS.test(value) &&
+    redact(value, {}) === value
+  );
+}
+
+function selectedToolOffer(value) {
+  if (!Array.isArray(value) || value.length > 32) return undefined;
+  const offer = [];
+  for (const tool of value) {
+    if (
+      !tool ||
+      !toolIdentifier(tool.name) ||
+      Object.keys(tool).some((key) => key !== "name" && key !== "operations")
+    ) {
+      return undefined;
+    }
+    if (Object.hasOwn(tool, "operations")) {
+      const { operations } = tool;
+      if (
+        !Array.isArray(operations) ||
+        operations.length > 16 ||
+        !operations.every(toolIdentifier)
+      ) {
+        return undefined;
+      }
+      offer.push({ name: tool.name, operations });
+    } else {
+      offer.push({ name: tool.name });
+    }
+  }
+  return Buffer.byteLength(JSON.stringify(offer)) <= MAX_TOOL_OFFER_BYTES ? offer : undefined;
+}
+
+export function selectedEntry(raw, state, { mode, paged = false } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     markTruncated(state, "invalid-row");
     return null;
   }
   const entry = {};
-  for (const key of ["timestamp", "severity", "insertId", "textPayload", "trace"]) {
+  const tokenRequest = paged && mode === "mappedin_token_request";
+  const identity = ["timestamp", "severity", "insertId", "trace"];
+  for (const key of tokenRequest ? identity : [...identity, "textPayload"]) {
     const text = redact(raw[key], state);
     if (text !== undefined) entry[key] = text;
   }
@@ -300,6 +403,22 @@ export function selectedEntry(raw, state) {
     ...(type !== undefined ? { type } : {}),
     labels: selectedLabels(raw.resource?.labels, state),
   };
+  if (tokenRequest) {
+    const status = raw.httpRequest?.status;
+    if (
+      type === "http_load_balancer" &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+    ) {
+      entry.httpRequest = { status };
+    }
+    return entry;
+  }
+  if (paged) {
+    const offer = selectedToolOffer(raw.toolOffer);
+    if (offer !== undefined) entry.toolOffer = offer;
+  }
   const payload = {};
   for (const key of [
     "level",
@@ -376,7 +495,7 @@ export function withEvidenceLink(details, query, config) {
   return Buffer.byteLength(JSON.stringify(omitted)) <= MAX_RESULT ? omitted : details;
 }
 
-export function evidence(result, query, config, { reserveBytes = 0 } = {}) {
+export function evidence(result, query, config, { reserveBytes = 0, paged = false } = {}) {
   if (!Number.isInteger(reserveBytes) || reserveBytes < 0 || reserveBytes > MAX_RESULT / 2)
     throw new Error("Invalid evidence metadata reservation");
   const resultLimit = MAX_RESULT - reserveBytes;
@@ -445,7 +564,7 @@ export function evidence(result, query, config, { reserveBytes = 0 } = {}) {
     );
   for (const raw of rows.slice(0, query.limit)) {
     const entryState = { truncated: false, truncationReasons: [] };
-    const entry = selectedEntry(raw, entryState);
+    const entry = selectedEntry(raw, entryState, { mode: query.mode, paged });
     if (!entry) {
       markTruncated(state, "invalid-row");
       details.invalidRows++;

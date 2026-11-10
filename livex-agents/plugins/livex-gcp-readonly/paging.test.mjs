@@ -304,3 +304,85 @@ test("revocation after response prevents result disclosure and further effects",
   await assert.rejects(tool.execute("one", query), /revoked/);
   assert.equal(state.receipts.get("one").result, undefined);
 });
+
+test("paged kiosk evidence binds selector and status through cursor continuation", async () => {
+  const input = {
+    mode: "mappedin_token_request",
+    agentId: "pub-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    mapId: "b".repeat(24),
+    start: "2026-10-20T16:10:00Z",
+    end: "2026-10-20T16:11:00Z",
+  };
+  const options = {
+    ledger: ledger(),
+    readPage: async (admitted, cursor) => {
+      assert.equal(admitted.mapId, input.mapId);
+      if (!cursor) return { entries: [], nextPageToken: "cloud-cursor" };
+      return {
+        entries: [
+          {
+            ...row(1),
+            resource: { type: "http_load_balancer", labels: {} },
+            httpRequest: {
+              status: 200,
+              requestUrl: "PRIVATE-FULL-URL",
+              headers: "PRIVATE-HEADERS",
+            },
+          },
+        ],
+        nextPageToken: null,
+      };
+    },
+  };
+  assert.equal(
+    createPagedLogsTool(
+      config,
+      { ...context, requesterSenderId: "U999" },
+      () => assert.fail("unauthorized cloud read"),
+      options,
+    ),
+    null,
+  );
+  const tool = createPagedLogsTool(
+    config,
+    context,
+    () => assert.fail("legacy cloud read"),
+    options,
+  );
+  assert.ok(tool.parameters.properties.mode.enum.includes("mappedin_token_request"));
+  const first = (await tool.execute("first-kiosk", input)).details;
+  assert.equal(first.windowExhausted, false);
+  await assert.rejects(
+    tool.execute("wrong-map", { cursor: first.nextCursor, mapId: "c".repeat(24) }),
+    /only the returned cursor/,
+  );
+  const next = (await tool.execute("next-kiosk", { cursor: first.nextCursor })).details;
+  assert.equal(next.windowExhausted, true);
+  assert.equal(next.logsExplorerUrl, first.logsExplorerUrl);
+  assert.deepEqual(next.entries[0].httpRequest, { status: 200 });
+  assert.doesNotMatch(JSON.stringify(next), /PRIVATE-/);
+});
+
+test("tool offer survives buffered pages while rejecting invalid summaries", async () => {
+  const offered = [{ name: "kiosk_map", operations: ["open_map"] }];
+  const entries = Array.from({ length: 25 }, (_, index) => row(index, 1800));
+  entries[0].toolOffer = [{ name: "kiosk_map", arguments: "PRIVATE-ARGUMENTS" }];
+  entries[1].toolOffer = [{ name: "sk-synthetic_cannot_escape_0000" }];
+  entries[2].toolOffer = [{ name: "kiosk_map", operations: ["xapp-synthetic-cannot-escape"] }];
+  entries.at(-1).toolOffer = offered;
+  const tool = createPagedLogsTool(config, context, () => assert.fail("legacy cloud read"), {
+    ledger: ledger(),
+    readPage: async () => ({ entries, nextPageToken: null }),
+  });
+  let result = (await tool.execute("offer", query)).details;
+  assert.ok(result.entries.slice(0, 3).every((entry) => entry.toolOffer === undefined));
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE-|cannot.escape/);
+  assert.ok(result.nextCursor);
+  for (let page = 1; result.nextCursor; page++) {
+    assert.ok(page < 20);
+    result = (await tool.execute(`offer-${page}`, { cursor: result.nextCursor })).details;
+  }
+  assert.equal(result.fromBuffer, true);
+  assert.deepEqual(result.entries.at(-1).toolOffer, offered);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE-/);
+});

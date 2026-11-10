@@ -69,6 +69,28 @@ Discovery requires one or more of `conversationId`, `jobId`, `roomId`, `traceId`
 one service may record a conversation while another records a job. A returned
 row need not match every supplied ID. Preserve which operation each row supports.
 
+For kiosk map alerts, use these paged profiles when the tool advertises them.
+Use observed IDs and the smallest incident window, at most ten minutes per
+query. Supply only the mode, required selectors, `start`, `end`, and optional
+`limit`. Continue each query with its own cursor alone.
+
+- `mode: "kiosk_renderer"` with `deviceSerial` checks Electron network and map
+  diagnostics. Packet loss is a network symptom, not the failed URL or cause.
+- `mode: "mappedin_token_request"` with `agentId` and `mapId` checks the exact
+  gateway token request. HTTP 200 confirms that request succeeded, not that
+  the subsequent map fetch rendered or recovered.
+- Read the correlated Chat Engine turn separately. A returned `toolOffer`
+  lists offered names and any explicit operation enums for that request. An
+  absent summary is unknown. An empty list means no tools were offered on
+  that request. If reused evidence predates this projection, use one fresh
+  initial query with `refresh: true` and continue with its cursor alone. A
+  tool offer does not prove invocation or completion.
+
+Report renderer, token, and Chat Engine coverage separately. Distinguish a
+missing selector, an unavailable profile, access denied, an exhausted empty
+read, and an unknown projected field. Preserve exact evidence links and source
+IDs. Do not infer the failed request URL or recovery from these profiles alone.
+
 Build a timeline from the returned resource selectors, timestamps, source IDs,
 and correlation fields. Follow relevant WARNING/DEBUG entries as well as errors.
 Use current discovered selectors for context reads; never hardcode service, pod,
