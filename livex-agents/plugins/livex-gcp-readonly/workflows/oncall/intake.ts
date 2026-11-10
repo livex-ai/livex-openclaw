@@ -40,23 +40,22 @@ function validAlertRoot(message: SlackMessage) {
 
 export function admitAlert(message: SlackMessage, config: OncallConfig, now: number): Alert | null {
   const ts = message.ts!;
-  const scope = [config.accountId, config.teamId, config.channelId];
-  const metadata = message.metadata;
-  const incidentId = metadata?.event_payload?.incident_id;
+  const payload = message.metadata?.event_payload;
+  const incidentId = payload?.incident_id;
   if (
-    config.alertEventTypes &&
-    (!metadata?.event_type ||
-      !config.alertEventTypes.includes(metadata.event_type) ||
-      typeof incidentId !== "string" ||
-      !/^[A-Za-z0-9_.:-]{1,256}$/.test(incidentId))
+    payload?.debugger !== true ||
+    typeof incidentId !== "string" ||
+    !/^[A-Za-z0-9_.:-]{1,256}$/.test(incidentId)
   ) {
     return null;
   }
-  const identity = JSON.stringify(
-    config.alertEventTypes
-      ? [...scope, config.publisherBotId, metadata?.event_type, incidentId]
-      : [...scope, ts],
-  );
+  const identity = JSON.stringify([
+    config.accountId,
+    config.teamId,
+    config.channelId,
+    config.publisherBotId,
+    incidentId,
+  ]);
   const text = (message.text ?? "").slice(0, 20_000);
   const identifiers = Object.fromEntries(
     ID_PATTERNS.flatMap(([key, pattern]) => {
@@ -88,7 +87,7 @@ export async function scanAlerts(params: {
   const checkpoint = await store.checkpoint();
   const cutoff = ((now - ALERT_WINDOW_MS) / 1_000).toFixed(6);
   const oldest = checkpoint && checkpoint > cutoff ? checkpoint : cutoff;
-  const typedAlerts = config.alertEventTypes ? new Map<string, Alert>() : undefined;
+  const alerts = new Map<string, Alert>();
   let cursor: string | undefined;
   let newest = oldest;
   for (let page = 0; page < config.maxScanPages; page++) {
@@ -104,20 +103,15 @@ export async function scanAlerts(params: {
       if (!alert) {
         continue;
       }
-      if (typedAlerts) {
-        const previous = typedAlerts.get(alert.key);
-        if (!previous || Number(alert.ts) < Number(previous.ts)) {
-          typedAlerts.set(alert.key, alert);
-        }
-      } else {
-        params.assertCurrent();
-        await store.admit(alert);
+      const previous = alerts.get(alert.key);
+      if (!previous || Number(alert.ts) < Number(previous.ts)) {
+        alerts.set(alert.key, alert);
       }
     }
     cursor = result.cursor;
     if (!cursor) {
       // Slack returns newest first. Finish the scan before binding an incident to its root.
-      for (const alert of typedAlerts?.values() ?? []) {
+      for (const alert of alerts.values()) {
         params.assertCurrent();
         await store.admit(alert);
       }

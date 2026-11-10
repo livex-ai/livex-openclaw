@@ -43,6 +43,7 @@ it("retains checkpoint on incomplete pagination and rejects overbroad resource c
     scanAlerts({ config: { ...config, maxScanPages: 1 }, store, slack, now, assertCurrent() {} }),
   ).rejects.toThrow("incomplete");
   expect(await store.checkpoint()).toBeUndefined();
+  expect(await store.list()).toEqual([]);
   expect(() => parseOncallConfig({ ...config, resourceLabels: {} })).toThrow();
   expect(() => parseOncallConfig({ ...config, maxRunMs: 600_001 })).toThrow();
   expect(parseOncallConfig(undefined)).toBeNull();
@@ -60,7 +61,14 @@ it("admits alerts arriving during history awaits without advancing past deferred
   const slack = slackStub();
   let clock = now;
   const arriving = { ...message, ts: ((now + 5_000) / 1000).toFixed(6) };
-  const future = { ...message, ts: ((now + 60_000) / 1000).toFixed(6) };
+  const future = {
+    ...message,
+    ts: ((now + 60_000) / 1000).toFixed(6),
+    metadata: {
+      ...message.metadata,
+      event_payload: { debugger: true, incident_id: "future_incident" },
+    },
+  };
   vi.mocked(slack.history).mockImplementationOnce(async () => {
     clock += 5_000;
     return {
@@ -86,31 +94,34 @@ it("admits alerts arriving during history awaits without advancing past deferred
   expect(await store.checkpoint()).toBe(future.ts);
 });
 
-it("admits one typed receipt per producer incident across scans and restart", async () => {
+it("requires an explicit Debugger flag and deduplicates incident IDs across labels and restart", async () => {
   const { store, open } = nativeStore();
   const slack = slackStub();
-  const typed = { ...config, alertEventTypes: ["gcp_monitoring_incident"] };
-  const event = (offset: number, type: string, id: unknown) => ({
+  const event = (offset: number, type: string, id: unknown, flag?: unknown) => ({
     ...message,
     ts: ((now - offset) / 1000).toFixed(6),
-    metadata: { event_type: type, event_payload: { incident_id: id } },
+    metadata: { event_type: type, event_payload: { incident_id: id, debugger: flag } },
   });
-  const first = event(900, "gcp_monitoring_incident", "gcp_incident_1");
-  const duplicate = event(800, "gcp_monitoring_incident", "gcp_incident_1");
-  const next = event(700, "gcp_monitoring_incident", "gcp_incident_2");
+  const first = event(900, "gcp_monitoring_incident", "gcp_incident_1", true);
+  const duplicate = event(800, "incident_reposted", "gcp_incident_1", true);
+  const next = event(700, "another_alert_type", "gcp_incident_2", true);
   const ignored = [
     event(600, "device_recovered", "gcp_incident_3"),
-    event(500, "device_offline", "gcp_incident_4"),
-    event(400, "gcp_monitoring_incident", undefined),
-    event(300, "gcp_monitoring_incident", "x".repeat(257)),
+    event(500, "gcp_monitoring_incident", "missing_flag"),
+    event(450, "gcp_monitoring_incident", "disabled_flag", false),
+    event(425, "gcp_monitoring_incident", "string_flag", "true"),
+    event(410, "gcp_monitoring_incident", "numeric_flag", 1),
+    event(400, "gcp_monitoring_incident", undefined, true),
+    event(350, "gcp_monitoring_incident", "", true),
+    event(300, "gcp_monitoring_incident", "x".repeat(257), true),
   ];
   const scan = (receiptStore = store) =>
-    scanAlerts({ config: typed, store: receiptStore, slack, now, assertCurrent() {} });
+    scanAlerts({ config, store: receiptStore, slack, now, assertCurrent() {} });
   vi.mocked(slack.history)
     .mockResolvedValueOnce({ messages: [next, duplicate, ...ignored], cursor: "older" })
     .mockResolvedValueOnce({ messages: [first] })
     .mockResolvedValueOnce({
-      messages: [event(100, "gcp_monitoring_incident", "gcp_incident_1")],
+      messages: [event(100, "incident_reposted", "gcp_incident_1", true)],
     });
   await scan();
   const reopened = createReceiptStore(

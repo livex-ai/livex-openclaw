@@ -8,6 +8,7 @@ import {
   createTestPluginApi,
   createTestPluginServiceScheduler,
 } from "openclaw/plugin-sdk/plugin-test-api";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { expect, it, vi } from "vitest";
 import { registerOncall } from "./service.js";
 import { createOncallSlack } from "./slack.js";
@@ -30,7 +31,7 @@ async function fixture() {
   const runEmbeddedAgent = vi.fn();
   const pluginConfig = { ...gcpConfig, oncall: { ...config, automationJobId: jobId } };
   const sourceConfig = { plugins: { entries: { "livex-gcp-readonly": { config: pluginConfig } } } };
-  const runtime = createTestPluginApi().runtime;
+  const runtime = createPluginRuntimeMock();
   const api = createTestPluginApi({
     config: sourceConfig,
     pluginConfig,

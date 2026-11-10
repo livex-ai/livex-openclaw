@@ -336,7 +336,6 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
   const source = {
     enabled: true,
     automationJobId: job.id,
-    alertEventTypes: ["gcp_monitoring_incident"],
     accountId: "default",
     teamId: "T123456",
     channelId: "C123456",
@@ -492,35 +491,39 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
       });
     const retired = new AbortController();
     registerSignals(retired.signal);
-    const emit = (eventType: string, timestamp = currentTime) =>
+    const emit = (timestamp = currentTime) =>
       signals.publish("T123456", {
         type: "message",
         channel: "C123456",
         ts: (timestamp / 1000).toFixed(6),
         bot_id: "B123456",
-        metadata: { event_type: eventType },
       } as Parameters<typeof signals.publish>[1]);
     const historyCount = () =>
       calls.filter((call) => call.method === "conversations.history").length;
     const beforeSignal = historyCount();
-    emit("device_recovered");
-    emit("gcp_monitoring_incident", currentTime - 900_001);
-    emit("gcp_monitoring_incident", currentTime + 600_000);
+    emit(currentTime - 900_001);
+    emit(currentTime + 600_000);
     await time.advanceBy(250);
     expect(historyCount()).toBe(beforeSignal);
-    emit("gcp_monitoring_incident");
+    emit();
     retired.abort();
     await time.advanceBy(250);
     expect(historyCount()).toBe(beforeSignal);
     signals = createSlackRootMessageSignals();
     registerSignals(gateway.signal);
-    availableIncidents = 1;
-    emit("gcp_monitoring_incident");
-    emit("gcp_monitoring_incident");
-    emit("gcp_monitoring_incident", time.clock.now() - 899_900);
+    // A status wake may scan Slack, but cannot admit a Debugger run.
+    emit(currentTime - 1_000);
     await time.advanceBy(250);
     await waitForCronRunQueue(cronState);
     expect(historyCount()).toBe(beforeSignal + 1);
+    expect(core).not.toHaveBeenCalled();
+    availableIncidents = 1;
+    emit();
+    emit();
+    emit(time.clock.now() - 899_900);
+    await time.advanceBy(5_000);
+    await waitForCronRunQueue(cronState);
+    expect(historyCount()).toBe(beforeSignal + 2);
     expect((await cron.readJob(job.id))?.state.nextRunAtMs).toBe(nextDueAt);
     expect(time.clock.now()).toBeLessThan(nextDueAt!);
     await time.wake();
@@ -608,27 +611,33 @@ async function localSlackServer(
 }
 
 function slackResponse(method: string, currentTime: number, availableIncidents: number): any {
-  const message = (offset: number, eventType: string, id: string) => ({
+  const message = (offset: number, eventType: string, id: string, debuggerRequested?: boolean) => ({
     ts: (currentTime / 1000 + offset).toFixed(6),
     bot_id: "B123456",
     team: "T123456",
     text: "job_id=job-1 failed",
-    metadata: { event_type: eventType, event_payload: { incident_id: id } },
+    metadata: {
+      event_type: eventType,
+      event_payload: { debugger: debuggerRequested, incident_id: id },
+    },
   });
   const responses: Record<string, unknown> = {
     "auth.test": { ok: true, team_id: "T123456", bot_id: "B123456" },
     "conversations.history": {
       ok: true,
       messages: [
-        ...(availableIncidents >= 2 ? [message(70, "gcp_monitoring_incident", "gcp_second")] : []),
+        ...(availableIncidents >= 2
+          ? [message(70, "gcp_monitoring_incident", "gcp_second", true)]
+          : []),
         ...(availableIncidents >= 1
           ? [
               message(2, "livex_oncall", "own-output"),
-              message(1, "gcp_monitoring_incident", "gcp_first"),
-              message(0, "gcp_monitoring_incident", "gcp_first"),
+              message(1, "incident_reposted", "gcp_first", true),
+              message(0, "gcp_monitoring_incident", "gcp_first", true),
             ]
           : []),
         message(-1, "device_recovered", "device-1"),
+        message(-2, "gcp_monitoring_incident", "gcp_flag_missing"),
       ],
     },
     "conversations.info": { ok: true, channel: { properties: { canvas: { file_id: "F123456" } } } },

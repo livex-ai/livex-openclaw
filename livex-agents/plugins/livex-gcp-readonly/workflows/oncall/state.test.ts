@@ -114,7 +114,14 @@ it("quarantines foreign and legacy receipts across source restart without replay
     await expect(
       first.change(alert.key, (receipt) => ({ ...receipt, phase: "assessed" })),
     ).rejects.toThrow("current source");
-    const newMessage = { ...message, ts: ((now + 60_000) / 1000).toFixed(6) };
+    const newMessage = {
+      ...message,
+      ts: ((now + 60_000) / 1000).toFixed(6),
+      metadata: {
+        ...message.metadata,
+        event_payload: { debugger: true, incident_id: "new_incident" },
+      },
+    };
     time.setTime(now + 60_000);
     vi.mocked(slack.history).mockResolvedValue({ messages: [newMessage] });
     await coordinator.tick(scope);

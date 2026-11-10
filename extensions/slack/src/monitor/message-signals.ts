@@ -11,7 +11,6 @@ export type SlackRootMessageSignal = Readonly<{
   ts: string;
   botId?: string;
   appId?: string;
-  eventType?: string;
 }>;
 
 export type SlackRootMessageSignalSource = {
@@ -48,7 +47,6 @@ export function createSlackRootMessageSignals() {
         ts: message.ts,
         botId: normalizeOptionalString(message.bot_id),
         appId: normalizeOptionalString(record?.app_id),
-        eventType: normalizeOptionalString(asOptionalRecord(record?.metadata)?.event_type),
       });
       for (const listener of listeners) {
         if (listener.teamId === teamId && listener.channelId === message.channel) {

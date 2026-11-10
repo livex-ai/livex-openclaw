@@ -7,11 +7,6 @@ const limited = (maximum: number, fallback: number) =>
 export const oncallSchema = z.strictObject({
   enabled: z.literal(true),
   automationJobId: z.string().min(1).max(128).optional(),
-  alertEventTypes: z
-    .array(z.string().regex(/^[A-Za-z0-9_-]{1,64}$/))
-    .min(1)
-    .max(16)
-    .optional(),
   accountId: z.string().trim().min(1).max(64),
   teamId: slackId("T"),
   channelId: slackId("CG"),

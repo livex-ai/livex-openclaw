@@ -608,7 +608,6 @@ it("publishes a scoped root bot signal before normal chat dispatch", async () =>
     ts: root.ts,
     botId: "B_BOT",
     appId: undefined,
-    eventType: "test_incident",
   });
   expect(wrongChannel).not.toHaveBeenCalled();
   await handler({ event: { ...root, thread_ts: "1794045599.000001" }, body: {} });

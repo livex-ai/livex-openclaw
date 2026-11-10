@@ -20,10 +20,6 @@ export function startOncallSlackWake(params: {
   assertCurrent: () => void;
 }) {
   const { api, context, config, jobId, expectedScript, assertCurrent } = params;
-  const eventTypes = config.alertEventTypes;
-  if (!eventTypes) {
-    return;
-  }
   const { scheduler } = context;
   const contexts = api.runtime.channel.runtimeContexts;
   const key = {
@@ -49,8 +45,7 @@ export function startOncallSlackWake(params: {
           contexts.get(key) !== source ||
           !isRecentAlert(message.ts, scheduler.now()) ||
           message.botId !== config.publisherBotId ||
-          (config.publisherAppId && message.appId !== config.publisherAppId) ||
-          (message.eventType && !eventTypes.includes(message.eventType))
+          (config.publisherAppId && message.appId !== config.publisherAppId)
         ) {
           return;
         }

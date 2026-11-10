@@ -27,6 +27,10 @@ export const message = {
   bot_id: config.publisherBotId,
   team: config.teamId,
   text: "job_id=job-1 failed",
+  metadata: {
+    event_type: "gcp_monitoring_incident",
+    event_payload: { debugger: true, incident_id: "gcp_test_incident" },
+  },
 };
 export const alert = admitAlert(message, config, now)!;
 export const gcpConfig = {
