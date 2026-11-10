@@ -10,7 +10,13 @@ import tempfile
 
 from agent_bundle import BUNDLED, validate_bundle
 
-from release_inputs import concurrency_limit, release_arguments, reviewed_prompt_hash, slack_progress_settings
+from release_inputs import (
+    concurrency_limit,
+    release_arguments,
+    reviewed_prompt_hash,
+    slack_progress_settings,
+    slack_usage_default,
+)
 
 os.umask(0o077)
 source, old_id = release_arguments(sys.argv[1:3])
@@ -174,6 +180,12 @@ for name, cmd, cwd in steps:
         )
         slack = profile.get("channels", {}).get("slack", {})
         desired_progress = slack_progress_settings(slack.get("streaming")) if "streaming" in slack else None
+        messages = profile.get("messages", {})
+        desired_usage = (
+            slack_usage_default(messages["responseUsage"])
+            if "responseUsage" in messages
+            else None
+        )
     print("START " + name, flush=True)
     with (logs / (name + ".log")).open("x") as f:
         r = subprocess.run(
@@ -211,6 +223,8 @@ receipt = {
 }
 if desired_progress is not None:
     receipt["slackProgress"] = desired_progress
+if desired_usage is not None:
+    receipt["slackUsageDefault"] = desired_usage
 # The helper revision and selected source SHA can differ during upgrades/resume.
 # Pre-bundle sources retain their existing Oncall-only receipt contract.
 if bundled_agents:

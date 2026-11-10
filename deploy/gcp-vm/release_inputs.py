@@ -122,6 +122,23 @@ def with_slack_progress(content, target):
     return (json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
 
 
+def slack_usage_default(value):
+    if value != {"default": "off", "slack": "full"}:
+        raise ValueError("Expected the Slack-only full usage default")
+    return value
+
+
+def with_slack_usage_default(content, target):
+    target = slack_usage_default(target)
+    config = json.loads(content)
+    messages = config.setdefault("messages", {})
+    # An explicitly authored mode belongs to the operator.
+    if "responseUsage" in messages:
+        return content
+    messages["responseUsage"] = target
+    return (json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
+
+
 def require_vm_policies(content):
     config = json.loads(content)
     agent = config["agents"]["entries"]["oncall"]

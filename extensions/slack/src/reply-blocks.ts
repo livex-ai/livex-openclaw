@@ -14,6 +14,7 @@ import {
   asOptionalRecord,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import {
   resolveSlackAuthoredTextPlacement,
   type SlackAuthoredTextPlacement,
@@ -32,6 +33,7 @@ import {
   type SlackBlockRenderOptions,
 } from "./blocks-render.js";
 import { markdownToSlackMrkdwnChunks } from "./format.js";
+import { SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT } from "./limits.js";
 import {
   appendSlackNativeDataFallbackText,
   buildSlackNativeDataAccessibilityText,
@@ -164,7 +166,7 @@ export function resolveSlackReplyRenderPlan(
 
 export type PreparedSlackReply = {
   readonly payload: ReplyPayload;
-  resolveDelivery: () => SlackReplyBlockResolution;
+  resolveDelivery: (attachmentTextLimit?: number) => SlackReplyBlockResolution;
   resolvePreview: (text?: string) => SlackReplyRenderPlan;
 };
 
@@ -189,8 +191,13 @@ export function prepareSlackReply(payload: ReplyPayload): PreparedSlackReply {
       : (unmaterialized ??= resolveSlackReplyBlockResolution(payload));
   return {
     payload,
-    resolveDelivery: () =>
-      resolve(!resolveSendableOutboundReplyParts(payload).hasMedia && hasStructuredContent()),
+    resolveDelivery: (attachmentTextLimit) =>
+      attachmentTextLimit !== undefined &&
+      attachmentTextLimit < SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT &&
+      readUsageFooter(payload) &&
+      asOptionalRecord(payload.channelData?.slack)?.threadSummaryCard
+        ? resolveSlackReplyBlockResolution(payload, { attachmentTextLimit })
+        : resolve(!resolveSendableOutboundReplyParts(payload).hasMedia && hasStructuredContent()),
     resolvePreview: (override = text) => {
       if (override !== text) {
         return prepareSlackReply({ ...payload, text: override }).resolvePreview();
@@ -199,6 +206,7 @@ export function prepareSlackReply(payload: ReplyPayload): PreparedSlackReply {
         text,
         resolve(hasStructuredContent()),
         resolveAuthoredTextChunks,
+        Boolean(readUsageFooter(payload)),
       ));
     },
   };
@@ -208,6 +216,7 @@ function projectSlackReplyRenderPlan(
   text: string | undefined,
   resolution: SlackReplyBlockResolution,
   resolveAuthoredTextChunks: () => readonly string[],
+  hasUsageFooter: boolean,
 ): SlackReplyRenderPlan {
   const messages = resolveSlackReplyDeliveryMessages({
     authoredTextPlacement: resolution.authoredTextPlacement,
@@ -242,7 +251,7 @@ function projectSlackReplyRenderPlan(
       !message.textIsSlackPlainText &&
       (message.authoredTextPlacement !== "outside-blocks" || message.nativeDataFallbackBaseText),
     );
-    if (blocks?.length && sourceText) {
+    if (!hasUsageFooter && blocks?.length && sourceText) {
       if (hasSlackNativeDataBlock(blocks)) {
         renderedText = appendSlackNativeDataFallbackText(sourceText, blocks) || renderedText;
         textIsSlackMrkdwn = true;
@@ -274,6 +283,10 @@ function readSlackChannelBlocks(payload: ReplyPayload): SlackBlock[] {
   return parseSlackBlocksInput(asOptionalRecord(payload.channelData?.slack)?.blocks) ?? [];
 }
 
+function readUsageFooter(payload: ReplyPayload): string | undefined {
+  return normalizeOptionalString(payload.channelData?.openclawUsageFooter);
+}
+
 // This projection is authored only after the final-report identity/thread guard.
 // Match its exact fallback to avoid displaying a stale card after text rewrites.
 function readSlackThreadSummaryCard(payload: ReplyPayload) {
@@ -293,7 +306,7 @@ function readSlackThreadSummaryCard(payload: ReplyPayload) {
   }
   return {
     blocks,
-    attachments: [{ color, blocks: attachmentBlocks, fallback: payload.text }],
+    attachment: { color, blocks: attachmentBlocks, fallback: payload.text },
     fallbackText: payload.text,
   };
 }
@@ -303,7 +316,8 @@ export function hasSlackReplyStructuredContent(payload: ReplyPayload): boolean {
     readSlackThreadSummaryCard(payload) ||
     readSlackChannelBlocks(payload).length ||
     normalizeMessagePresentation(payload.presentation) ||
-    payload.interactive?.blocks.length,
+    payload.interactive?.blocks.length ||
+    readUsageFooter(payload),
   );
 }
 
@@ -500,14 +514,43 @@ export function resolveSlackReplyBlockResolution(
   options: {
     materializeAuthoredText?: boolean;
     resolveAuthoredTextChunks?: () => readonly string[];
+    attachmentTextLimit?: number;
   } = {},
 ): SlackReplyBlockResolution {
+  const usageText = readUsageFooter(payload);
+  const footer: SlackBlock | undefined = usageText
+    ? { type: "context", elements: [{ type: "mrkdwn", text: usageText }] }
+    : undefined;
   const summary = readSlackThreadSummaryCard(payload);
   if (summary) {
-    return {
-      authoredTextPlacement: "none",
-      segments: [{ kind: "blocks", ...summary }],
-    };
+    const { attachment, blocks, fallbackText } = summary;
+    const segments: SlackReplyBlockSegment[] = [
+      { kind: "blocks", blocks, attachments: [attachment], fallbackText },
+    ];
+    if (footer) {
+      const textWithFooter = `${fallbackText}\n\n${renderSlackBlockFallbackText(footer) ?? usageText}`;
+      const fallbackLimit = Math.min(
+        options.attachmentTextLimit ?? SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT,
+        SLACK_MESSAGE_TEXT_RECOMMENDED_LIMIT,
+      );
+      if (
+        attachment.blocks.length < SLACK_MAX_BLOCKS &&
+        Buffer.byteLength(textWithFooter, "utf8") <= fallbackLimit
+      ) {
+        segments[0] = {
+          kind: "blocks",
+          blocks,
+          attachments: [
+            { ...attachment, blocks: [...attachment.blocks, footer], fallback: textWithFooter },
+          ],
+          fallbackText: textWithFooter,
+        };
+      } else {
+        // Keep the complete report accessible when it already fills Slack's fallback budget.
+        segments.push({ kind: "blocks", blocks: [footer] });
+      }
+    }
+    return { authoredTextPlacement: "none", segments };
   }
   const segments: SlackReplyBlockSegment[] = [];
   const presentation = normalizeMessagePresentation(payload.presentation);
@@ -578,7 +621,16 @@ export function resolveSlackReplyBlockResolution(
   ) {
     segments.length = 0;
     appendBlockSegment(segments, compiledChannelBlocks);
-    appendTextSegment(segments, payload.text);
+    if (footer) {
+      appendBlockSegment(
+        segments,
+        chunkTextForOutbound(payload.text.trim(), SLACK_SECTION_TEXT_MAX, {
+          preserveWhitespace: true,
+        }).map((text) => ({ type: "section", text: { type: "plain_text", text, emoji: false } })),
+      );
+    } else {
+      appendTextSegment(segments, payload.text);
+    }
   }
   // Compare final Slack rows, not source payloads: fallbacks and transport
   // limits can prevent an apparent source mirror from rendering at all.
@@ -589,6 +641,17 @@ export function resolveSlackReplyBlockResolution(
       presentationBlocks: renderedPresentationBlocks,
     }),
   );
+  if (footer) {
+    const lastBlocks = readLastBlockSegment(segments);
+    if (lastBlocks.length === SLACK_MAX_BLOCKS) {
+      const last = lastBlocks.pop();
+      if (last) {
+        appendBlockSegment(segments, [last, footer], true);
+      }
+    } else {
+      appendBlockSegment(segments, [footer]);
+    }
+  }
   const renderedTextFragments = segments.flatMap((segment) => {
     if (segment.kind === "text") {
       return [segment.text];

@@ -1,6 +1,7 @@
-import { expectDefined } from "@openclaw/normalization-core";
+import { expectDefined, formatCompactTokenCount } from "@openclaw/normalization-core";
 import { hasBillableUsage, hasNonzeroUsage, type NormalizedUsage } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import type { PluginHookReplyUsageState } from "../../plugins/hook-types.js";
 import {
   estimateAggregateUsageCost,
@@ -15,6 +16,7 @@ import {
 import { resolveEffectiveResponseUsage } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
 import { buildUsageContract } from "../usage-bar/contract.js";
+import { DEFAULT_USAGE_BAR_TEMPLATE } from "../usage-bar/default-template.js";
 import { loadUsageBarTemplate } from "../usage-bar/template.js";
 import { renderUsageBar } from "../usage-bar/translator.js";
 
@@ -52,6 +54,26 @@ const formatResponseUsageLine = (
   return `Usage: ${totalLabel ?? `${inputLabel} in / ${outputLabel} out`}${cacheSuffix}${suffix}`;
 };
 
+type ResponseUsageLine = string | { context: string };
+
+function formatSlackUsageContext(usage: NormalizedUsage | undefined, cost: number | undefined) {
+  const { input, cacheRead, cacheWrite, output } = usage ?? {};
+  const tokens =
+    usage?.usageReport?.state !== "unavailable" &&
+    input !== undefined &&
+    cacheRead !== undefined &&
+    output !== undefined
+      ? [
+          `${formatCompactTokenCount(input)} uncached`,
+          `${formatCompactTokenCount(cacheRead)} cached`,
+          ...(cacheWrite ? [`${formatCompactTokenCount(cacheWrite)} cache write`] : []),
+          `${formatCompactTokenCount(output)} out`,
+        ].join(" · ")
+      : "Usage unavailable";
+  const estimate = cost === undefined ? "unavailable" : `$${cost.toFixed(4)}`;
+  return `Estimated cost ${estimate} · ${tokens}`;
+}
+
 export const resolveResponseUsageLine = (params: {
   config: OpenClawConfig;
   agentDir: string;
@@ -62,15 +84,29 @@ export const resolveResponseUsageLine = (params: {
   model?: string;
   preserveUserFacingSessionState?: boolean;
   replyUsageState?: PluginHookReplyUsageState;
-}): string | undefined => {
+}): ResponseUsageLine | undefined => {
   const responseUsageMode = resolveEffectiveResponseUsage(
     params.sessionRaw,
     params.config.messages?.responseUsage,
     params.channel,
   );
+  if (responseUsageMode === "off" || params.preserveUserFacingSessionState === true) {
+    return undefined;
+  }
   const showCost = responseUsageMode === "full";
+  const slackFull = showCost && params.channel === "slack";
+  const usageTemplate =
+    showCost && (slackFull || params.replyUsageState)
+      ? loadUsageBarTemplate(params.config.messages?.usageTemplate)
+      : undefined;
+  if (slackFull && usageTemplate === DEFAULT_USAGE_BAR_TEMPLATE) {
+    const cost =
+      params.replyUsageState?.turnUsd ??
+      estimateAggregateUsageCost({ ...params, allowPluginNormalization: false });
+    return { context: formatSlackUsageContext(params.usage, cost) };
+  }
   const hasUsage = showCost ? hasBillableUsage(params.usage) : hasNonzeroUsage(params.usage);
-  if (responseUsageMode === "off" || !hasUsage || params.preserveUserFacingSessionState === true) {
+  if (!hasUsage) {
     return undefined;
   }
 
@@ -83,10 +119,6 @@ export const resolveResponseUsageLine = (params: {
     agentDir: params.agentDir,
     allowPluginNormalization: false,
   });
-  const usageTemplate =
-    responseUsageMode === "full" && params.replyUsageState
-      ? loadUsageBarTemplate(params.config.messages?.usageTemplate)
-      : undefined;
   const rendered =
     usageTemplate && params.replyUsageState
       ? renderUsageBar(usageTemplate, buildUsageContract(params.replyUsageState, params.channel))
@@ -95,22 +127,36 @@ export const resolveResponseUsageLine = (params: {
   return rendered || formatted || undefined;
 };
 
-export const appendUsageLine = (payloads: ReplyPayload[], line: string): ReplyPayload[] => {
-  const index = payloads.findLastIndex((payload) => payload?.text);
+export const appendUsageLine = (
+  payloads: ReplyPayload[],
+  line: ResponseUsageLine,
+): ReplyPayload[] => {
+  const context = typeof line !== "string";
+  const footer = context ? line.context : line;
+  const index = payloads.findLastIndex(
+    (payload) => payload && (context ? hasReplyPayloadContent(payload) : payload.text),
+  );
   if (index === -1) {
-    return [...payloads, { text: line, isStatusNotice: true }];
+    return context ? payloads : [...payloads, { text: footer, isStatusNotice: true }];
   }
   const existing = expectDefined(payloads[index], "payloads entry at index");
-  const existingText = existing.text ?? "";
-  const separator = existingText.endsWith("\n") ? "" : "\n";
-  const next = copyReplyPayloadMetadata(existing, {
-    ...existing,
-    text: `${existingText}${separator}${line}`,
-  });
-  setReplyPayloadMetadata(next, { responseUsageLine: line });
+  const next = copyReplyPayloadMetadata(
+    existing,
+    context
+      ? {
+          ...existing,
+          // Slack appends this after compiling the report and controls.
+          channelData: { ...existing.channelData, openclawUsageFooter: footer },
+        }
+      : {
+          ...existing,
+          text: `${existing.text ?? ""}${existing.text?.endsWith("\n") ? "" : "\n"}${footer}`,
+        },
+  );
+  setReplyPayloadMetadata(next, { responseUsageLine: footer });
   const mirror = getReplyPayloadMetadata(existing)?.sourceReplyTranscriptMirror;
   // Transcript mirrors must track the mutated text or source-reply delivery drifts.
-  if (mirror) {
+  if (!context && mirror) {
     setReplyPayloadMetadata(next, {
       sourceReplyTranscriptMirror: { ...mirror, text: next.text },
     });

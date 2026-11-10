@@ -10,7 +10,7 @@ function usageSegments() {
       when: "context.max_tokens",
       text: "\u00A0| 📚[{context.pct_used|meter:5:braille}]{context.max_tokens|num}",
     },
-    { when: "cost.turn_usd", text: "\u00A0💰{cost.turn_usd|fixed:4}" },
+    { when: "cost.turn_usd", text: "\u00A0💰 est ${cost.turn_usd|fixed:4}" },
   ];
 }
 

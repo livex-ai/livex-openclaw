@@ -61,7 +61,7 @@ export function activateCodexAttemptTurn(
   turnRuntime: CodexAttemptTurnState,
   lifecycle: CodexAttemptLifecycleController,
   notifications: CodexAttemptNotificationController,
-  { turn, upstreamUserText }: CodexStartedTurn,
+  { turn, upstreamUserText, usageBaseline }: CodexStartedTurn,
   onResponseObserved: CodexAppServerEventProjectorOptions["onResponseObserved"],
 ) {
   const {
@@ -239,6 +239,7 @@ export function activateCodexAttemptTurn(
       upstreamUserText,
       onContextCompacted: () => restoreCodexAttemptCompactionContext(resources),
     },
+    { model: params.model, baseline: usageBaseline },
   );
   const activeProjector = projectorRef.current;
   let activationFailed = false;

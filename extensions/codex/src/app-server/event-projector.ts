@@ -250,6 +250,9 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
         await this.handleRawResponseItemCompleted(params);
         break;
       case "model/rerouted":
+        if (readString(params, "toModel") !== this.params.modelId) {
+          this.usageProjection.invalidatePricing();
+        }
         this.eventProjection.handleModelRerouted(params);
         break;
       case "model/safetyBuffering/updated":

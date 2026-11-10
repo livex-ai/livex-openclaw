@@ -20,7 +20,7 @@ import { CODEX_INFERENCE_GENERATION_KEY } from "./inference-context.js";
 import { getCodexInferenceThread } from "./inference-routing.js";
 import { readCodexRuntimeModelId } from "./model-runtime.js";
 import { assertCodexTurnStartResponse } from "./protocol-validators.js";
-import type { CodexTurnStartResponse } from "./protocol.js";
+import type { CodexTurnStartResponse, JsonObject } from "./protocol.js";
 import { prepareCodexProviderReviewContinuation } from "./provider-review-continuation.js";
 import { readCodexRateLimitsRevision } from "./rate-limit-cache.js";
 import {
@@ -29,6 +29,7 @@ import {
 } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
+import { readCodexAppServerPreTurnUsage } from "./startup-binding.js";
 import { recordCodexTrajectoryContext } from "./trajectory.js";
 import { buildCodexParentLocalInstructions, buildTurnStartParams } from "./turn-params.js";
 import type { CodexThreadRouteReservation } from "./turn-router.js";
@@ -37,6 +38,8 @@ import { buildCodexUserPromptMessage } from "./user-prompt-message.js";
 export type CodexStartedTurn = {
   turn: CodexTurnStartResponse;
   upstreamUserText: string;
+  /** Undefined for a fresh thread, null when an existing thread cannot be reconciled. */
+  usageBaseline?: JsonObject | null;
 };
 
 export async function prepareCodexAttemptTurnRequest(
@@ -279,25 +282,39 @@ export async function prepareCodexAttemptTurnRequest(
       prompt: turnState.codexTurnPromptText,
       tools: toolBridge.availableSpecs,
     });
-    state.latestStartupErrorNotification = undefined;
-    state.rateLimitsRevisionBeforeLastTurnStart = readCodexRateLimitsRevision(resourceState.client);
-    activeTurnRoute.armTurn();
-    void emitCodexAppServerEvent(params, {
-      stream: "codex_app_server.lifecycle",
-      data: {
-        phase: "turn_starting",
-        threadId: resourceState.thread.threadId,
-        model: params.modelId,
-        effort: turnStartParams.effort,
-        collaborationEffort: turnStartParams.collaborationMode?.settings.reasoning_effort,
-        serviceTier: turnStartParams.serviceTier,
-      },
-    });
     let acceptedTurnId: string | undefined;
     const upstreamUserText = turnStartParams.input
       .flatMap((item) => (item.type === "text" ? [item.text] : []))
       .join("\n");
     try {
+      const usageBaseline =
+        selectedThread.lifecycle.action === "started"
+          ? undefined
+          : appServer.connectionClass === "local-loopback"
+            ? await readCodexAppServerPreTurnUsage({
+                agentDir: connection.agentDir,
+                codexHome: appServer.start.codexHome ?? appServer.start.env?.CODEX_HOME,
+                threadId,
+                rolloutPath: selectedThread.rolloutPath,
+              })
+            : null;
+      assertTurnCurrent();
+      state.latestStartupErrorNotification = undefined;
+      state.rateLimitsRevisionBeforeLastTurnStart = readCodexRateLimitsRevision(
+        resourceState.client,
+      );
+      activeTurnRoute.armTurn();
+      void emitCodexAppServerEvent(params, {
+        stream: "codex_app_server.lifecycle",
+        data: {
+          phase: "turn_starting",
+          threadId: resourceState.thread.threadId,
+          model: params.modelId,
+          effort: turnStartParams.effort,
+          collaborationEffort: turnStartParams.collaborationMode?.settings.reasoning_effort,
+          serviceTier: turnStartParams.serviceTier,
+        },
+      });
       const startedTurn = assertCodexTurnStartResponse(
         await turnClient.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
@@ -334,7 +351,7 @@ export async function prepareCodexAttemptTurnRequest(
         throw error;
       }
       await continuation?.accept(acceptedTurnId);
-      return { turn: startedTurn, upstreamUserText };
+      return { turn: startedTurn, upstreamUserText, usageBaseline };
     } catch (error) {
       if (acceptedTurnId || isCodexAppServerIndeterminateRequestCancellationError(error)) {
         // Codex serializes start/interrupt per thread; an empty id interrupts

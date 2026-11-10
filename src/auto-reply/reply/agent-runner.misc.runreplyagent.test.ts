@@ -1792,7 +1792,8 @@ describe("runReplyAgent fallback reasoning tags", () => {
 
 describe("runReplyAgent response usage footer", () => {
   function createRun(params: {
-    responseUsage: "tokens" | "full";
+    responseUsage?: "tokens" | "full";
+    slack?: boolean;
     sessionKey: string;
     config?: unknown;
     provider?: string;
@@ -1804,6 +1805,7 @@ describe("runReplyAgent response usage footer", () => {
       responseUsage: params.responseUsage,
     };
     return createBaseRun({
+      context: params.slack ? { Provider: "slack", Surface: "slack" } : undefined,
       run: {
         agentId: "main",
         agentDir: path.join(rootDir, "agent"),
@@ -1903,54 +1905,47 @@ describe("runReplyAgent response usage footer", () => {
     expect(text).not.toContain("Usage:");
   });
 
-  it("shows configured costs for aws-sdk providers when responseUsage=full", async () => {
+  it.each([
+    {
+      name: "complete request accounting",
+      usage: {
+        input: 29_066,
+        cacheRead: 304_512,
+        cacheWrite: 0,
+        output: 736,
+        cost: { total: 0.631972 },
+      },
+      footer: "Estimated cost $0.6320 · 29.1k uncached · 304.5k cached · 736 out",
+    },
+    {
+      name: "unavailable usage and price",
+      usage: { usageReport: { state: "unavailable" } },
+      footer: "Estimated cost unavailable · Usage unavailable",
+    },
+  ])("sends $name as a native Slack usage footer", async ({ usage, footer }) => {
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "ok" }],
       meta: {
         agentMeta: {
-          provider: "amazon-bedrock",
-          model: "us.anthropic.claude-sonnet-4-6",
-          usage: { input: 1_000, output: 2_000, cacheRead: 500, cacheWrite: 2_000 },
+          provider: "openai",
+          model: "gpt-6-astra",
+          usage,
         },
       },
     });
 
-    const sessionKey = "agent:main:whatsapp:dm:+1000";
     const res = await createRun({
-      responseUsage: "full",
-      sessionKey,
-      provider: "amazon-bedrock",
-      model: "us.anthropic.claude-sonnet-4-6",
-      config: {
-        models: {
-          providers: {
-            "amazon-bedrock": {
-              auth: "aws-sdk",
-              models: [
-                {
-                  id: "us.anthropic.claude-sonnet-4-6",
-                  cost: {
-                    input: 3,
-                    output: 15,
-                    cacheRead: 0.3,
-                    cacheWrite: 3.75,
-                  },
-                },
-              ],
-            },
-          },
-        },
-      },
+      slack: true,
+      sessionKey: "agent:main:slack:channel:c1:thread:123.456",
+      provider: "openai",
+      model: "gpt-6-astra",
+      config: { messages: { responseUsage: { default: "off", slack: "full" } } },
     });
     const payload = Array.isArray(res) ? res[0] : res;
-    const text = payload?.text ?? "";
 
-    expect(text).toContain("amazon-bedrock🤖us.anthropic.claude-sonnet-4-6🌘🐌");
-    expect(text).not.toContain("↕️");
-    expect(text).not.toContain("🗄");
-    expect(text).toContain("💰0.0406");
-    expect(text).not.toContain("Usage:");
-    expect(text).not.toContain("· session ");
+    expect(payload?.text).toBe("ok");
+    expect(payload?.channelData?.openclawUsageFooter).toBe(footer);
+    expect(payload?.presentation).toBeUndefined();
   });
 });
 

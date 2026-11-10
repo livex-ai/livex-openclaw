@@ -15,6 +15,24 @@ describe("appendUsageLine", () => {
     ]);
   });
 
+  it("attaches the native footer to the last visible reply even when it is media-only", () => {
+    const footer = "*Usage:* unavailable | *Estimated cost:* unavailable";
+    expect(
+      appendUsageLine(
+        [{ text: "Investigation complete" }, { mediaUrl: "file:///tmp/result.png" }],
+        {
+          context: footer,
+        },
+      ),
+    ).toEqual([
+      { text: "Investigation complete" },
+      {
+        mediaUrl: "file:///tmp/result.png",
+        channelData: { openclawUsageFooter: footer },
+      },
+    ]);
+  });
+
   const completeUsage = { input: 1_000_000, output: 0 };
   it.each<
     [
