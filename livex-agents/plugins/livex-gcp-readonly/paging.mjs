@@ -3,6 +3,8 @@ import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createLogsTool,
+  KIOSK_MODES,
+  KIOSK_FIELDS,
   queryArgs,
   buildLogFilter,
   evidence,
@@ -234,6 +236,11 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
       required: [],
       properties: {
         ...legacy.parameters.properties,
+        mode: {
+          ...legacy.parameters.properties.mode,
+          enum: [...legacy.parameters.properties.mode.enum, ...KIOSK_MODES],
+        },
+        ...KIOSK_FIELDS,
         cursor: {
           type: "string",
           pattern: "^[a-f0-9]{64}$",
@@ -268,7 +275,7 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
         throw new Error("Invalid refresh flag");
       }
       const { refresh, ...queryParams } = params;
-      const query = queryArgs(cursorState?.query ?? queryParams, config);
+      const query = queryArgs(cursorState?.query ?? queryParams, config, { paged: true });
       const queryFingerprint = digest(query);
       if (cursorState && cursorState.queryFingerprint !== queryFingerprint) {
         throw new Error("Cursor query mismatch");
@@ -310,12 +317,14 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
           throw new Error("Invalid bounded cloud page");
         }
         const state = { truncated: false };
-        const rows = page.entries.map((row) => selectedEntry(row, state));
+        const rows = page.entries.map((row) =>
+          selectedEntry(row, state, { mode: query.mode, paged: true }),
+        );
         const details = evidence(
           { stdout: JSON.stringify(rows), code: 0, termination: "exit", killed: false },
           query,
           config,
-          { reserveBytes: 1024 },
+          { reserveBytes: 1024, paged: true },
         );
         if (rows.length && details.processedRows === 0) {
           throw new Error(

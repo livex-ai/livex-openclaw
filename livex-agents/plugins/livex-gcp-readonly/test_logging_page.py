@@ -39,6 +39,38 @@ def entry(index=0):
     }
 
 
+def model_request(tools):
+    raw = entry()
+    raw["resource"]["labels"]["container_name"] = "chat-engine"
+    raw["jsonPayload"].update(
+        filename="google_vertex_ai.py", funcName="_log_gemini_request",
+        message="[DEBUG] Gemini stream_generate_content request:\n" + json.dumps({
+            "model": "fixture-model",
+            "messages": [{"role": "user", "content": "PRIVATE-PROMPT" + "x" * 2300}],
+            "tools_config": {"tools": tools, "tool_choice": "auto"},
+        }))
+    return raw
+
+
+def token_request():
+    raw = entry()
+    raw["logName"] = f"projects/{PROJECT}/logs/requests"
+    raw["resource"]["type"] = "http_load_balancer"
+    raw["httpRequest"] = {"status": 200, "requestUrl": "PRIVATE-URL",
+                          "headers": {"authorization": "PRIVATE-TOKEN"}}
+    return raw
+
+
+def offered_map():
+    return {"type": "function", "function": {
+        "name": "kiosk_map", "description": "PRIVATE-DESCRIPTION",
+        "parameters": {"properties": {
+            "operation": {"enum": ["open_map"]},
+            "argument": {"default": "PRIVATE-ARGUMENT"},
+        }},
+    }}
+
+
 class FakeMessages:
     @staticmethod
     def ListLogEntriesRequest(**kwargs):
@@ -149,6 +181,50 @@ class LoggingPageTests(unittest.TestCase):
                                           project=PROJECT, log_filter=log_filter, page_size=size)
                 self.assertEqual(client.calls, [])
 
+    def test_projects_only_status_and_tool_offer_before_clipping(self):
+        raw = model_request([offered_map()])
+        self.assertGreater(raw["jsonPayload"]["message"].index("tools_config"), 2048)
+        result, client = self.read({"entries": [raw, token_request(), model_request([])]})
+        self.assertIn("httpRequest(status)", client.calls[0][1]["fields"])
+        self.assertEqual(result["entries"][0]["toolOffer"],
+                         [{"name": "kiosk_map", "operations": ["open_map"]}])
+        self.assertEqual(result["entries"][1]["httpRequest"], {"status": 200})
+        self.assertEqual(result["entries"][2]["toolOffer"], [])
+        self.assertNotIn("PRIVATE-", json.dumps(result))
+
+    def test_unrecognized_or_incomplete_model_request_keeps_tool_offer_unknown(self):
+        malformed = model_request([offered_map()])
+        malformed["jsonPayload"]["message"] = malformed["jsonPayload"]["message"][:-1]
+        oversized = model_request([offered_map()])
+        oversized["jsonPayload"]["message"] += " " * 65536
+        ambiguous = model_request([offered_map()])
+        ambiguous["jsonPayload"]["message"] = ambiguous["jsonPayload"]["message"].replace(
+            '"tool_choice": "auto"', '"tool_choice": "auto", "tools": []')
+        unrelated = model_request([offered_map()])
+        unrelated["resource"]["labels"]["container_name"] = "unrelated"
+        invalid_tool = model_request([{"type": "unknown"}])
+        invalid_encoding = model_request([offered_map()])
+        invalid_encoding["jsonPayload"]["message"] += "\ud800"
+        credential_tool = offered_map()
+        credential_tool["function"]["name"] = "sk-synthetic_cannot_escape_0000"
+        credential_name = model_request([credential_tool])
+        credential_tool = offered_map()
+        credential_tool["function"]["parameters"]["properties"]["operation"]["enum"] = [
+            "xapp-synthetic-cannot-escape",
+        ]
+        credential_operation = model_request([credential_tool])
+        invalid_status = token_request()
+        invalid_status["httpRequest"]["status"] = "200"
+        result, _ = self.read({"entries": [
+            malformed, oversized, ambiguous, unrelated, invalid_tool, invalid_encoding, credential_name,
+            credential_operation, invalid_status,
+        ]})
+        for row in result["entries"]:
+            self.assertNotIn("toolOffer", row)
+            self.assertNotIn("httpRequest", row)
+        self.assertNotIn("PRIVATE-", json.dumps(result))
+        self.assertNotIn("cannot", json.dumps(result))
+
     def test_import_does_not_load_cloud_sdk(self):
         import sys
         self.assertNotIn("googlecloudsdk.api_lib.util.apis", sys.modules)
@@ -159,7 +235,7 @@ class LoggingPageTests(unittest.TestCase):
             import contextlib, importlib.util, io, json, sys
             from pathlib import Path
             from unittest.mock import patch
-            helper_path, sdk_lib, fixture = sys.argv[1:]
+            helper_path, sdk_lib, fixture, model, token = sys.argv[1:]
             sys.path[:0] = [sdk_lib, str(Path(sdk_lib) / "third_party")]
             from googlecloudsdk.api_lib.util import apis
             import httplib2
@@ -168,10 +244,13 @@ class LoggingPageTests(unittest.TestCase):
             spec.loader.exec_module(helper)
             client_type = apis.GetClientClass("logging", "v2")
             results = []
-            for name, args in [("boolean-array", [True, False]), ("scalar", "ignored")]:
+            for name, args in [
+                ("boolean-array", [True, False]), ("scalar", "ignored"), ("kiosk-evidence", None),
+            ]:
                 row = json.loads(fixture)
                 row["jsonPayload"]["args"] = args
-                body = json.dumps({"entries": [row], "nextPageToken": "retained/+=="})
+                rows = [json.loads(model), json.loads(token)] if name == "kiosk-evidence" else [row]
+                body = json.dumps({"entries": rows, "nextPageToken": "retained/+=="})
                 class OfflineHttp:
                     calls = 0
                     def request(self, *args, **kwargs):
@@ -185,7 +264,7 @@ class LoggingPageTests(unittest.TestCase):
                         code = helper.main(["--sdk-root", str(Path(sdk_lib).parent),
                             "--account", "fixture@example.com", "--project", "fixture-prd",
                             "--filter", 'logName =~ "^projects/fixture-prd/logs/" AND severity>=ERROR',
-                            "--page-size", "1"])
+                            "--page-size", str(len(rows))])
                 results.append({"case": name, "code": code, "calls": http.calls,
                                 "stdout": stdout.getvalue(), "stderr": stderr.getvalue()})
             print(json.dumps(results))
@@ -197,7 +276,9 @@ class LoggingPageTests(unittest.TestCase):
                            "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
                            "CLOUDSDK_CORE_DISABLE_PROMPTS": "true", "CLOUDSDK_CORE_LOG_HTTP": "false"}
             completed = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(HELPER),
-                                        os.environ["GCLOUD_SDK_LIB"], json.dumps(entry())],
+                                        os.environ["GCLOUD_SDK_LIB"], json.dumps(entry()),
+                                        json.dumps(model_request([offered_map()])),
+                                        json.dumps(token_request())],
                                        env=environment, capture_output=True, text=True, timeout=15)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         for case in json.loads(completed.stdout):
@@ -205,7 +286,13 @@ class LoggingPageTests(unittest.TestCase):
                 self.assertEqual(case["code"], 0, case["stderr"])
                 self.assertEqual(case["calls"], 1)
                 result = json.loads(case["stdout"])
-                self.assertEqual(result["entries"], [entry()])
+                if case["case"] == "kiosk-evidence":
+                    offer, token = result["entries"]
+                    self.assertEqual(offer["toolOffer"], [{"name": "kiosk_map", "operations": ["open_map"]}])
+                    self.assertEqual(token["httpRequest"], {"status": 200})
+                    self.assertNotIn("PRIVATE-", case["stdout"])
+                else:
+                    self.assertEqual(result["entries"], [entry()])
                 self.assertEqual(result["nextPageToken"], "retained/+==")
                 self.assertEqual(case["stderr"], "")
 

@@ -150,6 +150,14 @@ Investigate a new question with the existing skills. Prepare a new report only
 for completed findings worth recording. Do not rerun an investigation to answer
 a question its saved evidence already answers.
 
+Treat “anything urgent?”, “do we need to act now?” and similar urgency checks as
+triage questions, including the first reply to an alert. Use fresh scoped reads
+if needed, then answer in two to four sentences of ordinary thread text. Lead
+with whether immediate action is indicated, then give the evidence, material
+uncertainty and next action when one is warranted. Link verified evidence when
+available. An error count alone does not establish customer impact. For a
+standalone urgency check, do not stage a new report or amend an existing one.
+
 For “summarize errors”, “what is happening?” on an aggregate alert, or an expanded
 search window, load `debug` and its `references/error-summary.md` using the skill's
 returned directory. Give the complete category inventory with log counts,
@@ -188,7 +196,8 @@ Return the staged finalText exactly; delivery verifies the change. Never
 claim a change happened based on staging. If the tool rejects the input,
 clarify the request instead of generating a replacement report.
 
-For a completed bound investigation, fill the compact report object in
+For a completed full investigation or an explicitly requested new report, fill
+the compact report object in
 `slack_investigation_record` instead of formatting a prose report. The configured oncall-reporting plugin owns
 Title, Priority, Next action, Summary and Evidence presentation. Summary combines
 finding, impact and relevant uncertainty; Next action includes only confirmed
