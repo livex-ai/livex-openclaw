@@ -64,14 +64,14 @@ function formatSlackUsageContext(usage: NormalizedUsage | undefined, cost: numbe
     cacheRead !== undefined &&
     output !== undefined
       ? [
-          `${formatCompactTokenCount(input)} uncached input`,
-          `${formatCompactTokenCount(cacheRead)} cached input`,
+          `${formatCompactTokenCount(input)} uncached`,
+          `${formatCompactTokenCount(cacheRead)} cached`,
           ...(cacheWrite ? [`${formatCompactTokenCount(cacheWrite)} cache write`] : []),
-          `${formatCompactTokenCount(output)} output`,
+          `${formatCompactTokenCount(output)} out`,
         ].join(" · ")
-      : "unavailable";
+      : "Usage unavailable";
   const estimate = cost === undefined ? "unavailable" : `$${cost.toFixed(4)}`;
-  return `*Usage:* ${tokens} | *Estimated cost:* ${estimate}`;
+  return `Estimated cost ${estimate} · ${tokens}`;
 }
 
 export const resolveResponseUsageLine = (params: {
