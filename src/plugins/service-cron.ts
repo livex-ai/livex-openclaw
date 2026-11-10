@@ -86,9 +86,31 @@ export function createPluginServiceCronGetter(params: {
         };
         return await runScheduled(() => cron.runEvent(id, { ...event, commitGuard: assertSource }));
       },
-      enqueueRun: async (id, mode) => {
-        commitGuard();
-        return await runScheduled(() => cron.enqueueRun(id, mode, { commitGuard }));
+      enqueueRun: async (id, mode, expectedScript) => {
+        const expected = expectedScript && { ...expectedScript };
+        const assertScript = () => {
+          commitGuard();
+          if (!expected) {
+            return;
+          }
+          expected.assertCurrent?.();
+          const job = cron.getJob(id);
+          if (
+            job?.enabled !== true ||
+            job.agentId !== expected.agentId ||
+            (job.schedule.kind !== "every" && job.schedule.kind !== "cron") ||
+            job.delivery?.mode !== "none" ||
+            job.payload.kind !== "script" ||
+            job.payload.script.trim() !== expected.script.trim() ||
+            job.payload.toolBudget !== 1 ||
+            job.payload.toolsAllow?.length !== 1 ||
+            job.payload.toolsAllow[0] !== expected.toolName
+          ) {
+            throw new Error("Plugin service Script Automation no longer matches its binding");
+          }
+        };
+        assertScript();
+        return await runScheduled(() => cron.enqueueRun(id, mode, { commitGuard: assertScript }));
       },
       isEnabled: async () => {
         commitGuard();

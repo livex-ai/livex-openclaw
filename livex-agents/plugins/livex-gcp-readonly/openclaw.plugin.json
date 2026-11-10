@@ -234,6 +234,13 @@
             "maxLength": 128,
             "description": "Exact enabled Script Automation job bound to LiveX Oncall."
           },
+          "alertEventTypes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+            "description": "Allowed Slack event types for incident deduplication and event wakeups."
+          },
           "tickMs": {
             "type": "integer",
             "minimum": 1,

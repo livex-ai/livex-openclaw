@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { parseOncallConfig } from "./config.js";
 import { admitAlert, isEligibleMessage, scanAlerts } from "./intake.js";
+import { createReceiptStore } from "./state.js";
 import { alert, config, message, nativeStore, now, slackStub } from "./test-support.js";
 
 it("admits same-app trusted roots but rejects coordinator output, replies and forged publishers", () => {
@@ -14,7 +15,7 @@ it("admits same-app trusted roots but rejects coordinator output, replies and fo
   ]) {
     expect(isEligibleMessage({ ...message, ...patch }, config)).toBe(false);
   }
-  expect(admitAlert(message, config, now).identifiers).toEqual({ jobId: "job-1" });
+  expect(admitAlert(message, config, now)?.identifiers).toEqual({ jobId: "job-1" });
 });
 
 it("clamps old checkpoints, preserves queued admissions and paginates without skipping", async () => {
@@ -83,4 +84,42 @@ it("admits alerts arriving during history awaits without advancing past deferred
   await scanAlerts({ ...params, now: clock });
   expect(await store.list()).toHaveLength(2);
   expect(await store.checkpoint()).toBe(future.ts);
+});
+
+it("admits one typed receipt per producer incident across scans and restart", async () => {
+  const { store, open } = nativeStore();
+  const slack = slackStub();
+  const typed = { ...config, alertEventTypes: ["gcp_monitoring_incident"] };
+  const event = (offset: number, type: string, id: unknown) => ({
+    ...message,
+    ts: ((now - offset) / 1000).toFixed(6),
+    metadata: { event_type: type, event_payload: { incident_id: id } },
+  });
+  const first = event(900, "gcp_monitoring_incident", "gcp_incident_1");
+  const duplicate = event(800, "gcp_monitoring_incident", "gcp_incident_1");
+  const next = event(700, "gcp_monitoring_incident", "gcp_incident_2");
+  const ignored = [
+    event(600, "device_recovered", "gcp_incident_3"),
+    event(500, "device_offline", "gcp_incident_4"),
+    event(400, "gcp_monitoring_incident", undefined),
+    event(300, "gcp_monitoring_incident", "x".repeat(257)),
+  ];
+  const scan = (receiptStore = store) =>
+    scanAlerts({ config: typed, store: receiptStore, slack, now, assertCurrent() {} });
+  vi.mocked(slack.history)
+    .mockResolvedValueOnce({ messages: [next, duplicate, ...ignored], cursor: "older" })
+    .mockResolvedValueOnce({ messages: [first] })
+    .mockResolvedValueOnce({
+      messages: [event(100, "gcp_monitoring_incident", "gcp_incident_1")],
+    });
+  await scan();
+  const reopened = createReceiptStore(
+    open(() => {}),
+    "test-source",
+  );
+  await scan(reopened);
+  expect((await reopened.list()).map((receipt) => receipt.alert.ts).toSorted()).toEqual([
+    first.ts,
+    next.ts,
+  ]);
 });

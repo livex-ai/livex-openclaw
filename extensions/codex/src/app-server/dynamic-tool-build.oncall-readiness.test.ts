@@ -27,6 +27,7 @@ import {
   LegacyPluginSdkResourceHost,
 } from "../../../../src/plugins/legacy-sdk-resource-host.js";
 import { loadAndActivateRootPluginRegistry } from "../../../../src/plugins/loader.js";
+import { getPluginRegistryRuntime } from "../../../../src/plugins/registry-runtime-binding.js";
 import {
   clearActivePluginRegistry,
   createPluginRegistryOwner,
@@ -38,6 +39,10 @@ import {
   createTestGatewayScheduler,
 } from "../../../../src/test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../../../../src/test-utils/openclaw-test-state.js";
+import {
+  createSlackRootMessageSignals,
+  SLACK_ROOT_MESSAGE_SIGNAL,
+} from "../../../slack/src/monitor/message-signals.js";
 import {
   createParams,
   buildDynamicToolsForTest,
@@ -331,6 +336,7 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
   const source = {
     enabled: true,
     automationJobId: job.id,
+    alertEventTypes: ["gcp_monitoring_incident"],
     accountId: "default",
     teamId: "T123456",
     channelId: "C123456",
@@ -387,8 +393,8 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
   await state.writeConfig(config);
   await setAppliedRuntimeConfigSnapshot(config, config);
   const calls: Array<{ method: string; args: any }> = [];
-  let alertAvailable = false;
-  const slack = await localSlackServer(currentTime, calls, () => alertAvailable);
+  let availableIncidents = 0;
+  const slack = await localSlackServer(currentTime, calls, () => availableIncidents);
   for (const key of [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -472,8 +478,51 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
     expect(calls.some((call) => call.method === "conversations.history")).toBe(true);
     expect(core).not.toHaveBeenCalled();
 
-    alertAvailable = true;
-    await runJob(job.id, "ok");
+    const nextDueAt = (await cron.readJob(job.id))?.state.nextRunAtMs;
+    let signals = createSlackRootMessageSignals();
+    const runtime = getPluginRegistryRuntime(registry);
+    expect(runtime).toBeDefined();
+    const registerSignals = (abortSignal: AbortSignal) =>
+      runtime!.channel.runtimeContexts.register({
+        channelId: "slack",
+        accountId: "default",
+        capability: SLACK_ROOT_MESSAGE_SIGNAL,
+        context: signals.source,
+        abortSignal,
+      });
+    const retired = new AbortController();
+    registerSignals(retired.signal);
+    const emit = (eventType: string, timestamp = currentTime) =>
+      signals.publish("T123456", {
+        type: "message",
+        channel: "C123456",
+        ts: (timestamp / 1000).toFixed(6),
+        bot_id: "B123456",
+        metadata: { event_type: eventType },
+      } as Parameters<typeof signals.publish>[1]);
+    const historyCount = () =>
+      calls.filter((call) => call.method === "conversations.history").length;
+    const beforeSignal = historyCount();
+    emit("device_recovered");
+    emit("gcp_monitoring_incident", currentTime - 900_001);
+    emit("gcp_monitoring_incident", currentTime + 600_000);
+    await time.advanceBy(250);
+    expect(historyCount()).toBe(beforeSignal);
+    emit("gcp_monitoring_incident");
+    retired.abort();
+    await time.advanceBy(250);
+    expect(historyCount()).toBe(beforeSignal);
+    signals = createSlackRootMessageSignals();
+    registerSignals(gateway.signal);
+    availableIncidents = 1;
+    emit("gcp_monitoring_incident");
+    emit("gcp_monitoring_incident");
+    emit("gcp_monitoring_incident", time.clock.now() - 899_900);
+    await time.advanceBy(250);
+    await waitForCronRunQueue(cronState);
+    expect(historyCount()).toBe(beforeSignal + 1);
+    expect((await cron.readJob(job.id))?.state.nextRunAtMs).toBe(nextDueAt);
+    expect(time.clock.now()).toBeLessThan(nextDueAt!);
     await time.wake();
     await vi.waitFor(
       () => {
@@ -499,6 +548,15 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
     ).toBe(true);
     expect(await fs.readFile(audit, "utf8")).toContain("--project=example-prd");
     expect(core).toHaveBeenCalledOnce();
+
+    availableIncidents = 2;
+    time.setTime(nextDueAt! + 5);
+    await wake(cronState);
+    await waitForCronRunQueue(cronState);
+    await assertJobStatus(job.id, "ok");
+    await time.wake();
+    await vi.waitFor(() => expect(control.completed()).toBe(2), { timeout: 10000 });
+    expect(core).toHaveBeenCalledTimes(2);
     expect(runIsolatedAgentJob).not.toHaveBeenCalled();
   } finally {
     cron.stop();
@@ -515,7 +573,7 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
 async function localSlackServer(
   currentTime: number,
   calls: Array<{ method: string; args: any }>,
-  alertAvailable: () => boolean,
+  availableIncidents: () => number,
 ) {
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -529,7 +587,7 @@ async function localSlackServer(
     const method = request.url!.slice(1);
     calls.push({ method, args });
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(slackResponse(method, currentTime, alertAvailable())));
+    response.end(JSON.stringify(slackResponse(method, currentTime, availableIncidents())));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -549,27 +607,29 @@ async function localSlackServer(
   };
 }
 
-function slackResponse(method: string, currentTime: number, alertAvailable: boolean): any {
+function slackResponse(method: string, currentTime: number, availableIncidents: number): any {
+  const message = (offset: number, eventType: string, id: string) => ({
+    ts: (currentTime / 1000 + offset).toFixed(6),
+    bot_id: "B123456",
+    team: "T123456",
+    text: "job_id=job-1 failed",
+    metadata: { event_type: eventType, event_payload: { incident_id: id } },
+  });
   const responses: Record<string, unknown> = {
     "auth.test": { ok: true, team_id: "T123456", bot_id: "B123456" },
     "conversations.history": {
       ok: true,
-      messages: alertAvailable
-        ? [
-            {
-              ts: (currentTime / 1000).toFixed(6),
-              bot_id: "B123456",
-              team: "T123456",
-              text: "job_id=job-1 failed",
-            },
-            {
-              ts: (currentTime / 1000 + 1).toFixed(6),
-              bot_id: "B123456",
-              metadata: { event_type: "livex_oncall" },
-              text: "coordinator output",
-            },
-          ]
-        : [],
+      messages: [
+        ...(availableIncidents >= 2 ? [message(70, "gcp_monitoring_incident", "gcp_second")] : []),
+        ...(availableIncidents >= 1
+          ? [
+              message(2, "livex_oncall", "own-output"),
+              message(1, "gcp_monitoring_incident", "gcp_first"),
+              message(0, "gcp_monitoring_incident", "gcp_first"),
+            ]
+          : []),
+        message(-1, "device_recovered", "device-1"),
+      ],
     },
     "conversations.info": { ok: true, channel: { properties: { canvas: { file_id: "F123456" } } } },
     "files.info": {

@@ -222,6 +222,22 @@ pause, and run history under **Agents → LiveX Oncall → Scheduling**. The Aut
 owns the cadence. A legacy `tickMs` setting has no scheduling effect, and an
 enabled Oncall configuration needs the job binding before it can process alerts.
 
+For Slack-triggered intake, set `alertEventTypes` to `["gcp_monitoring_incident"]` and
+configure the Slack publisher and channel IDs. For the DEV smoke test, use
+`#on-call-dev` (`C0BMJV699S5`) and a test roster. Use direct Slack event delivery
+for channel messages and confirm the installed bot can read full message metadata
+from history. A trusted root can wake the enabled Script
+Automation without shifting its schedule. The tick reads Slack metadata and
+adopts a valid `event_payload.incident_id` once per source and event type. Status
+updates, replies, and posts without recognized metadata stay visible in Slack
+for manual triage. Leave the schedule enabled for reminders and the bounded
+15-minute history catch-up.
+Typed intake binds incidents only after a complete scan within `maxScanPages`.
+An incomplete scan keeps its checkpoint so the next tick can retry.
+
+Enable typed intake before the first typed posts arrive. Legacy receipts track
+Slack posts by timestamp, so they cannot deduplicate later reposts by incident ID.
+
 Each admitted Script payload calls one tick. The plugin owns trusted intake,
 SQLite receipts, one Debugger admission per eligible alert, scoped catalog
 matching, and notification recovery. Idle ticks start zero model runs. The native

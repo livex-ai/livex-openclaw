@@ -2,6 +2,7 @@ import type { App } from "@slack/bolt";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackMessageHandler } from "../message-handler.js";
 import { createInboundSlackTestContext } from "../message-handler/prepare.test-helpers.js";
+import { createSlackRootMessageSignals } from "../message-signals.js";
 import { createSlackSystemEventRouteResolver } from "../system-event-session.js";
 import {
   createSlackSystemEventTestHarness,
@@ -575,4 +576,43 @@ describe("registerSlackMessageEvents", () => {
     expect(handleSlackMessage).toHaveBeenCalledTimes(1);
     expect(inboundLogLines()).toEqual([receipt]);
   });
+});
+
+it("publishes a scoped root bot signal before normal chat dispatch", async () => {
+  const harness = createSlackSystemEventTestHarness({ channelType: "channel" });
+  const signals = createSlackRootMessageSignals();
+  const onMessage = vi.fn();
+  const wrongChannel = vi.fn();
+  const stop = signals.source.subscribe({ teamId: "T_TEST", channelId: "C1", onMessage });
+  signals.source.subscribe({ teamId: "T_TEST", channelId: "C2", onMessage: wrongChannel });
+  const handleSlackMessage = vi.fn(async () => {
+    expect(onMessage).toHaveBeenCalledOnce();
+  });
+  registerSlackMessageEvents({
+    ctx: harness.ctx,
+    handleSlackMessage,
+    onRootMessage: signals.publish,
+  });
+  const handler = requireMessageHandler(harness.getHandler("message") as MessageHandler | null);
+  const root = {
+    type: "message",
+    subtype: "bot_message",
+    bot_id: "B_BOT",
+    channel: "C1",
+    ts: "1794045600.000001",
+    text: "message content",
+    metadata: { event_type: "test_incident", event_payload: { incident_id: "private-payload" } },
+  };
+  await handler({ event: root, body: {} });
+  expect(onMessage).toHaveBeenCalledWith({
+    ts: root.ts,
+    botId: "B_BOT",
+    appId: undefined,
+    eventType: "test_incident",
+  });
+  expect(wrongChannel).not.toHaveBeenCalled();
+  await handler({ event: { ...root, thread_ts: "1794045599.000001" }, body: {} });
+  stop();
+  await handler({ event: root, body: {} });
+  expect(onMessage).toHaveBeenCalledOnce();
 });

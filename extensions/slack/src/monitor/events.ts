@@ -59,6 +59,7 @@ function buildSlackHomeView(slashCommandName?: string): HomeView {
 export function registerSlackCommonEvents(params: {
   ctx: SlackMonitorContext;
   handleSlackMessage: SlackMessageHandler;
+  onRootMessage?: Parameters<typeof registerSlackMessageEventHandlers>[0]["onRootMessage"];
   /** Called on each inbound event to update liveness tracking. */
   trackEvent?: () => void;
 }) {
@@ -66,6 +67,7 @@ export function registerSlackCommonEvents(params: {
   registerSlackMessageEventHandlers({
     ctx,
     handleSlackMessage: params.handleSlackMessage,
+    onRootMessage: params.onRootMessage,
   });
   {
     const resolveUserName = (userId: string, eventScope?: SlackEventScope) =>

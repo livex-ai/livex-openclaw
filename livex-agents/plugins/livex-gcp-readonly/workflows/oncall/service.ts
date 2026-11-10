@@ -16,6 +16,7 @@ import {
   type SlackTransport,
   type SourceConfig,
 } from "./types.js";
+import { startOncallSlackWake } from "./wake.js";
 
 type Catalog = Pick<ReturnType<typeof createOncallCatalogReader>, "lookup">;
 type TickScope = {
@@ -220,6 +221,7 @@ export function createConfigCurrency(source: SourceAuthority, current: () => Sou
 
 const TICK_TOOL = "livex_oncall_tick";
 const COORDINATOR_AGENT = "oncall-coordinator";
+const AUTOMATION_SCRIPT = "await livex_oncall_tick({});\nreturn {};";
 type ActiveTick = {
   jobId: string;
   run(assertCurrent: () => void, signal?: AbortSignal): Promise<boolean>;
@@ -410,6 +412,18 @@ export function registerOncall(api: OpenClawPluginApi) {
           });
         },
       };
+      startOncallSlackWake({
+        api,
+        context,
+        config,
+        jobId,
+        expectedScript: {
+          agentId: COORDINATOR_AGENT,
+          script: AUTOMATION_SCRIPT,
+          toolName: TICK_TOOL,
+        },
+        assertCurrent,
+      });
     },
     async stop() {
       activeTick = undefined;

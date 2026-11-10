@@ -64,7 +64,7 @@ export type SlackMessage = {
   app_id?: string;
   team?: string;
   thread_ts?: string;
-  metadata?: { event_type?: string };
+  metadata?: { event_type?: string; event_payload?: { incident_id?: unknown } };
 };
 export type SlackTransport = {
   verify(): Promise<void>;

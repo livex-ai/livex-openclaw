@@ -28,7 +28,7 @@ export const message = {
   team: config.teamId,
   text: "job_id=job-1 failed",
 };
-export const alert = admitAlert(message, config, now);
+export const alert = admitAlert(message, config, now)!;
 export const gcpConfig = {
   gcloudPath: "/opt/google-cloud-sdk/bin/gcloud",
   cloudSdkConfig: "/home/pilot/.config/gcloud",

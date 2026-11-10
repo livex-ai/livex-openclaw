@@ -4,6 +4,7 @@ import type { ReceiptStore } from "./state.js";
 import type { Alert, SlackMessage, SlackTransport } from "./types.js";
 
 const TIMESTAMP = /^\d{10,}\.\d{6}$/;
+export const ALERT_WINDOW_MS = 900_000;
 const ID_FIELDS = ["conversationId", "jobId", "roomId", "traceId", "insertId"];
 const ID_PATTERNS = ID_FIELDS.map(
   (field) =>
@@ -37,8 +38,25 @@ function validAlertRoot(message: SlackMessage) {
   );
 }
 
-export function admitAlert(message: SlackMessage, config: OncallConfig, now: number): Alert {
+export function admitAlert(message: SlackMessage, config: OncallConfig, now: number): Alert | null {
   const ts = message.ts!;
+  const scope = [config.accountId, config.teamId, config.channelId];
+  const metadata = message.metadata;
+  const incidentId = metadata?.event_payload?.incident_id;
+  if (
+    config.alertEventTypes &&
+    (!metadata?.event_type ||
+      !config.alertEventTypes.includes(metadata.event_type) ||
+      typeof incidentId !== "string" ||
+      !/^[A-Za-z0-9_.:-]{1,256}$/.test(incidentId))
+  ) {
+    return null;
+  }
+  const identity = JSON.stringify(
+    config.alertEventTypes
+      ? [...scope, config.publisherBotId, metadata?.event_type, incidentId]
+      : [...scope, ts],
+  );
   const text = (message.text ?? "").slice(0, 20_000);
   const identifiers = Object.fromEntries(
     ID_PATTERNS.flatMap(([key, pattern]) => {
@@ -46,7 +64,6 @@ export function admitAlert(message: SlackMessage, config: OncallConfig, now: num
       return match ? [[key, match[1]!]] : [];
     }),
   );
-  const identity = JSON.stringify([config.accountId, config.teamId, config.channelId, ts]);
   const timestamp = Number(ts) * 1_000;
   return {
     key: `alert:${createHash("sha256").update(identity).digest("hex")}`,
@@ -54,7 +71,7 @@ export function admitAlert(message: SlackMessage, config: OncallConfig, now: num
     text,
     identifiers,
     admittedAt: now,
-    start: new Date(timestamp - 900_000).toISOString(),
+    start: new Date(timestamp - ALERT_WINDOW_MS).toISOString(),
     end: new Date(Math.min(timestamp + 300_000, now)).toISOString(),
   };
 }
@@ -69,8 +86,9 @@ export async function scanAlerts(params: {
 }) {
   const { config, store, slack, now } = params;
   const checkpoint = await store.checkpoint();
-  const cutoff = ((now - 900_000) / 1_000).toFixed(6);
+  const cutoff = ((now - ALERT_WINDOW_MS) / 1_000).toFixed(6);
   const oldest = checkpoint && checkpoint > cutoff ? checkpoint : cutoff;
+  const typedAlerts = config.alertEventTypes ? new Map<string, Alert>() : undefined;
   let cursor: string | undefined;
   let newest = oldest;
   for (let page = 0; page < config.maxScanPages; page++) {
@@ -79,10 +97,31 @@ export async function scanAlerts(params: {
     for (const message of result.messages) {
       const observedAt = params.clock?.() ?? now;
       newest = nextCheckpoint(newest, message, observedAt);
-      await admitMessage(message, { ...params, now: observedAt });
+      if (!isEligibleMessage(message, config) || !isRecentAlert(message.ts!, observedAt)) {
+        continue;
+      }
+      const alert = admitAlert(message, config, observedAt);
+      if (!alert) {
+        continue;
+      }
+      if (typedAlerts) {
+        const previous = typedAlerts.get(alert.key);
+        if (!previous || Number(alert.ts) < Number(previous.ts)) {
+          typedAlerts.set(alert.key, alert);
+        }
+      } else {
+        params.assertCurrent();
+        await store.admit(alert);
+      }
     }
     cursor = result.cursor;
     if (!cursor) {
+      // Slack returns newest first. Finish the scan before binding an incident to its root.
+      for (const alert of typedAlerts?.values() ?? []) {
+        params.assertCurrent();
+        await store.admit(alert);
+      }
+      params.assertCurrent();
       await store.advance(newest);
       return;
     }
@@ -97,14 +136,7 @@ function nextCheckpoint(current: string, message: SlackMessage, observedAt: numb
   return message.ts! > current ? message.ts! : current;
 }
 
-async function admitMessage(message: SlackMessage, params: Parameters<typeof scanAlerts>[0]) {
-  if (!isEligibleMessage(message, params.config)) {
-    return;
-  }
-  const age = params.now - Number(message.ts) * 1_000;
-  if (age < 0 || age > 900_000) {
-    return;
-  }
-  params.assertCurrent();
-  await params.store.admit(admitAlert(message, params.config, params.now));
+export function isRecentAlert(ts: string, now: number) {
+  const age = now - Number(ts) * 1_000;
+  return TIMESTAMP.test(ts) && age >= 0 && age <= ALERT_WINDOW_MS;
 }
