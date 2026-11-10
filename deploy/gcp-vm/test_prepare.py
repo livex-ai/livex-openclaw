@@ -140,6 +140,104 @@ class PrepareTests(unittest.TestCase):
             with self.assertRaises(FileExistsError): prepare.write_release(source, settings, output)
 
 
+# This loader uses real repository SDK aliases, not stand-in SDK exports.
+RUNTIME_CATALOG_PROBE = r"""import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const [root, gcp, agentDir] = process.argv.slice(2);
+const rootRequire = createRequire(path.join(root, "package.json"));
+const { createJiti } = rootRequire("jiti");
+const { buildPluginLoaderAliasMap } = await import(
+  pathToFileURL(path.join(root, "src/plugins/sdk-alias.ts")).href
+);
+const aliases = buildPluginLoaderAliasMap(
+  path.join(root, "src/plugins/loader.ts"),
+  undefined,
+  undefined,
+  "src",
+  root,
+);
+const req = createRequire(path.join(gcp, "index.ts"));
+const resolved = req.resolve("@livex/investigations/oncall-catalog");
+assert.equal(resolved, path.join(path.dirname(gcp), "livex-investigations/oncall-catalog.ts"));
+const load = createJiti(path.join(gcp, "index.ts"), {
+  alias: aliases,
+  fsCache: false,
+  moduleCache: false,
+  tryNative: true,
+});
+const { createOncallCatalogReader } = await load.import(resolved);
+const { serializeCatalog, createIssueId } = await load.import(
+  path.join(path.dirname(resolved), "schema.ts"),
+);
+const scope = {
+  agentId: "oncall",
+  accountId: "default",
+  teamId: "T1",
+  channelId: "C1",
+  senderId: "U1",
+};
+const config = {
+  agents: { entries: { oncall: { agentDir } } },
+  plugins: {
+    entries: {
+      "livex-investigations": {
+        enabled: true,
+        config: { investigationCatalog: { enabled: true, agentId: "oncall" } },
+      },
+    },
+  },
+};
+const signature = {
+  service: "scheduler",
+  environment: "prd",
+  operation: "parse",
+  error: "Missing field",
+  resource: "job-1",
+};
+const reference = "https://example.slack.com/archives/C1/p1000000000000000";
+const issue = {
+  issueId: createIssueId({ ...signature, scope }),
+  signature: { ...signature, scope },
+  task: "Investigate",
+  status: "Open",
+  waitingOn: "",
+  prs: [],
+  jiraTickets: [],
+  slackThreads: [reference],
+  lastUpdated: "2026-11-06T10:00:00-08:00",
+  whatWeDidLast: [
+    {
+      completedAt: "2026-11-06T10:00:00-08:00",
+      summary: "Observed",
+      kind: "new",
+      facts: { priority: "Critical", finding: "Failure", impact: "One job", nextAction: "Review" },
+      evidenceUrls: ["https://logs.example/1"],
+      reportUrl: reference,
+    },
+  ],
+};
+await fs.writeFile(path.join(agentDir, "investigations.md"), serializeCatalog([issue]));
+let checks = 0;
+const reader = createOncallCatalogReader({
+  config,
+  scope,
+  assertCurrent() {
+    checks += 1;
+  },
+});
+const matches = await reader.lookup([signature, { ...signature, error: "Different failure" }]);
+assert.deepEqual(matches, [
+  { classification: "known", issueId: issue.issueId, canonicalUrl: reference },
+  { classification: "unknown" },
+]);
+assert.equal(checks, 2);
+console.log(JSON.stringify({ resolved, matches, checks }));
+"""
+
+
 class SourcePackageTests(unittest.TestCase):
     def test_plugins_configured_for_vm_are_copied_from_reviewed_source(self):
         root = Path(__file__).resolve().parents[2]
@@ -163,6 +261,59 @@ class SourcePackageTests(unittest.TestCase):
                     for entry in manifest['openclaw']['extensions']:
                         self.assertTrue((package / entry).is_file(), entry)
                     self.assertTrue((package / 'openclaw.plugin.json').is_file())
+
+    @unittest.skipUnless(shutil.which('node'), 'Node is needed for copied runtime import')
+    def test_copied_coordinator_links_import_real_public_catalog_reader(self):
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / 'deploy/gcp-vm/Dockerfile').read_text()
+        instructions = dockerfile.replace('\\\n', '').splitlines()
+        commands = [line[4:] for line in instructions if line.startswith('RUN ')
+                    and '/opt/oncall/plugins/livex-gcp-readonly/node_modules' in line]
+        self.assertEqual(len(commands), 1)
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            app = base / 'app'
+            self.prepare_real_source_base(root, app)
+            plugins = base / 'opt/oncall/plugins'
+            for name in ('livex-gcp-readonly', 'livex-investigations'):
+                shutil.copytree(root / 'livex-agents/plugins' / name, plugins / name,
+                                ignore=shutil.ignore_patterns('node_modules', '__pycache__'))
+            owner = plugins / 'livex-investigations'
+            (owner / 'node_modules').mkdir()
+            (owner / 'node_modules/zod').symlink_to(root / 'node_modules/zod', target_is_directory=True)
+            (owner / 'node_modules/openclaw').symlink_to(app, target_is_directory=True)
+            command = commands[0].replace('/opt/oncall', str(base / 'opt/oncall')).replace('/app', str(app))
+            setup = subprocess.run(['sh', '-eu', '-c', command], text=True, capture_output=True, timeout=30)
+            self.assertEqual(setup.returncode, 0, setup.stderr)
+            package = plugins / 'livex-gcp-readonly'
+            self.assertEqual((package / 'node_modules/@livex/investigations').resolve(), owner.resolve())
+            self.assertEqual((package / 'node_modules/@openclaw/slack').resolve(),
+                             (app / 'dist/extensions/slack').resolve())
+            agent = base / 'agent'
+            agent.mkdir()
+            script = base / 'probe.mjs'
+            script.write_text(RUNTIME_CATALOG_PROBE)
+            run = subprocess.run(['node', '--import', str(root / 'scripts/tsx.mjs'), str(script),
+                                  str(root), str(package), str(agent)],
+                                 cwd=root, text=True, capture_output=True, timeout=180)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            evidence = json.loads(run.stdout.splitlines()[-1])
+            self.assertEqual(evidence.get('resolved'), str(owner / 'oncall-catalog.ts'))
+            self.assertEqual([match.get('classification') for match in evidence.get('matches')],
+                             ['known', 'unknown'])
+            self.assertEqual(evidence.get('checks'), 2)
+
+    def prepare_real_source_base(self, root, app):
+        # Model the reviewed base's layout with actual installed/source artifacts.
+        # Source aliases/Jiti stand in for unavailable compiled SDK output only.
+        (app / 'node_modules').mkdir(parents=True)
+        (app / 'node_modules/zod').symlink_to(root / 'node_modules/zod', target_is_directory=True)
+        (app / 'src').symlink_to(root / 'src', target_is_directory=True)
+        (app / 'dist/extensions/slack').mkdir(parents=True)
+        (app / 'dist/extensions/slack/api.js').symlink_to(root / 'extensions/slack/api.ts')
+        exports = {f'./plugin-sdk/{name}': f'./src/plugin-sdk/{name}.ts'
+                   for name in ('plugin-entry', 'security-runtime')}
+        (app / 'package.json').write_text(json.dumps({'name': 'openclaw', 'exports': exports}))
 
     @unittest.skipUnless(shutil.which('node'), 'Node is needed for runtime package resolution')
     def test_plugin_dependencies_resolve_and_mismatched_base_fails(self):

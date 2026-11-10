@@ -190,3 +190,88 @@ If redaction changes a selector, or the URL exceeds the output budget, the
 result includes `logsExplorerLinkUnavailableReason`. Cached results can gain a
 link without another cloud read or a stored-history rewrite. Rows and cursors
 remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
+
+## Scheduled Oncall coordinator
+
+`plugins.entries.livex-gcp-readonly.config.oncall` is disabled by default with
+`{ "enabled": false }`. The separate `oncall-coordinator` role has no default
+Slack binding. Enabling this service requires separately reviewed operator
+configuration for exact Slack account/team/channel and trusted publisher,
+cloud project/environment/selectors, Canvas roster and any escalation destination.
+Do not grant new credentials or activate the service merely to load this source.
+Canvas reading requires the installed bot’s `files:read` scope and membership in
+the source/roster channels. The packaged manifest declares that scope; actual app
+reauthorization remains a separate operator action, with no live grant here.
+
+Create one paused, headless OpenClaw Automation from the reviewed checkout.
+
+```bash
+openclaw automations create --name "LiveX Oncall tick" --every 1m \
+  --agent oncall-coordinator --session isolated \
+  --script livex-agents/plugins/livex-gcp-readonly/workflows/oncall/tick.automation.js \
+  --tools livex_oncall_tick --script-tool-budget 1 --no-deliver --disabled --json
+```
+
+Set `plugins.entries.livex-gcp-readonly.config.oncall.automationJobId` to the
+returned job ID. Verify that the job belongs to **LiveX Oncall** and that the
+installed coordinator uses the `full` tool profile with the exact allowlist
+`["read", "livex_oncall_tick"]`. Reconcile existing VM tool overrides before
+cutover because deployment preserves them. Enable the Oncall plugin configuration
+and the job during the cutover. Manage cadence,
+pause, and run history under **Agents → LiveX Oncall → Scheduling**. The Automation
+owns the cadence. A legacy `tickMs` setting has no scheduling effect, and an
+enabled Oncall configuration needs the job binding before it can process alerts.
+
+For Slack-triggered intake, configure the Slack publisher and channel IDs. For the DEV smoke test, use
+`#on-call-dev` (`C0BMJV699S5`) and a test roster. Use direct Slack event delivery
+for channel messages and confirm the installed bot can read full message metadata
+from history. A trusted root can wake the enabled Script Automation without
+shifting its schedule. The tick admits an incident when Slack history contains
+`metadata.event_payload.debugger: true` and a valid `event_payload.incident_id`.
+It deduplicates by publisher and incident within the configured source. Status
+updates and other unflagged posts can wake a scan and start zero Debugger runs.
+Leave the schedule enabled for reminders and the bounded 15-minute history
+catch-up. Intake binds incidents only after a complete scan within `maxScanPages`.
+An incomplete scan keeps its checkpoint so the next tick can retry.
+
+Verify the publisher emits both fields before enabling Oncall. Previous receipt
+keys cannot deduplicate later reposts under the new contract.
+
+Each admitted Script payload calls one tick. The plugin owns trusted intake,
+SQLite receipts, one Debugger admission per eligible alert, scoped catalog
+matching, and notification recovery. Idle ticks start zero model runs. The native
+Debugger run allows exactly `livex_oncall_logs_read` and
+`livex_oncall_assessment_submit`; both factories require a live private capability
+for the exact run, agent, session, owner generation and scope. No grant enters the
+prompt, durable receipt, result or telemetry. Human GCP authorization remains the
+existing branch. The catalog uses only the supported public subpath
+`@livex/investigations/oncall-catalog`; it resolves the operator-selected history
+under the owning investigations configuration, with no model-provided path.
+Matching is limited to the explicit agent/account/Slack workspace/channel/historical
+sender scope; excluded histories cannot establish a known match.
+
+Known findings at every priority, including Critical, never page, remind or
+broadcast. Unknown findings may notify only after valid assessment and an original
+message acknowledgment check. Unclassified failures get one nonpaging human-review
+handoff. Confirmed initial notification delivery starts reminder timing; uncertain
+admission or delivery is visible and never blindly retried. After downtime, send
+the next sequential reminder only after its nominal deadline and at least the
+configured interval (default 10 minutes) since the last confirmed notification;
+lateness stretches the full ladder and never jumps straight to final broadcast.
+An active human's `white_check_mark`, `eyes`, `+1` or `ok_hand` reaction on the
+original alert stops notifications while the issue remains open. Oncall verifies
+the reactor through Slack `users.info` with the existing `users:read` scope.
+Debugger markers, other bots and unattributed reaction counts cannot acknowledge
+an alert. There is no default `@channel` or `@here` broadcast.
+
+VM source packaging links dependencies only beneath the relocated plugin's own
+`node_modules`. It uses the reviewed base's `zod` and public Slack package API,
+plus the copied investigations package. It never installs packages or modifies
+`/app/node_modules`. Offline tests import the real copied catalog reader with
+real SDK source aliases and Jiti; this is not a full container build, deployed
+Slack/cloud integration, or live activation proof.
+
+Existing VM agent tool overrides are preserved by packaging. Before activation,
+verify that the actual Debugger allowlist contains the exact two service names,
+without discarding existing overrides. Missing names must remain policy-denied and
+surface as unavailable/unclassified; never relax native policy to compensate.

@@ -86,12 +86,44 @@ class ConfigurationTests(unittest.TestCase):
     def test_debugger_identity_retains_existing_agent_and_route(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
-        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall", "oncall-coordinator"})
         agent = rendered["agents"]["entries"]["oncall"]
         self.assertEqual(agent["name"], "LiveX Debugger")
         self.assertEqual(agent["identity"]["name"], "LiveX Reporting · Debugger")
         self.assertEqual(agent["workspace"], str(root / "workspaces/oncall"))
         self.assertEqual(rendered["bindings"][0]["agentId"], "oncall")
+        self.assertEqual(agent["tools"], {
+            "profile": "full", "exec": {"mode": "auto"}, "elevated": {"enabled": False},
+            "fs": {"workspaceOnly": True}, "message": {"actions": {"allow": ["read", "react", "reactions"]}},
+            "alsoAllow": None, "allow": ["read", "skills_read", "message", "livex_gcp_logs_read",
+                                           "livex_repository_read", "livex_oncall_logs_read",
+                                           "livex_oncall_assessment_submit"]})
+        self.assertEqual(agent["skills"], ["investigate-alerts", "debug", "systematic-debugging",
+                                           "verification-before-completion"])
+        self.assertIsNone(agent["permissionModeDefault"])
+        self.assertEqual(rendered["agents"]["defaults"]["systemAgent"], {"agentId": "oncall"})
+        self.assertEqual(rendered["tools"], {
+            "profile": "minimal", "exec": {"mode": "deny"}, "elevated": {"enabled": False},
+            "alsoAllow": None, "message": None})
+
+    def test_oncall_coordinator_is_separate_readonly_and_service_disabled(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        coordinator = rendered["agents"]["entries"]["oncall-coordinator"]
+        self.assertEqual(coordinator["name"], "LiveX Oncall")
+        self.assertEqual(coordinator["identity"]["name"], "LiveX Reporting · Oncall")
+        self.assertEqual(coordinator["workspace"], str(root / "workspaces/oncall-coordinator"))
+        self.assertEqual(coordinator["skills"], [])
+        self.assertEqual(coordinator["permissionModeDefault"], "read-only")
+        self.assertEqual(coordinator["tools"], {
+            "profile": "full", "exec": {"mode": "deny"},
+            "elevated": {"enabled": False}, "fs": {"workspaceOnly": True},
+            "allow": ["read", "livex_oncall_tick"]})
+        self.assertEqual(rendered["plugins"]["entries"]["livex-gcp-readonly"]["config"]["oncall"],
+                         {"enabled": False})
+        self.assertEqual(rendered["bindings"], [{"agentId": "oncall", "match": {
+            "channel": "slack", "accountId": "default", "peer": {"kind": "channel", "id": "*"}}}])
+        self.assertTrue((Path(coordinator["workspace"]) / "AGENTS.md").is_file())
 
     def test_report_profile_is_explicit_for_oncall_only(self):
         root = Path(__file__).resolve().parent.parent
@@ -117,7 +149,8 @@ class ConfigurationTests(unittest.TestCase):
         tools = rendered["agents"]["entries"]["oncall"]["tools"]
         self.assertEqual(tools["message"]["actions"]["allow"], ["read", "react", "reactions"])
         self.assertEqual(tools["allow"], ["read", "skills_read", "message",
-                                          "livex_gcp_logs_read", "livex_repository_read"])
+                                          "livex_gcp_logs_read", "livex_repository_read",
+                                          "livex_oncall_logs_read", "livex_oncall_assessment_submit"])
         slack = rendered["channels"]["slack"]
         self.assertTrue(slack["actions"]["reactions"])
         streaming = slack["streaming"]
@@ -138,6 +171,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(manifest["features"]["bot_user"]["display_name"], "LiveX Reporting")
         scopes = manifest["oauth_config"]["scopes"]["bot"]
         self.assertIn("chat:write.customize", scopes)
+        self.assertIn("files:read", scopes)
         self.assertIn("reactions:read", scopes)
         self.assertIn("reactions:write", scopes)
         cutover = json.loads((root / "slack/account-cutover.patch.json").read_text())
@@ -151,7 +185,7 @@ class ConfigurationTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
         self.assertNotIn("${", json.dumps(rendered))
-        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall", "oncall-coordinator"})
         workspace = Path(rendered["agents"]["entries"]["oncall"]["workspace"])
         self.assertEqual(workspace, root / "workspaces/oncall")
         self.assertTrue((workspace / "AGENTS.md").is_file())
@@ -162,7 +196,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_inactive_examples_are_explicit_read_only_native_fragments(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")
-        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall"})
+        self.assertEqual(set(rendered["agents"]["entries"]), {"oncall", "oncall-coordinator"})
         for agent in ("debugger", "verifier"):
             with self.subTest(agent=agent):
                 fragment = json.loads((root / "config/examples" / f"{agent}.json").read_text())

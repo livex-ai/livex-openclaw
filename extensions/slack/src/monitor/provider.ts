@@ -1,6 +1,7 @@
 import type { RequestListener } from "node:http";
 import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
+import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import {
   createLazyRuntimeModule,
   createLazyRuntimeSurface,
@@ -50,6 +51,7 @@ import { registerSlackCommonEvents, registerSlackWorkspaceEvents } from "./event
 import { createSlackHttpRequestHandler, registerSlackHttpHandler } from "./http-handler.js";
 import { createSlackDurableIngress } from "./ingress.js";
 import { createSlackMessageHandler } from "./message-handler.js";
+import { createSlackRootMessageSignals, SLACK_ROOT_MESSAGE_SIGNAL } from "./message-signals.js";
 import { openSlackPresenceCooldownStore } from "./presence-cooldown-store.js";
 import {
   createSlackPresenceMonitor,
@@ -539,9 +541,11 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
     trackEvent,
     onPrepared: (prepared) => presenceMonitor?.observe(prepared),
   });
+  const messageSignals = createSlackRootMessageSignals();
   registerSlackCommonEvents({
     ctx,
     handleSlackMessage,
+    onRootMessage: messageSignals.publish,
     trackEvent,
   });
   const commandRegistration = await registerSlackMonitorSlashCommands({ ctx, account, trackEvent });
@@ -663,6 +667,14 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
     installationIdentity.kind === "workspace" ? installationIdentity.teamId : undefined,
   );
 
+  const messageSignalLease = registerChannelRuntimeContext({
+    channelRuntime: opts.channelRuntime,
+    channelId: "slack",
+    accountId: account.accountId,
+    capability: SLACK_ROOT_MESSAGE_SIGNAL,
+    context: messageSignals.source,
+    abortSignal: opts.abortSignal,
+  });
   try {
     await installSlackRuntimeForIdentity(installationIdentity);
     durableIngress.start();
@@ -788,6 +800,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
       await waitUntilAbort(opts.abortSignal);
     }
   } finally {
+    messageSignalLease?.dispose();
     installationState.release();
     runtimeStarted = false;
     presenceRequestAbort?.abort();

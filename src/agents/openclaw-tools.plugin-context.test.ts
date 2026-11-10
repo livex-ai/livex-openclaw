@@ -7,7 +7,9 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { resolveMemoryAudienceFromEntry } from "../plugins/memory-audience.js";
 import { fakeSessionOwner } from "../plugins/memory-audience.test-support.js";
+import { createOperationalRunInstanceRef } from "./admitted-run-context.js";
 import {
+  bindHostScriptAutomation,
   resolveOpenClawPluginToolInputs,
   type OpenClawPluginToolOptions,
 } from "./openclaw-tools.plugin-context.js";
@@ -23,6 +25,32 @@ function resolve(options: OpenClawPluginToolOptions) {
 }
 
 describe("openclaw plugin tool context", () => {
+  it("projects only the host-bound Script Automation for the resolved tool agent", () => {
+    const context = { jobId: "oncall-job", agentId: "main", assertCurrent: vi.fn() };
+    const operationalRunInstance = createOperationalRunInstanceRef("script-run");
+    const scriptAutomation = bindHostScriptAutomation(context, operationalRunInstance);
+
+    expect(
+      resolve({ scriptAutomation: context, operationalRunInstance }).context.scriptAutomation,
+    ).toBeUndefined();
+    expect(
+      resolve({
+        scriptAutomation,
+        operationalRunInstance: createOperationalRunInstanceRef("script-run"),
+      }).context.scriptAutomation,
+    ).toBeUndefined();
+    expect(
+      resolve({
+        scriptAutomation,
+        operationalRunInstance,
+        requesterAgentIdOverride: "other",
+      }).context.scriptAutomation,
+    ).toBeUndefined();
+    expect(resolve({ scriptAutomation, operationalRunInstance }).context.scriptAutomation).toBe(
+      scriptAutomation,
+    );
+  });
+
   it("forwards one host-minted memory audience and its currency assertion", async () => {
     const sessionId = randomUUID();
     const entry = { sessionId, updatedAt: 1, chatType: "direct" as const };

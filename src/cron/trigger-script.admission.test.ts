@@ -11,6 +11,9 @@ import { resolveToolSearchConfig, type ToolSearchToolContext } from "../agents/t
 import { jsonResult, type AnyAgentTool } from "../agents/tools/common.js";
 import { getGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import type { OpenClawPluginScriptAutomation } from "../plugins/tool-types.js";
+import { bindCronJobAdmittedRun, clearCronJobActive, markCronJobActive } from "./active-jobs.js";
+import { makeCronJob } from "./delivery.test-helpers.js";
 import { createCronScriptRuntimeFixture as createCronScriptRuntime } from "./trigger-script.test-helpers.js";
 
 function completed(value: unknown): CodeModeHeadlessResult {
@@ -32,17 +35,26 @@ function fixture(
   const config = {};
   const admitted: AdmittedRunContext[] = [];
   const retained: ToolSearchToolContext[] = [];
+  const automations: Array<OpenClawPluginScriptAutomation | undefined> = [];
   const prepare = vi.fn(async () => ({
-    createTools: async (): Promise<AnyAgentTool[]> => [
-      {
-        name: "probe",
-        label: "Probe",
-        description: "Observe the invocation owner",
-        parameters: { type: "object", properties: {} },
-        execute,
-        prepareBeforeToolCallParams,
-      },
-    ],
+    createTools: async (
+      _admitted: AdmittedRunContext,
+      _signal: AbortSignal,
+      _messageCapability: string | undefined,
+      scriptAutomation?: OpenClawPluginScriptAutomation,
+    ): Promise<AnyAgentTool[]> => {
+      automations.push(scriptAutomation);
+      return [
+        {
+          name: "probe",
+          label: "Probe",
+          description: "Observe the invocation owner",
+          parameters: { type: "object", properties: {} },
+          execute,
+          prepareBeforeToolCallParams,
+        },
+      ];
+    },
     context: { config, agentId: "main", sessionKey: "agent:main:cron:probe" },
   }));
   const runtime = createCronScriptRuntime({
@@ -65,8 +77,92 @@ function fixture(
       },
     },
   };
-  return { runtime, prepare, admitted, retained, input };
+  return { runtime, prepare, admitted, retained, input, automations };
 }
+
+it("grants only the exact stored Script payload and rejects changed or settled occurrences", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const jobId = "script-probe";
+  const agentId = "main";
+  const script = "return result";
+  const toolsAllow = ["probe"];
+  const timeoutSeconds = 10;
+  const toolBudget = 1;
+  const job = makeCronJob({
+    id: jobId,
+    agentId,
+    payload: { kind: "script", script, toolsAllow, timeoutSeconds, toolBudget },
+  });
+  let storedJob = job;
+  let changeDuringTool: "none" | "refresh" | "reassign" = "none";
+  let effects = 0;
+  const gateway = {
+    cron: {
+      getJob: (id: string) => (id === jobId ? storedJob : undefined),
+      getDefaultAgentId: () => agentId,
+    },
+  } as unknown as GatewayRequestContext;
+  const { runtime, input, automations } = fixture(
+    async () => {
+      const authority = automations.at(-1);
+      if (changeDuringTool === "refresh") {
+        // Updating a sibling can refresh all row objects without editing this job.
+        storedJob = structuredClone(job);
+      } else if (changeDuringTool === "reassign") {
+        // Returning the job to its original agent does not restore the old grant.
+        storedJob = { ...job, agentId: "other", updatedAtMs: job.updatedAtMs + 1 };
+        storedJob = { ...job, updatedAtMs: job.updatedAtMs + 2 };
+      }
+      if (authority) {
+        authority.assertCurrent();
+        effects += 1;
+      }
+      return jsonResult({ jobId: authority?.jobId, agentId: authority?.agentId });
+    },
+    { resolveGatewayContext: () => gateway },
+  );
+  const marker = markCronJobActive(jobId, { agentId });
+  const controller = new AbortController();
+  const request = {
+    ...input,
+    jobId,
+    agentId,
+    script,
+    toolsAllow,
+    timeoutSeconds,
+    toolBudget,
+    deliveryAttemptFence: { beforeAttempt: async () => {}, assertCurrent: () => {} },
+    executionIdentity: {
+      ingress: { kind: "schedule", boundary: "cron.script", state: "present" } as const,
+      onPostAdmission: (context: AdmittedRunContext) => {
+        bindCronJobAdmittedRun(marker, context, controller.signal);
+      },
+    },
+  };
+  try {
+    await expect(runtime.evaluateTrigger(request)).resolves.toMatchObject({ kind: "evaluated" });
+    expect(automations.at(-1)).toBeUndefined();
+    await expect(runtime.executePayload(request)).resolves.toMatchObject({
+      kind: "completed",
+      state: { jobId, agentId },
+    });
+    expect(automations.at(-1)?.assertCurrent).toThrow();
+    changeDuringTool = "refresh";
+    await expect(runtime.executePayload(request)).resolves.toMatchObject({
+      kind: "completed",
+      state: { jobId, agentId },
+    });
+    changeDuringTool = "reassign";
+    await expect(runtime.executePayload(request)).resolves.toMatchObject({
+      kind: "error",
+      error: expect.stringContaining("binding is no longer current"),
+    });
+    expect(effects).toBe(2);
+  } finally {
+    clearCronJobActive(jobId, marker);
+    vi.useRealTimers();
+  }
+});
 
 it("gives each warm payload invocation fresh authority and releases it after completion", async () => {
   const { runtime, prepare, admitted, retained, input } = fixture(async () => {

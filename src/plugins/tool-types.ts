@@ -18,6 +18,13 @@ export type OpenClawPluginToolDelivery = {
   send: (params: { text?: string; mediaUrl?: string }) => Promise<void>;
 };
 
+/** Host-bound identity and lifetime of one headless Script Automation occurrence. */
+export type OpenClawPluginScriptAutomation = {
+  readonly jobId: string;
+  readonly agentId: string;
+  readonly assertCurrent: () => void;
+};
+
 /** Commands stay in the calling run's sandbox; paths are sandbox paths, never host paths. */
 export type OpenClawPluginToolSandbox = {
   workspaceDir: string;
@@ -105,6 +112,8 @@ type OpenClawPluginToolContextBase = {
   assertMemoryAudienceCurrent?: () => void;
   /** Live host-bound authority. Recheck inside the final synchronous effect/write guard. */
   assertInvocationCurrent?: () => void;
+  /** V2 factories only. Present for an admitted Script Automation payload. */
+  scriptAutomation?: OpenClawPluginScriptAutomation;
   /**
    * Host-bound client-input policy. Pure synchronous guard for final storage admission;
    * performs no database reads and grants no invocation or mutation authority.

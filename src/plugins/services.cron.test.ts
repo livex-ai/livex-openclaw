@@ -258,3 +258,25 @@ it("isolates service deadlines and joins admitted work before retiring its owner
     await scheduler.stop();
   }
 });
+
+it("rechecks a service-owned Script binding inside the Cron admission guard", async () => {
+  const { cron } = await createScheduler();
+  const { service } = await startService(() => cron);
+  const script = "return {};";
+  const expected = { agentId: "main", script, toolName: "tick" };
+  const job = await cron.add({
+    ...createJob(),
+    agentId: "main",
+    enabled: true,
+    sessionTarget: "isolated",
+    delivery: { mode: "none" },
+    payload: { kind: "script", script, toolsAllow: ["tick"], toolBudget: 1 },
+  });
+  vi.spyOn(cron, "enqueueRun").mockImplementationOnce(async (_id, _mode, options) => {
+    await cron.update(job.id, { payload: { kind: "script", script: "return 42;" } });
+    options?.commitGuard?.();
+    throw new Error("edited Script escaped the guard");
+  });
+  const enqueue = expectDefined(service.enqueueRun, "service run admission");
+  await expect(enqueue(job.id, "if-enabled", expected)).rejects.toThrow("no longer matches");
+});

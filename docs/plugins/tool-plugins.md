@@ -260,6 +260,12 @@ loopback-runtime lifetime.
 Metadata-only catalog construction does not grant invocation authority. A retained
 versioned tool without an admitted invocation fails when its guard is called.
 
+An admitted headless Automation with a Script payload also supplies
+`context.scriptAutomation` to V2 tool factories. Its `jobId` and `agentId` identify
+the host-owned occurrence. Check those identities against the plugin's configured
+binding and call `scriptAutomation.assertCurrent()` at the point of effect.
+Condition scripts and conversational turns have no Script Automation context.
+
 Client-input tools may also receive `assertInputCommitAllowed`. Carry this
 host-bound, synchronous policy callback to the storage owner's final admission
 guard when persisting client-supplied bytes. Calling it checks the current upload

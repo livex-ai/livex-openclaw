@@ -61,6 +61,11 @@ export {
   listSlackDirectoryPeersFromConfig,
 } from "./src/directory-config.js";
 export { normalizeSlackWebhookPath } from "./src/http/paths.js";
+export {
+  SLACK_ROOT_MESSAGE_SIGNAL,
+  type SlackRootMessageSignal,
+  type SlackRootMessageSignalSource,
+} from "./src/monitor/message-signals.js";
 export type {
   SlackInteractiveHandlerContext,
   SlackInteractiveHandlerRegistration,

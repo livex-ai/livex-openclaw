@@ -389,6 +389,12 @@ export type OpenClawPluginServiceContext = {
         enqueueRun?: (
           id: string,
           mode?: import("../cron/service/state.js").CronRunMode,
+          expectedScript?: Readonly<{
+            agentId: string;
+            script: string;
+            toolName: string;
+            assertCurrent?: () => void;
+          }>,
         ) => Promise<import("../cron/service-contract.js").CronServiceRunResult>;
       })
     | undefined;

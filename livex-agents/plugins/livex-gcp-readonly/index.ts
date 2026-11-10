@@ -6,6 +6,7 @@ import { createPageLedger, PAGE_CACHE_ENTRIES } from "./page-store.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 import { createRecoveryCommand } from "./recovery.mjs";
 import { createRepositoryTool } from "./repository.mjs";
+import { registerOncall } from "./workflows/oncall/service.js";
 
 export default definePluginEntry({
   id: manifest.id,
@@ -13,6 +14,7 @@ export default definePluginEntry({
   description: manifest.description,
   configSchema: buildJsonPluginConfigSchema(manifest.configSchema),
   register(api) {
+    registerOncall(api);
     api.registerCommand(
       createRecoveryCommand(
         api.pluginConfig,

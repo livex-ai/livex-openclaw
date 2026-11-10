@@ -40,6 +40,7 @@ import {
   applyEmbeddedAttemptToolsAllow,
   resolveEmbeddedAttemptToolConstructionPlan,
 } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
+import { bindHostScriptAutomation } from "../agents/openclaw-tools.plugin-context.js";
 import { runAgentCleanupStep } from "../agents/run-cleanup-timeout.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { resolveSandboxContext } from "../agents/sandbox/context.js";
@@ -67,7 +68,9 @@ import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.j
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
+import type { OpenClawPluginScriptAutomation } from "../plugins/tool-types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { captureCronScriptAutomationContext } from "./active-jobs.js";
 import {
   resolveCronActiveRuntimeConfig,
   resolveCronAgentConfig,
@@ -126,6 +129,7 @@ type PreparedTriggerRuntime = {
     admitted: AdmittedRunContext,
     signal: AbortSignal,
     messageActionTurnCapability: string | undefined,
+    scriptAutomation?: OpenClawPluginScriptAutomation,
   ) => Promise<AnyAgentTool[]>;
   /** Starts this evaluation's own MCP runtime for servers its toolsAllow names by prefix. */
   acquireMcpTools?: (
@@ -276,6 +280,7 @@ async function prepareTriggerRuntime(
         admitted,
         signal,
         messageActionTurnCapability,
+        scriptAutomation,
       ) => {
         const allTools = toolPlan.constructTools
           ? await createOpenClawCodingToolsInternalAsync({
@@ -283,6 +288,9 @@ async function prepareTriggerRuntime(
               runId: admitted.operationalRunInstance.runId,
               operationalRunInstance: admitted.operationalRunInstance,
               messageActionTurnCapability,
+              ...(scriptAutomation
+                ? { scriptAutomation, assertInvocationCurrent: scriptAutomation.assertCurrent }
+                : {}),
               abortSignal: signal,
               exec: { config },
               sandbox,
@@ -461,6 +469,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
 
   return async function runCronCodeModeScript(
     params: CronScriptInvocation & {
+      scriptPayload: boolean;
       wallClockMs: number;
       maxToolCalls: number;
       label: string;
@@ -530,12 +539,26 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
         approvalSignals: [evaluationScope.signal],
       });
       assertActive();
+      const automationContext = params.scriptPayload
+        ? captureCronScriptAutomationContext({
+            job: params.job,
+            agentId: runtime.context.agentId,
+            admitted,
+            deliveryAttemptFence: params.deliveryAttemptFence,
+            resolveGatewayContext: caller?.gatewayContextResolver,
+            assertActive,
+          })
+        : undefined;
+      const scriptAutomation =
+        automationContext &&
+        bindHostScriptAutomation(automationContext, admitted.operationalRunInstance);
       // Reload during setup is best effort; the next invocation refreshes its cache.
       let tools = await withPluginRuntimeRegistryScope(runtime.pluginRegistry, () =>
         runtime.createTools(
           admitted,
           evaluationScope.signal,
           admission?.messageActionTurnCapability,
+          scriptAutomation,
         ),
       );
       assertActive();
@@ -653,6 +676,7 @@ export function createCronScriptRuntime(deps: CronTriggerEvaluatorDeps) {
       try {
         const outcome = await run({
           ...params,
+          scriptPayload: false,
           wallClockMs: HEADLESS_TRIGGER_WALL_CLOCK_MS,
           maxToolCalls: HEADLESS_TRIGGER_TOOL_BUDGET,
           label: "cron trigger evaluation",
@@ -679,6 +703,7 @@ export function createCronScriptRuntime(deps: CronTriggerEvaluatorDeps) {
       );
       const outcome = await run({
         ...params,
+        scriptPayload: true,
         script: payload.script,
         state: params.job.state.triggerState,
         wallClockMs: timeoutSeconds * 1000,
