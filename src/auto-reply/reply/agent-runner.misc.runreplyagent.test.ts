@@ -1792,7 +1792,8 @@ describe("runReplyAgent fallback reasoning tags", () => {
 
 describe("runReplyAgent response usage footer", () => {
   function createRun(params: {
-    responseUsage: "tokens" | "full";
+    responseUsage?: "tokens" | "full";
+    slack?: boolean;
     sessionKey: string;
     config?: unknown;
     provider?: string;
@@ -1804,6 +1805,7 @@ describe("runReplyAgent response usage footer", () => {
       responseUsage: params.responseUsage,
     };
     return createBaseRun({
+      context: params.slack ? { Provider: "slack", Surface: "slack" } : undefined,
       run: {
         agentId: "main",
         agentDir: path.join(rootDir, "agent"),
@@ -1903,7 +1905,7 @@ describe("runReplyAgent response usage footer", () => {
     expect(text).not.toContain("Usage:");
   });
 
-  it("shows configured costs for aws-sdk providers when responseUsage=full", async () => {
+  it("labels the estimate when Slack inherits the full usage footer", async () => {
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "ok" }],
       meta: {
@@ -1915,13 +1917,13 @@ describe("runReplyAgent response usage footer", () => {
       },
     });
 
-    const sessionKey = "agent:main:whatsapp:dm:+1000";
     const res = await createRun({
-      responseUsage: "full",
-      sessionKey,
+      slack: true,
+      sessionKey: "agent:main:slack:channel:c1:thread:123.456",
       provider: "amazon-bedrock",
       model: "us.anthropic.claude-sonnet-4-6",
       config: {
+        messages: { responseUsage: { default: "off", slack: "full" } },
         models: {
           providers: {
             "amazon-bedrock": {
@@ -1948,7 +1950,7 @@ describe("runReplyAgent response usage footer", () => {
     expect(text).toContain("amazon-bedrock🤖us.anthropic.claude-sonnet-4-6🌘🐌");
     expect(text).not.toContain("↕️");
     expect(text).not.toContain("🗄");
-    expect(text).toContain("💰0.0406");
+    expect(text).toContain("est $0.0406");
     expect(text).not.toContain("Usage:");
     expect(text).not.toContain("· session ");
   });

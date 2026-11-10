@@ -22,6 +22,7 @@ from release_inputs import (
     select_image,
     with_concurrency,
     with_slack_progress,
+    with_slack_usage_default,
 )
 from vm_prompt import (
     BUNDLED,
@@ -110,7 +111,7 @@ def activate(root, source, old_image):
                 return value
         raise RuntimeError("Native RPC result could not be verified: " + method)
 
-    def verify_configuration(content, agent_ids, progress=None):
+    def verify_configuration(content, agent_ids, progress=None, *, usage_footer=False):
         # Native hashes distinguish saved configuration from the applied runtime.
         # Do not retain the redacted snapshot or any operational configuration.
         result = rpc("config.get", {}, {"valid", "sourceConfig", "configRevisionHash", "appliedConfigHash", "path"})
@@ -119,10 +120,16 @@ def activate(root, source, old_image):
                 or not result.get("configRevisionHash")
                 or result.get("configRevisionHash") != result.get("appliedConfigHash")):
             raise RuntimeError("Native Gateway has not applied the installed configuration")
+        expected_config = json.loads(content)
+        actual_config = result["sourceConfig"]
         if progress is not None:
-            require_slack_progress(result.get("sourceConfig", {}), progress)
-        expected = json.loads(content).get("agents", {}).get("entries", {})
-        actual = result.get("sourceConfig", {}).get("agents", {}).get("entries", {})
+            require_slack_progress(actual_config, progress)
+        if usage_footer and actual_config.get("messages", {}).get("responseUsage") != (
+            expected_config.get("messages", {}).get("responseUsage")
+        ):
+            raise RuntimeError("Native Slack usage footer configuration mismatch")
+        expected = expected_config.get("agents", {}).get("entries", {})
+        actual = actual_config.get("agents", {}).get("entries", {})
         for agent_id in agent_ids:
             if agent_id not in actual:
                 raise RuntimeError("Managed agent is missing from the native configuration")
@@ -174,6 +181,9 @@ def activate(root, source, old_image):
     target_progress = candidate.get("slackProgress")
     if "slackProgress" in candidate:
         new_config = with_slack_progress(new_config, target_progress)
+    usage_footer = "slackUsageDefault" in candidate
+    if usage_footer:
+        new_config = with_slack_usage_default(new_config, candidate["slackUsageDefault"])
     old_release = (root / "release.env").read_bytes()
     new_release = select_image(old_release, old_image, new_image)
     before = inspect_container()
@@ -510,8 +520,10 @@ def activate(root, source, old_image):
             agent_id: verify_active(rpc, sha(prompt), agent_id)
             for agent_id, prompt in new_prompts.items()
         }
-        if bundle is not None or target_progress is not None:
-            receipt["readiness"]["appliedConfigHash"] = verify_configuration(new_config, new_prompts, target_progress)
+        if bundle is not None or target_progress is not None or usage_footer:
+            receipt["readiness"]["appliedConfigHash"] = verify_configuration(
+                new_config, new_prompts, target_progress, usage_footer=usage_footer
+            )
         if target_progress is not None:
             receipt["readiness"]["slackProgress"] = target_progress
         receipt["status"] = "running_verified"
@@ -617,8 +629,10 @@ def activate(root, source, old_image):
                     agent_id: verify_active(rpc, expected, agent_id)
                     for agent_id, expected in previous_hashes.items()
                 }
-                if bundle is not None:
-                    receipt["rollback"]["appliedConfigHash"] = verify_configuration(old_config, previous_hashes)
+                if bundle is not None or usage_footer:
+                    receipt["rollback"]["appliedConfigHash"] = verify_configuration(
+                        old_config, previous_hashes, usage_footer=usage_footer
+                    )
                 receipt["status"] = "rolled_back"
                 save_if_possible()
             except (

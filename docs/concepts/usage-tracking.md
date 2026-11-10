@@ -255,7 +255,7 @@ change:
         "when": "context.max_tokens",
         "text": " | 📚[{context.pct_used|meter:5:braille}]{context.max_tokens|num}",
       },
-      { "when": "cost.turn_usd", "text": " 💰{cost.turn_usd|fixed:4}" },
+      { "when": "cost.turn_usd", "text": " 💰 est ${cost.turn_usd|fixed:4}" },
     ],
     "surfaces": {
       "discord": [
@@ -269,7 +269,7 @@ change:
           "when": "context.max_tokens",
           "text": " | 📚[{context.pct_used|meter:5:braille}]{context.max_tokens|num}",
         },
-        { "when": "cost.turn_usd", "text": " 💰{cost.turn_usd|fixed:4}" },
+        { "when": "cost.turn_usd", "text": " 💰 est ${cost.turn_usd|fixed:4}" },
       ],
     },
   },

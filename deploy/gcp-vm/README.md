@@ -318,8 +318,12 @@ The VM builds a candidate before interrupting service. Cutover requires an idle,
 healthy Gateway and the same running image observed at startup. It backs up
 stopped state, switches the image, and applies `agents.defaults.maxConcurrent`
 and managed `agents.entries` from the selected commit’s
-`livex-agents/config/openclaw.template.json` to the installed JSON config. Cutover verifies the live main-lane limit as well as
-Node, config, models, Codex, GCP and a fresh Slack connection. The mounted oncall
+`livex-agents/config/openclaw.template.json` to the installed JSON config.
+If the installed config has no `messages.responseUsage`, cutover seeds the
+selected profile's Slack-only usage default and verifies it in the applied
+config. Explicit VM usage settings and session overrides take precedence.
+Cutover also verifies the live main-lane limit, Node, config, models, Codex,
+GCP and a fresh Slack connection. The mounted oncall
 instructions come from the verified candidate image. The image build applies
 `oncall-vm-policy.patch` to the shared prompt and verifies `oncall-vm-prompt.sha256`.
 Review and update that digest whenever the merged instructions change. The deployer

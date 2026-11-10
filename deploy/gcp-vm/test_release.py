@@ -21,6 +21,8 @@ PROGRESS = {
     },
 }
 
+SLACK_USAGE = {"default": "off", "slack": "full"}
+
 
 class ReleaseTest(unittest.TestCase):
     def test_concurrency_overlay_is_narrow_and_idempotent(self):
@@ -51,7 +53,8 @@ class ReleaseTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 select_image(invalid, OLD, NEW)
 
-    def exercise(self, failure=None, *, multi=False, existing_debugger=False, progress=False):
+    def exercise(self, failure=None, *, multi=False, existing_debugger=False, progress=False,
+                 usage_footer=False, installed_usage=None):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             old_prompt = b"previously deployed VM prompt"
@@ -96,6 +99,8 @@ class ReleaseTest(unittest.TestCase):
                 "maxConcurrent": 7,
                 "oncallPromptSha256": sha(new_prompt),
             }
+            if usage_footer:
+                candidate["slackUsageDefault"] = SLACK_USAGE
             if progress:
                 candidate["slackProgress"] = None if failure == "progress-null" else PROGRESS
             if multi and failure != "legacy-downgrade":
@@ -157,6 +162,10 @@ class ReleaseTest(unittest.TestCase):
                 },
                 "channels": {"slack": {"ackReaction": "", "typingReaction": ""}},
             }
+            if usage_footer:
+                original["messages"] = {"groupChat": {"visibleReplies": "automatic"}}
+                if installed_usage is not None:
+                    original["messages"]["responseUsage"] = installed_usage
             if progress:
                 original["channels"]["slack"].update(
                     requireMention=True, dmPolicy="disabled", allowFrom=["U_TEST"],
@@ -280,6 +289,8 @@ class ReleaseTest(unittest.TestCase):
                     pending = failure == "config-not-applied" and state["image"] == NEW
                     if failure == "agent-config-mismatch" and state["image"] == NEW:
                         active_config["agents"]["entries"]["debugger"]["skills"] = []
+                    if failure == "usage-footer-readback" and state["image"] == NEW:
+                        active_config["messages"].pop("responseUsage", None)
                     if failure == "progress-readback" and state["image"] == NEW:
                         active_config["channels"]["slack"]["streaming"]["mode"] = "progress"
                     output = json.dumps({
@@ -404,6 +415,8 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original_bytes)
             else:
                 original["agents"]["defaults"]["maxConcurrent"] = 7
+                if usage_footer and installed_usage is None:
+                    original["messages"]["responseUsage"] = SLACK_USAGE
                 if progress:
                     streaming = original.get("channels").get("slack").get("streaming")
                     streaming.update(mode="off", nativeTransport=True)
@@ -458,6 +471,10 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(
                     receipt["status"], "rolled_back" if failure else "running_verified"
                 )
+                if usage_footer:
+                    self.assertEqual(proof.get("appliedConfigHash"), "installed-config-hash")
+                    if failure == "usage-footer-readback":
+                        self.assertIn("Slack usage footer", receipt["failure"])
                 if progress and not failure:
                     self.assertEqual(proof.get("slackProgress"), PROGRESS)
                     self.assertEqual(proof.get("appliedConfigHash"), "installed-config-hash")
@@ -524,6 +541,13 @@ class ReleaseTest(unittest.TestCase):
         for failure in (None, "progress-readback", "config-not-applied", "preflight", "progress-override", "progress-null"):
             with self.subTest(failure=failure):
                 self.exercise(failure, multi=True, progress=True)
+
+
+    def test_usage_footer_activation_seeds_only_absent_modes_and_verifies_readback(self):
+        for installed in (None, "off", {"slack": "tokens", "discord": "full"}):
+            with self.subTest(installed=installed):
+                self.exercise(usage_footer=True, installed_usage=installed)
+        self.exercise("usage-footer-readback", usage_footer=True)
 
 
 class CheckpointTests(unittest.TestCase):

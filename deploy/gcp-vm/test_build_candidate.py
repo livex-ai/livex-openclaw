@@ -47,6 +47,7 @@ class BuildCandidateTests(unittest.TestCase):
                              "commentary": False, "narration": False},
             }
             if bundled:
+                profile["messages"] = {"responseUsage": {"default": "off", "slack": "full"}}
                 profile["channels"] = {"slack": {"streaming": {
                     **progress, "block": {"enabled": False},
                 }, "botToken": "synthetic-not-for-receipt"}}
@@ -157,11 +158,13 @@ class BuildCandidateTests(unittest.TestCase):
             self.assertEqual(image_reads, [BUNDLED] if bundled else [])
             if bundled:
                 self.assertEqual(receipt.get("slackProgress"), progress)
+                self.assertEqual(receipt.get("slackUsageDefault"), {"default": "off", "slack": "full"})
                 self.assertNotIn("synthetic-not-for-receipt", json.dumps(receipt))
                 self.assertEqual(receipt.get("agentBundleSha256"), hashlib.sha256(bundle_bytes).hexdigest())
                 self.assertEqual(receipt.get("agentPromptSha256"), {"oncall": hashlib.sha256(PROMPT).hexdigest()})
             else:
                 self.assertNotIn("slackProgress", receipt)
+                self.assertNotIn("slackUsageDefault", receipt)
                 self.assertNotIn("agentBundleSha256", receipt)
                 self.assertNotIn("agentPromptSha256", receipt)
 
