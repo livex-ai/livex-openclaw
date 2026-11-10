@@ -93,6 +93,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(agent["workspace"], str(root / "workspaces/oncall"))
         self.assertEqual(rendered["bindings"][0]["agentId"], "oncall")
 
+    def test_usage_footer_defaults_to_full_on_slack_only(self):
+        root = Path(__file__).resolve().parent.parent
+        rendered, _ = config.render(root, root / "config/local.example.json")
+        self.assertEqual(
+            rendered["messages"].get("responseUsage"), {"default": "off", "slack": "full"}
+        )
+
     def test_report_profile_is_explicit_for_oncall_only(self):
         root = Path(__file__).resolve().parent.parent
         rendered, _ = config.render(root, root / "config/local.example.json")

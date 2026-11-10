@@ -231,6 +231,10 @@
     }
   ],
   "messages": {
+    "responseUsage": {
+      "default": "off",
+      "slack": "full"
+    },
     "groupChat": {
       "visibleReplies": "automatic"
     }
