@@ -1183,3 +1183,49 @@ test("exports shared validation, filter and evidence contracts for the paged bac
   assert.equal(details.invalidRows, 0);
   assert.ok(!JSON.stringify(details).includes("SYNTHETIC_SECRET"));
 });
+
+test("kiosk profiles admit only exact identifiers and fixed bounded filters", async () => {
+  const start = "2026-10-20T16:00:00.000000001Z";
+  const end = "2026-10-20T16:10:00.000000001Z";
+  const deviceSerial = "a".repeat(32);
+  const agentId = "pub-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const mapId = "b".repeat(24);
+  const renderer = { mode: "kiosk_renderer", deviceSerial, start, end };
+  const token = { mode: "mappedin_token_request", agentId, mapId, start, end };
+  const paged = { paged: true };
+  const scope = 'logName =~ "^projects/example-prd/logs/"';
+  const window = `timestamp>="${start}" AND timestamp<="${end}"`;
+  assert.equal(
+    core.buildLogFilter(core.queryArgs(renderer, config, paged), config),
+    `${scope} AND resource.type="global" AND log_id("avatai-electron") AND jsonPayload.serialNumber="${deviceSerial}" AND jsonPayload.message=~"NetworkMonitor|MappedinView|UiStateReporter|sendDeviceHeartbeat" AND ${window}`,
+  );
+  assert.equal(
+    core.buildLogFilter(core.queryArgs(token, config, paged), config),
+    `${scope} AND resource.type="http_load_balancer" AND log_id("requests") AND httpRequest.requestMethod="GET" AND httpRequest.requestUrl=~"^https://api[.]copilot[.]livex[.]ai/api/v1/mappedin/auth-token/agents/${agentId}[?]map_id=${mapId}$" AND ${window}`,
+  );
+  for (const invalid of [
+    { ...renderer, deviceSerial: "other-device" },
+    { ...renderer, agentId },
+    { ...renderer, resourceLabels: { project_id: "other-prd" } },
+    { ...renderer, end: "2026-10-20T16:10:00.000000002Z" },
+    { ...token, agentId: "pub-.*" },
+    { ...token, mapId: `${mapId}&extra=1` },
+    { ...token, mapId: undefined },
+    { ...token, filter: "severity>=ERROR" },
+    { ...args, deviceSerial },
+  ]) {
+    assert.throws(() => core.queryArgs(invalid, config, paged), /Invalid/);
+  }
+  const legacy = createLogsTool(
+    config,
+    {
+      messageChannel: "slack",
+      nativeChannelId: "C123",
+      requesterSenderId: "U123",
+      assertInvocationCurrent() {},
+    },
+    () => assert.fail("legacy route must not invoke cloud for a kiosk profile"),
+  );
+  assert.ok(!legacy.parameters.properties.mode.enum.includes("kiosk_renderer"));
+  await assert.rejects(legacy.execute("legacy", renderer), /Invalid/);
+});
