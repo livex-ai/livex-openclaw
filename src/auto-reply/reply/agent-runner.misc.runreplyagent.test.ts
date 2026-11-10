@@ -1918,9 +1918,21 @@ describe("runReplyAgent response usage footer", () => {
       footer: "Estimated cost $0.6320 · 29.1k uncached · 304.5k cached · 736 out",
     },
     {
+      name: "available token counts without a price",
+      usage: {
+        input: 7_259,
+        cacheRead: 16_512,
+        cacheWrite: 0,
+        output: 13,
+        costStatus: "unavailable",
+        usageReport: { state: "available" },
+      },
+      footer: "7.3k uncached · 16.5k cached · 13 out",
+    },
+    {
       name: "unavailable usage and price",
       usage: { usageReport: { state: "unavailable" } },
-      footer: "Estimated cost unavailable · Usage unavailable",
+      footer: "Usage unavailable",
     },
   ])("sends $name as a native Slack usage footer", async ({ usage, footer }) => {
     runEmbeddedAgentMock.mockResolvedValueOnce({

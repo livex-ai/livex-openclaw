@@ -70,8 +70,7 @@ function formatSlackUsageContext(usage: NormalizedUsage | undefined, cost: numbe
           `${formatCompactTokenCount(output)} out`,
         ].join(" · ")
       : "Usage unavailable";
-  const estimate = cost === undefined ? "unavailable" : `$${cost.toFixed(4)}`;
-  return `Estimated cost ${estimate} · ${tokens}`;
+  return cost === undefined ? tokens : `Estimated cost $${cost.toFixed(4)} · ${tokens}`;
 }
 
 export const resolveResponseUsageLine = (params: {
