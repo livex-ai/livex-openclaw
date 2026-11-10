@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { runCapture } from "./capture.mjs";
-import { formatReleaseReport, runReport } from "./report.mjs";
+import { formatReleaseReport, renderReleaseReport, runReport } from "./report.mjs";
 import registry from "./services.json" with { type: "json" };
+import { runReleaseChanges } from "./workflows/release-changes/service.mjs";
 
 const sha = (digit) => digit.repeat(40);
 const digest = (digit) => "sha256:" + digit.repeat(64);
@@ -496,4 +498,36 @@ test("CLI accepts bounded capture JSON on stdin and sanitizes invalid input", as
   assert.equal(messages.length, 1);
   assert.equal(errors.length, 2);
   assert.doesNotMatch(errors.join("\n"), /private garbage|xxx/);
+});
+
+test("renders prepared evidence synchronously with the exact baseline report bytes", async () => {
+  const snapshot = capture({
+    "frontend/prd": { ...exact("b"), commitSource: "cloud-run-version" },
+    "frontend/stg": exact("c"),
+    "frontend/dev": exact("c"),
+    "scheduler/prd": { status: "unresolved", reason: "traffic-changed" },
+  });
+  let comparisons = 0;
+  const evidence = await runReleaseChanges({
+    capture: () => snapshot,
+    compare: () => {
+      comparisons += 1;
+      return comparison(
+        [
+          {
+            sha: sha("c"),
+            subject: "change",
+            pullRequests: [{ number: 123, title: "Guard <!channel> *rollout*" }],
+          },
+        ],
+        "partial",
+      );
+    },
+  });
+  const report = renderReleaseReport(evidence);
+  assert.equal(comparisons, 1);
+  assert.equal(
+    createHash("sha256").update(report).digest("hex"),
+    "9ca87463c60d89181c391ea85d879fd956f6fc3cbde34af9425bc0fb2f70ca45",
+  );
 });
