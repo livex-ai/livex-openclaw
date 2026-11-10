@@ -100,6 +100,24 @@ async function readGke(selection, collectGke) {
   }
 }
 
+export async function captureReleaseEvidence(
+  selection = {},
+  { collectGke } = {},
+  readers = undefined,
+) {
+  // Injected Cloud Run readers keep captures synthetic unless GKE is also injected.
+  const gkeCollector = includesProductionGke(selection)
+    ? (collectGke ?? (readers === undefined ? await loadProductionGke() : null))
+    : null;
+  // Start both sources before waiting. Production-only GKE canaries have no Cloud Run reads.
+  const gkeCapture = gkeCollector ? readGke(selection, gkeCollector) : null;
+  const [cloudRun, gke] = await Promise.all([
+    collectCloudRunServingImages(selection, readers),
+    gkeCapture,
+  ]);
+  return mergeGkeEvidence(cloudRun, gke);
+}
+
 export async function runCapture(
   args,
   { output = console.log, error = console.error, collectGke } = {},
@@ -118,17 +136,7 @@ export async function runCapture(
       output(usage);
       return 0;
     }
-    // Injected Cloud Run readers keep captures synthetic unless GKE is also injected.
-    const gkeCollector = includesProductionGke(values)
-      ? (collectGke ?? (readers === undefined ? await loadProductionGke() : null))
-      : null;
-    // Start both sources before waiting. Production-only GKE canaries have no Cloud Run reads.
-    const gkeCapture = gkeCollector ? readGke(values, gkeCollector) : null;
-    const [cloudRun, gke] = await Promise.all([
-      collectCloudRunServingImages(values, readers),
-      gkeCapture,
-    ]);
-    const result = mergeGkeEvidence(cloudRun, gke);
+    const result = await captureReleaseEvidence(values, { collectGke }, readers);
     output(JSON.stringify(result, null, 2));
     return 0;
   } catch (cause) {

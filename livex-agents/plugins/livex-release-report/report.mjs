@@ -1,21 +1,17 @@
-import { isCaptureTimestamp, isGkeObservation } from "./capture.mjs";
 import { createGitHubComparator } from "./compare-deployed-commits.mjs";
 import registry from "./services.json" with { type: "json" };
+import { prepareReleaseEvidence } from "./workflows/release-changes/service.mjs";
 
 const maxCaptureBytes = 64 * 1_024;
 const maxDisplayedChanges = 20;
 // Match Slack's recommended message length in extensions/slack/src/limits.ts.
 const maxSlackChars = 4_000;
-const shaPattern = /^[a-f0-9]{40}$/;
-const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const environmentNames = { dev: "Dev", stg: "STG", prd: "US production" };
 const serviceIds = Object.keys(registry.services);
-const versionServices = ["frontend", "gateway"];
-const servingVersionSource = "cloud-run-version";
-const comparisons = [
-  { base: "prd", head: "stg", label: "STG vs US production", title: "STG changes" },
-  { base: "stg", head: "dev", label: "Dev vs STG", title: "Dev-only changes (vs STG)" },
-];
+const comparisonLabels = {
+  stg: { label: "STG vs US production", title: "STG changes" },
+  dev: { label: "Dev vs STG", title: "Dev-only changes (vs STG)" },
+};
 const captureReasons = {
   "artifact-unavailable": "Artifact Registry metadata unavailable",
   "cloud-run-version-unavailable": "serving /version unavailable",
@@ -47,158 +43,40 @@ function lookupReason(reasons, code, fallback) {
   return typeof code === "string" && Object.hasOwn(reasons, code) ? reasons[code] : fallback;
 }
 
-function indexCapture(capture) {
-  if (
-    !isCaptureTimestamp(capture?.captureStartedAt) ||
-    !isCaptureTimestamp(capture?.capturedAt) ||
-    capture.captureStartedAt > capture.capturedAt ||
-    !Array.isArray(capture.paths) ||
-    capture.paths.length > serviceIds.length * Object.keys(environmentNames).length
-  ) {
-    throw new Error("Invalid Cloud Run capture");
-  }
-  const paths = new Map();
-  for (const row of capture.paths) {
-    if (
-      typeof row?.service !== "string" ||
-      typeof row.environment !== "string" ||
-      !Object.hasOwn(registry.services, row.service) ||
-      !Object.hasOwn(registry.environments, row.environment) ||
-      row.repo !== registry.services[row.service].repo ||
-      row.project !== registry.environments[row.environment] ||
-      row.region !== registry.region ||
-      !["verified", "unresolved", "gke-pending"].includes(row.status)
-    ) {
-      throw new Error("Invalid Cloud Run capture path");
-    }
-    const binding = registry.services[row.service];
-    const expectedCloudRun =
-      row.environment === "dev" ? (binding.devCloudRun ?? binding.cloudRun) : binding.cloudRun;
-    const expectsGke = row.environment === "prd" && binding.gkeProduction === true;
-    const gke = isGkeObservation(row);
-    const validSource =
-      row.source === "gke"
-        ? expectsGke && gke
-        : row.source === undefined &&
-          row.workloads === undefined &&
-          (row.status === "gke-pending") === expectsGke;
-    if (row.cloudRunService !== expectedCloudRun || !validSource) {
-      throw new Error("Invalid Cloud Run capture route");
-    }
-    if (
-      (row.status === "verified" || gke) &&
-      (!isCaptureTimestamp(row.observedAt) ||
-        row.observedAt < capture.captureStartedAt ||
-        row.observedAt > capture.capturedAt)
-    ) {
-      throw new Error("Invalid Cloud Run capture observation time");
-    }
-    const servingVersion = row.commitSource === servingVersionSource;
-    if (
-      servingVersion &&
-      (row.status !== "verified" ||
-        row.source !== undefined ||
-        !versionServices.includes(row.service) ||
-        row.commit == null)
-    ) {
-      throw new Error("Invalid Cloud Run capture evidence");
-    }
-    if (
-      row.status === "verified" &&
-      (typeof row.digest !== "string" ||
-        !digestPattern.test(row.digest) ||
-        (row.commit != null &&
-          (typeof row.commit !== "string" ||
-            !shaPattern.test(row.commit) ||
-            (row.commitSource !== "artifact-registry-config" && !servingVersion))))
-    ) {
-      throw new Error("Invalid Cloud Run capture evidence");
-    }
-    const key = row.service + "/" + row.environment;
-    if (paths.has(key)) {
-      throw new Error("Invalid Cloud Run capture duplicate");
-    }
-    paths.set(key, row);
-  }
-  return paths;
-}
-
-function describeGap(row) {
-  if (!row) {
+function describeCaptureGap({ kind, source, reason }) {
+  if (kind === "missing") {
     return "capture missing";
   }
-  if (row.status === "gke-pending") {
+  if (kind === "gke-pending") {
     return "GKE evidence pending";
   }
-  if (row.status === "unresolved") {
-    const fallback =
-      row.source === "gke" ? "GKE serving evidence unresolved" : "serving evidence unresolved";
-    return lookupReason(captureReasons, row.reason, fallback);
+  const fallback =
+    source === "gke" ? "GKE serving evidence unresolved" : "serving evidence unresolved";
+  return lookupReason(captureReasons, reason, fallback);
+}
+
+function describeGap(gap) {
+  switch (gap.kind) {
+    case "capture":
+      return gap.paths
+        .map((path) => environmentNames[path.environment] + ": " + describeCaptureGap(path))
+        .join(", ");
+    case "commit-conflict":
+      return "same image digest but conflicting commit SHAs";
+    case "missing-commit": {
+      const missing = gap.paths.map(({ environment, reason }) => {
+        const detail = lookupReason(captureReasons, reason, "no commit evidence");
+        return environmentNames[environment] + " (" + detail + ")";
+      });
+      return "exact commit SHA unavailable for " + missing.join(", ");
+    }
+    case "github":
+      return lookupReason(githubReasons, gap.reason, "GitHub comparison unavailable");
   }
-  return null;
 }
 
 function githubLink(repo, path, label) {
   return "<https://github.com/livex-ai/" + repo + "/" + path + "|" + label + ">";
-}
-
-async function comparePath(paths, service, { base, head }, compare) {
-  const before = paths.get(service + "/" + base);
-  const after = paths.get(service + "/" + head);
-  const gaps = [
-    [base, describeGap(before)],
-    [head, describeGap(after)],
-  ]
-    .filter(([, reason]) => reason)
-    .map(([env, reason]) => environmentNames[env] + ": " + reason);
-  if (gaps.length > 0) {
-    return { service, gap: gaps.join(", ") };
-  }
-  if (before.digest === after.digest) {
-    if (
-      (before.commitSource === servingVersionSource ||
-        after.commitSource === servingVersionSource) &&
-      before.commit &&
-      after.commit &&
-      before.commit !== after.commit
-    ) {
-      return { service, gap: "same image digest but conflicting commit SHAs" };
-    }
-    return { service, note: "same image digest" };
-  }
-  if (!before.commit || !after.commit) {
-    const missing = [before, after]
-      .filter((row) => !row.commit)
-      .map((row) => {
-        const reason = lookupReason(captureReasons, row.commitReason, "no commit evidence");
-        return environmentNames[row.environment] + " (" + reason + ")";
-      });
-    return { service, gap: "exact commit SHA unavailable for " + missing.join(", ") };
-  }
-  if (before.commit === after.commit) {
-    return { service, note: "different image digests, same commit" };
-  }
-
-  const request = { repo: before.repo, base: before.commit, head: after.commit };
-  let result;
-  try {
-    result = await compare(request);
-  } catch {
-    return { service, gap: "GitHub comparison unavailable" };
-  }
-  if (result.status !== "verified") {
-    return {
-      service,
-      gap: lookupReason(githubReasons, result.reason, "GitHub comparison unavailable"),
-    };
-  }
-  const range = githubLink(
-    request.repo,
-    "compare/" + request.base + "..." + request.head,
-    "SHA range",
-  );
-  const { commits, ahead, behind, linkStatus } = result;
-  return { service, repo: request.repo, range, commits, ahead, behind, linkStatus };
 }
 
 // Slack interprets angle brackets as links or mentions and these glyphs as markup.
@@ -297,25 +175,21 @@ function verifiedChangeCount(count) {
   return count + (count === 1 ? " verified change" : " verified changes");
 }
 
-async function buildComparison(paths, comparison, compare) {
-  const results = [];
-  for (const service of serviceIds) {
-    results.push(await comparePath(paths, service, comparison, compare));
-  }
-  const covered = results.filter((result) => !result.gap).length;
-  return { ...comparison, ...changeLines(results), covered, results };
-}
-
-export async function formatReleaseReport(capture, compare) {
-  const paths = indexCapture(capture);
-  const views = [];
-  for (const comparison of comparisons) {
-    views.push(await buildComparison(paths, comparison, compare));
-  }
+export function renderReleaseReport({ captureStartedAt, capturedAt, observations, comparisons }) {
+  const views = comparisons.map(({ head, results }) => ({
+    ...comparisonLabels[head],
+    ...changeLines(results),
+    covered: results.filter((result) => !result.gap).length,
+    results,
+  }));
 
   const gaps = views.flatMap(({ label, results }) =>
     results.flatMap(({ service, gap, linkStatus }) => {
-      const detail = gap ?? (linkStatus === "partial" ? "PR lookup incomplete" : null);
+      const detail = gap
+        ? describeGap(gap)
+        : linkStatus === "partial"
+          ? "PR lookup incomplete"
+          : null;
       return detail ? ["• " + label + " · " + service + " · " + detail] : [];
     }),
   );
@@ -343,26 +217,26 @@ export async function formatReleaseReport(capture, compare) {
   if (gaps.length > 0) {
     lines.push("*Coverage gaps*", ...gaps, "");
   }
-  lines.push(
-    "*Evidence*",
-    "Capture window (UTC) · " + capture.captureStartedAt + " to " + capture.capturedAt,
-  );
-  const versionEvidence = versionServices.flatMap((service) => {
+  lines.push("*Evidence*", "Capture window (UTC) · " + captureStartedAt + " to " + capturedAt);
+  const versionEvidence = serviceIds.flatMap((service) => {
     const environments = Object.keys(environmentNames)
-      .filter((env) => paths.get(service + "/" + env)?.commitSource === servingVersionSource)
+      .filter((env) =>
+        observations.some(
+          (row) =>
+            row.service === service &&
+            row.environment === env &&
+            row.commitSource === "cloud-run-version",
+        ),
+      )
       .map((env) => environmentNames[env]);
     return environments.length > 0 ? [service + " (" + environments.join(", ") + ")"] : [];
   });
   if (versionEvidence.length > 0) {
     lines.push("• Serving /version commit evidence · " + versionEvidence.join(", "));
   }
-  const verifiedGke = [...paths.values()].filter(
-    (row) => row.source === "gke" && row.status === "verified",
-  );
+  const verifiedGke = observations.filter((row) => row.source === "gke");
   if (verifiedGke.length > 0) {
-    const verifiedCloudRun = [...paths.values()].filter(
-      (row) => row.source === undefined && row.status === "verified",
-    );
+    const verifiedCloudRun = observations.filter((row) => row.source === "cloud-run");
     if (verifiedCloudRun.length > 0) {
       lines.push("• Cloud Run observed (UTC) · " + observedTimes(verifiedCloudRun));
     }
@@ -381,7 +255,7 @@ export async function formatReleaseReport(capture, compare) {
   }
   const ranges = [];
   for (const { label, results } of views) {
-    const matches = results.filter(({ note }) => note === "same image digest");
+    const matches = results.filter(({ note }) => note === "same-image");
     if (matches.length > 0) {
       lines.push(
         "• " +
@@ -391,18 +265,19 @@ export async function formatReleaseReport(capture, compare) {
           " · same image digest",
       );
     }
-    for (const { service, note, range, ahead, behind } of results) {
-      if (note && note !== "same image digest") {
-        lines.push("• " + label + " · " + service + " · " + note);
+    for (const { service, repo, note, range, ahead, behind } of results) {
+      if (note === "same-commit") {
+        lines.push("• " + label + " · " + service + " · different image digests, same commit");
       }
       if (range) {
+        const link = githubLink(repo, "compare/" + range.base + "..." + range.head, "SHA range");
         ranges.push(
           "• " +
             label +
             " · " +
             service +
             " · " +
-            range +
+            link +
             " · " +
             ahead +
             " ahead, " +
@@ -450,6 +325,10 @@ export async function formatReleaseReport(capture, compare) {
   return [intro, stgHeading + "\n" + stgChanges, devHeading + "\n" + devChanges, evidence].join(
     "\n\n",
   );
+}
+
+export async function formatReleaseReport(capture, compare) {
+  return renderReleaseReport(await prepareReleaseEvidence(capture, compare));
 }
 
 async function readCapture(input) {
