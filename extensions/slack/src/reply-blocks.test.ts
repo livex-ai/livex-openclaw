@@ -10,6 +10,23 @@ import {
   resolveSlackReplyRenderPlan,
 } from "./reply-blocks.js";
 
+it("retains the native usage footer and its accessible text on a preview edit", () => {
+  const footer = "*Usage:* 29.1k uncached input | *Estimated cost:* $0.6320";
+  const plan = resolveSlackReplyRenderPlan({
+    text: "Investigation complete.",
+    channelData: { openclawUsageFooter: footer },
+  });
+  expect(plan).toMatchObject({
+    mode: "single",
+    text: expect.stringContaining("Estimated cost:"),
+    textIsSlackMrkdwn: true,
+    blocks: [
+      { type: "section", text: { text: "Investigation complete." } },
+      { type: "context", elements: [{ type: "mrkdwn", text: footer }] },
+    ],
+  });
+});
+
 describe("renderSlackMessagePresentationFallbackText", () => {
   it("uses complete authored fallback once when presentation has only text output", () => {
     const text = "Choose once: /run foo_bar & <!channel>\nThen inspect the report.";

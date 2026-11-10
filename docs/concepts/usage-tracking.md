@@ -188,9 +188,13 @@ as `Usage: 1.3k total`. Cache counters remain visible even when input, output, a
 total counts are unavailable. This mode never estimates cost. Only `/usage full`
 renders the richer footer described below.
 
-`/usage full` shows a built-in compact footer with model, reasoning, fast/slow,
-context window, and cost when those fields are available. No template file is
-required for the built-in footer.
+On Slack, `/usage full` shows whole-turn token counts and an estimated dollar
+cost in a native context block beneath the reply. If the harness cannot verify
+complete counts or pricing, the footer marks the corresponding value
+`unavailable`. The estimate uses the model's configured rates.
+
+On other channels, `/usage full` shows the compact footer with model, reasoning,
+fast/slow, context window, and estimated cost when those fields are available.
 Context windows of one million tokens or more use `m` units, such as `1.0m` or
 `2.0m`; smaller windows keep `k` units, such as `200k`.
 

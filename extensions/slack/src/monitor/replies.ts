@@ -168,7 +168,7 @@ export async function deliverReplies(params: {
     });
     const reply = resolveSendableOutboundReplyParts(payload);
     const textRaw = reply.hasText ? reply.trimmedText : undefined;
-    const { authoredTextPlacement, segments } = prepared.resolveDelivery();
+    const { authoredTextPlacement, segments } = prepared.resolveDelivery(params.textLimit);
     if (!textRaw && !reply.hasMedia && segments.length === 0) {
       continue;
     }

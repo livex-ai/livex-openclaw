@@ -2861,6 +2861,207 @@ describe("runCodexAppServerAttempt", () => {
       inputTokens: 150_000,
     });
   });
+  it.each([
+    {
+      name: "deduplicates snapshots on a new thread",
+      resumed: false,
+      skipCall: undefined,
+      tierLimit: 272_001,
+      cost: 0.631972,
+    },
+    {
+      name: "prices a resumed turn without counting its replayed baseline",
+      resumed: true,
+      skipCall: undefined,
+      tierLimit: 272_001,
+      cost: 0.631972,
+    },
+    {
+      name: "prices each prompt in its own tier",
+      resumed: false,
+      skipCall: undefined,
+      tierLimit: 80_000,
+      cost: 0.992572,
+    },
+    {
+      name: "leaves a gapped turn unavailable",
+      resumed: false,
+      skipCall: 1,
+      tierLimit: 272_001,
+      cost: undefined,
+    },
+    {
+      name: "rejects a resumed turn missing its first request",
+      resumed: true,
+      skipCall: 0,
+      tierLimit: 272_001,
+      cost: undefined,
+    },
+    {
+      name: "declines an estimate when no pre-turn baseline can be verified",
+      resumed: true,
+      missingBaseline: true,
+      skipCall: undefined,
+      tierLimit: 272_001,
+      cost: undefined,
+    },
+  ])(
+    "$name when Codex sends thread usage snapshots",
+    async ({ resumed, missingBaseline, skipCall, tierLimit, cost }) => {
+      const { sessionFile, workspaceDir } = createRunPaths();
+      const threadId = resumed ? "thread-existing" : "thread-1";
+      const harness = resumed ? createResumeHarness() : createStartedThreadHarness();
+      const params = createParams(sessionFile, workspaceDir);
+      if (missingBaseline) {
+        await writeExistingBinding(sessionFile, workspaceDir, { dynamicToolsFingerprint: "[]" });
+      } else if (resumed) {
+        const agentDir = path.join(workspaceDir, "test-agent");
+        params.agentDir = agentDir;
+        const rolloutPath = path.join(
+          agentDir,
+          "codex-home",
+          "sessions",
+          `rollout-${threadId}.jsonl`,
+        );
+        await fs.mkdir(path.dirname(rolloutPath), { recursive: true });
+        await fs.writeFile(
+          rolloutPath,
+          JSON.stringify({
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                last_token_usage: { total_tokens: 62_090 },
+                model_context_window: 258_400,
+                total_token_usage: {
+                  input_tokens: 325_751,
+                  cached_input_tokens: 258_688,
+                  output_tokens: 998,
+                  total_tokens: 326_749,
+                },
+              },
+            },
+          }) + "\n",
+        );
+        await writeExistingBinding(sessionFile, workspaceDir, {
+          dynamicToolsFingerprint: "[]",
+          rolloutPath,
+        });
+      }
+      const baseRates = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+      const highRates = { input: 20, output: 75, cacheRead: 2, cacheWrite: 25 };
+      params.model = {
+        ...params.model,
+        cost: {
+          ...baseRates,
+          tieredPricing: [
+            { ...baseRates, range: [0, tierLimit] },
+            { ...highRates, range: [tierLimit, Infinity] },
+          ],
+        },
+      };
+      const run = runCodexAppServerAttempt(params);
+      await awaitGateBeforeSettlement(
+        harness.waitForMethod("turn/start"),
+        run,
+        "Codex attempt settled before turn/start",
+      );
+
+      const tokenUsage = (
+        inputTokens: number,
+        cachedInputTokens: number,
+        outputTokens: number,
+      ) => ({
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        cacheWriteInputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: inputTokens + outputTokens,
+      });
+      let totalInput = resumed ? 325_751 : 0;
+      let totalCache = resumed ? 258_688 : 0;
+      let totalOutput = resumed ? 998 : 0;
+      if (resumed) {
+        await harness.notify({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId,
+            turnId: "turn-1",
+            tokenUsage: {
+              last: tokenUsage(62_000, 60_000, 90),
+              total: tokenUsage(totalInput, totalCache, totalOutput),
+            },
+          },
+        });
+      }
+      const requests = [
+        [73_959, 66_816, 118],
+        [77_248, 73_856, 160],
+        [86_712, 77_184, 87],
+        [95_659, 86_656, 371],
+      ] as const;
+      let firstSnapshot: Parameters<typeof harness.notify>[0] | undefined;
+      for (const [index, [input, cached, output]] of requests.entries()) {
+        totalInput += input;
+        totalCache += cached;
+        totalOutput += output;
+        if (index === skipCall) {
+          continue;
+        }
+        const notification = {
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId,
+            turnId: "turn-1",
+            tokenUsage: {
+              last: tokenUsage(input, cached, output),
+              total: tokenUsage(totalInput, totalCache, totalOutput),
+            },
+          },
+        };
+        await harness.notify(notification);
+        if (index === 0) {
+          firstSnapshot = notification;
+          await harness.notify(notification);
+        }
+      }
+      if (firstSnapshot && cost !== undefined) {
+        // Replayed usage may arrive after newer requests have already settled.
+        await harness.notify(firstSnapshot);
+      }
+      if (skipCall === 1) {
+        await harness.notify({
+          method: "rawResponse/completed",
+          params: {
+            threadId,
+            turnId: "turn-1",
+            responseId: "last-response",
+            usage: tokenUsage(...requests[3]),
+          },
+        });
+      }
+      await harness.completeTurn({ threadId, turnId: "turn-1" });
+      const { attemptUsage } = await run;
+      expect(attemptUsage?.contextUsage).toMatchObject({
+        state: "available",
+        promptTokens: 95_659,
+      });
+      if (cost === undefined) {
+        expect(attemptUsage?.cost).toBeUndefined();
+        expect(attemptUsage?.usageReport?.state).toBe("unavailable");
+      } else {
+        expect(attemptUsage).toMatchObject({
+          input: 29_066,
+          cacheRead: 304_512,
+          output: 736,
+          total: 334_314,
+          costStatus: "complete",
+        });
+        expect(attemptUsage?.cost?.total).toBeCloseTo(cost, 10);
+      }
+    },
+  );
   it("does not record calibration from a large direct prompt with no continuity projection", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const harness = createStartedThreadHarness();

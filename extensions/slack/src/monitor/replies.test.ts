@@ -33,6 +33,7 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", async (importOriginal) => {
 
 let deliverReplies: typeof import("./replies.js").deliverReplies;
 let createSlackReplyDeliveryPlan: typeof import("./replies.js").createSlackReplyDeliveryPlan;
+import { buildSlackCompleteBlocksFallbackText } from "../blocks-fallback.js";
 import { prepareSlackReply } from "../reply-blocks.js";
 import { deliverSlackSlashReplies, sanitizeSlackMonitorReplyPayload } from "./replies.js";
 
@@ -151,53 +152,135 @@ describe("deliverReplies identity passthrough", () => {
     },
   );
 
-  it("forwards one native summary attachment and full fallback into the original thread", async () => {
-    const text =
-      "⚠️ Action required · Priority unknown\n**Finding:** Recovery unverified.\n**Action:** Inspect demo-shop.\n**Owner:** Unassigned.\n**Evidence:** URL unavailable.";
-    const blocks = [
-      {
-        type: "context",
-        elements: [{ type: "mrkdwn", text: "Action required · Severity unknown" }],
-      },
-    ];
-    const attachment = {
-      color: "#D99A00",
-      fallback: text,
-      blocks: [
+  it.each([0, 48, 50])(
+    "delivers one trailing native usage footer with %i earlier blocks",
+    async (count) => {
+      const footer = "*Usage:* 29.1k uncached input | *Estimated cost:* $0.6320";
+      sendMock.mockResolvedValue(acceptedSlackSendResult("1792854044.000001", "card"));
+
+      await deliverReplies(
+        baseParams({
+          replies: [
+            {
+              text: "Read the [logs](https://example.invalid/logs).",
+              channelData: {
+                openclawUsageFooter: footer,
+                ...(count
+                  ? {
+                      slack: { blocks: Array.from({ length: count }, () => ({ type: "divider" })) },
+                    }
+                  : {}),
+              },
+              interactive: {
+                blocks: [
+                  {
+                    type: "buttons",
+                    buttons: [
+                      {
+                        label: "Logs",
+                        action: { type: "url", url: "https://example.invalid/logs" },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+          replyThreadTs: "1792854043.288339",
+          replyToMode: "all",
+        }),
+      );
+
+      expect(sendMock).toHaveBeenCalledTimes(count ? 2 : 1);
+      const last = requireSendCall(count ? 1 : 0)[2].blocks;
+      const blocks = sendMock.mock.calls.flatMap((_call, index) =>
+        Array.isArray(requireSendCall(index)[2].blocks) ? requireSendCall(index)[2].blocks : [],
+      );
+      expect(Array.isArray(last) ? last.slice(-2) : last).toMatchObject([
+        { type: "actions" },
+        { type: "context" },
+      ]);
+      expect(blocks.slice(-3)).toMatchObject([
+        { type: "section", text: { text: "Read the <https://example.invalid/logs|logs>." } },
+        { type: "actions", elements: [{ type: "button", url: "https://example.invalid/logs" }] },
         {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "*Next action:* Inspect demo-shop.\n*Impact:* Unknown.\n*Finding:* Recovery unverified.",
-          },
+          type: "context",
+          elements: [
+            { type: "mrkdwn", text: "*Usage:* 29.1k uncached input | *Estimated cost:* $0.6320" },
+          ],
         },
-      ],
-    };
-    sendMock.mockResolvedValue(acceptedSlackSendResult("1792854044.000001", "card"));
-    await deliverReplies(
-      baseParams({
-        replies: [
+      ]);
+      const fallback = buildSlackCompleteBlocksFallbackText(blocks);
+      expect(fallback).toContain("Read the");
+      expect(fallback.match(/Estimated cost:/g)).toHaveLength(1);
+    },
+  );
+
+  it.each(["none", "fits", "at-limit"] as const)(
+    "forwards a native summary with usage footer mode %s",
+    async (mode) => {
+      const text =
+        "⚠️ Action required · Priority unknown\n**Finding:** Recovery unverified.\n**Action:** Inspect demo-shop.\n**Owner:** Unassigned.\n**Evidence:** URL unavailable.";
+      const footer = "*Usage:* unavailable | *Estimated cost:* unavailable";
+      const footerBlock = { type: "context", elements: [{ type: "mrkdwn", text: footer }] };
+      const blocks = [
+        {
+          type: "context",
+          elements: [{ type: "mrkdwn", text: "Action required · Severity unknown" }],
+        },
+      ];
+      const attachment = {
+        color: "#D99A00",
+        fallback: text,
+        blocks: [
           {
-            text,
-            channelData: {
-              slack: { threadSummaryCard: { blocks, attachment, fallbackText: text } },
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: "*Next action:* Inspect demo-shop.\n*Impact:* Unknown.\n*Finding:* Recovery unverified.",
             },
           },
         ],
-        replyThreadTs: "1792854043.288339",
-        replyToMode: "all",
-      }),
-    );
-    expect(sendMock).toHaveBeenCalledOnce();
-    const call = requireSendCall();
-    expect(call[1]).toBe(text);
-    expect(call[2]).toMatchObject({
-      threadTs: "1792854043.288339",
-      blocks,
-      attachments: [attachment],
-    });
-    expect(call[2].replyBroadcast).not.toBe(true);
-  });
+      };
+      sendMock.mockResolvedValue(acceptedSlackSendResult("1792854044.000001", "card"));
+      await deliverReplies(
+        baseParams({
+          ...(mode === "at-limit" ? { textLimit: Buffer.byteLength(text, "utf8") } : {}),
+          replies: [
+            {
+              text,
+              channelData: {
+                slack: { threadSummaryCard: { blocks, attachment, fallbackText: text } },
+                ...(mode !== "none" ? { openclawUsageFooter: footer } : {}),
+              },
+            },
+          ],
+          replyThreadTs: "1792854043.288339",
+          replyToMode: "all",
+        }),
+      );
+      expect(sendMock).toHaveBeenCalledTimes(mode === "at-limit" ? 2 : 1);
+      const call = requireSendCall();
+      const fallback = mode === "fits" ? `${text}\n\n${footer}` : text;
+      expect(call[1]).toBe(fallback);
+      expect(call[2]).toMatchObject({
+        threadTs: "1792854043.288339",
+        blocks,
+        attachments: [
+          mode === "fits"
+            ? { ...attachment, blocks: [...attachment.blocks, footerBlock], fallback }
+            : attachment,
+        ],
+      });
+      expect(call[2].replyBroadcast).not.toBe(true);
+      if (mode === "at-limit") {
+        expect(requireSendCall(1)[2]).toMatchObject({
+          blocks: [footerBlock],
+          threadTs: "1792854043.288339",
+        });
+      }
+    },
+  );
 
   it("sends nothing when the producer supplies no payload", async () => {
     await deliverReplies(baseParams({ replies: [] }));
