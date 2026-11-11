@@ -470,8 +470,15 @@ def activate(root, source, old_image):
             ),
         ]
         for agent_id in new_prompts:
-            checks.append(("models-" + agent_id,
-                           ["cli", "models", "status", "--agent", agent_id, "--json", "--check"]))
+            # The scheduled Oncall coordinator runs a script; Debugger owns model calls.
+            if agent_id == "oncall-coordinator":
+                continue
+            checks.append(
+                (
+                    "models-" + agent_id,
+                    ["cli", "models", "status", "--agent", agent_id, "--json", "--check"],
+                )
+            )
         for name, args in checks:
             logged(name, cli + args)
         unchanged()

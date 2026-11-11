@@ -51,14 +51,20 @@ class ReleaseTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 select_image(invalid, OLD, NEW)
 
-    def exercise(self, failure=None, *, multi=False, existing_debugger=False, progress=False):
+    def exercise(
+        self, failure=None, *, multi=False, existing_debugger=False, progress=False,
+        secondary_id="debugger",
+    ):
+        coordinator = secondary_id == "oncall-coordinator"
+        secondary_name = "LiveX Oncall" if coordinator else "Debugger"
+        secondary_skills = [] if coordinator else ["debug"]
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             old_prompt = b"previously deployed VM prompt"
             old_source = "e" * 40
             new_prompt = b"reviewed merged VM prompt"
-            debugger_prompt = b"Read-only scoped debugger instructions"
-            old_debugger_prompt = b"Previous reviewed debugger instructions"
+            secondary_prompt = b"Read-only scoped secondary agent instructions"
+            old_secondary_prompt = b"Previous reviewed secondary agent instructions"
             bundle = {
                 "version": 1,
                 "agents": {
@@ -67,26 +73,26 @@ class ReleaseTest(unittest.TestCase):
                             "name": "Oncall",
                             "workspace": WORKSPACE,
                             "skills": ["investigate-alerts"],
-                            "subagents": {"allowAgents": ["debugger"]},
+                            "subagents": {"allowAgents": [secondary_id]},
                             "model": "repository-default",
                             "tools": {"allow": ["read"]},
                         },
                         "prompt": new_prompt.decode(),
                         "sha256": sha(new_prompt),
                     },
-                    "debugger": {
+                    secondary_id: {
                         "config": {
-                            "name": "Debugger",
-                            "workspace": workspace("debugger"),
-                            "skills": ["debug"],
+                            "name": secondary_name,
+                            "workspace": workspace(secondary_id),
+                            "skills": secondary_skills,
                             "permissionModeDefault": "read-only",
                             "tools": {"allow": ["read"]},
                         },
-                        "prompt": debugger_prompt.decode(),
-                        "sha256": sha(debugger_prompt),
+                        "prompt": secondary_prompt.decode(),
+                        "sha256": sha(secondary_prompt),
                     },
                 },
-                "skills": ["debug", "investigate-alerts"],
+                "skills": [*secondary_skills, "investigate-alerts"],
             }
             bundle_bytes = json.dumps(bundle).encode()
             candidate = {
@@ -101,7 +107,7 @@ class ReleaseTest(unittest.TestCase):
             if multi and failure != "legacy-downgrade":
                 candidate.update(
                     agentBundleSha256=sha(bundle_bytes),
-                    agentPromptSha256={"oncall": sha(new_prompt), "debugger": sha(debugger_prompt)},
+                    agentPromptSha256={"oncall": sha(new_prompt), secondary_id: sha(secondary_prompt)},
                 )
             prev = root / "releases" / old_source
             prev.mkdir(parents=True)
@@ -112,7 +118,7 @@ class ReleaseTest(unittest.TestCase):
             }
             if existing_debugger:
                 previous_receipt["agentPromptSha256"] = {
-                    "oncall": sha(old_prompt), "debugger": sha(old_debugger_prompt)
+                    "oncall": sha(old_prompt), secondary_id: sha(old_secondary_prompt)
                 }
             (prev / "image-receipt.json").write_text(json.dumps(previous_receipt))
             release = root / "releases" / SHA
@@ -135,15 +141,15 @@ class ReleaseTest(unittest.TestCase):
             initial = b"unexpected local edit" if failure == "drift" else old_prompt
             mounted.write_bytes(initial)
             mounted.chmod(0o640)
-            debugger = root / "state/workspaces/debugger/AGENTS.md"
+            secondary = root / f"state/workspaces/{secondary_id}/AGENTS.md"
             if multi:
-                debugger.parent.mkdir(parents=True)
-                (debugger.parent / "notes.md").write_text("operator notebook")
+                secondary.parent.mkdir(parents=True)
+                (secondary.parent / "notes.md").write_text("operator notebook")
                 if existing_debugger:
-                    debugger.write_bytes(old_debugger_prompt)
-                    debugger.chmod(0o640)
+                    secondary.write_bytes(old_secondary_prompt)
+                    secondary.chmod(0o640)
                 if failure == "agent-collision":
-                    debugger.write_bytes(b"unmanaged agent instructions")
+                    secondary.write_bytes(b"unmanaged agent instructions")
             config = root / "state/openclaw.json"
             original = {
                 "agents": {
@@ -182,13 +188,13 @@ class ReleaseTest(unittest.TestCase):
                 }
                 original["skills"] = {"load": {"extraDirs": ["/operator-skills"]}}
                 if existing_debugger:
-                    original["agents"]["entries"]["debugger"] = {
-                        "name": "Old debugger", "workspace": workspace("debugger"),
+                    original["agents"]["entries"][secondary_id] = {
+                        "name": "Old Debugger", "workspace": workspace(secondary_id),
                         "model": "vm-debugger-model", "permissionModeDefault": "read-only",
                         "tools": {"allow": ["read", "web_search"]},
                     }
                 if failure == "config-collision":
-                    original["agents"]["entries"]["debugger"] = {"name": "Unmanaged"}
+                    original["agents"]["entries"][secondary_id] = {"name": "Unmanaged"}
             original_bytes = json.dumps(original).encode()
             config.write_bytes(original_bytes)
             selector = root / "release.env"
@@ -216,9 +222,9 @@ class ReleaseTest(unittest.TestCase):
                     shadow = []
                     if failure in ("agent-mount", "agent-mount-parent", "agent-mount-file"):
                         destination = {
-                            "agent-mount": workspace("debugger"),
+                            "agent-mount": workspace(secondary_id),
                             "agent-mount-parent": "/home/node/.openclaw/workspaces",
-                            "agent-mount-file": workspace("debugger") + "/AGENTS.md",
+                            "agent-mount-file": workspace(secondary_id) + "/AGENTS.md",
                         }.get(failure)
                         shadow = [{"Type": "bind", "Source": "/operator-data", "Destination": destination}]
                     output = json.dumps(
@@ -255,11 +261,11 @@ class ReleaseTest(unittest.TestCase):
                 elif "agents.files.get" in cmd:
                     params = json.loads(cmd[cmd.index("--params") + 1])
                     agent_id = params.get("agentId")
-                    data = (mounted if agent_id == "oncall" else debugger).read_bytes()
+                    data = (mounted if agent_id == "oncall" else secondary).read_bytes()
                     active_workspace = "/other" if failure == "workspace" else workspace(agent_id)
                     if state["image"] == NEW and (
                         failure == "live-hash"
-                        or (failure == "agent-live-hash" and agent_id == "debugger")
+                        or (failure == "agent-live-hash" and agent_id == secondary_id)
                     ):
                         data = b"different active prompt"
                     output = json.dumps(
@@ -279,7 +285,7 @@ class ReleaseTest(unittest.TestCase):
                     active_config = json.loads(config.read_bytes())
                     pending = failure == "config-not-applied" and state["image"] == NEW
                     if failure == "agent-config-mismatch" and state["image"] == NEW:
-                        active_config["agents"]["entries"]["debugger"]["skills"] = []
+                        active_config["agents"]["entries"][secondary_id]["skills"] = []
                     if failure == "progress-readback" and state["image"] == NEW:
                         active_config["channels"]["slack"]["streaming"]["mode"] = "progress"
                     output = json.dumps({
@@ -326,11 +332,11 @@ class ReleaseTest(unittest.TestCase):
                     )
                     if multi:
                         if selected_new:
-                            self.assertEqual(debugger.read_bytes(), debugger_prompt)
+                            self.assertEqual(secondary.read_bytes(), secondary_prompt)
                         elif existing_debugger:
-                            self.assertEqual(debugger.read_bytes(), old_debugger_prompt)
+                            self.assertEqual(secondary.read_bytes(), old_secondary_prompt)
                         else:
-                            self.assertFalse(debugger.exists())
+                            self.assertFalse(secondary.exists())
                     state.update(
                         running=True,
                         image=selector.read_text().splitlines()[0].split("=")[1],
@@ -344,10 +350,12 @@ class ReleaseTest(unittest.TestCase):
                             list((root / "backups").glob("*/installation.tar.gz"))
                         )
                         self.assertFalse(state["running"])
+                    if coordinator and "models" in cmd and secondary_id in cmd:
+                        return subprocess.CompletedProcess(cmd, 2, "shared OAuth expiring", "")
                     code = int(
                         (failure == "preflight" and "validate" in cmd)
                         or (failure == "seed" and is_seed)
-                        or (failure == "agent-model" and "--agent" in cmd and "debugger" in cmd)
+                        or (failure == "agent-model" and "--agent" in cmd and secondary_id in cmd)
                     )
                 else:
                     self.fail(f"Unexpected subprocess {cmd}")
@@ -411,14 +419,14 @@ class ReleaseTest(unittest.TestCase):
                 if multi:
                     original["agents"]["entries"]["oncall"].update(
                         name="Oncall", skills=["investigate-alerts"],
-                        subagents={"allowAgents": ["debugger"]},
+                        subagents={"allowAgents": [secondary_id]},
                     )
                     if existing_debugger:
-                        original["agents"]["entries"]["debugger"].update(
-                            name="Debugger", skills=["debug"],
+                        original["agents"]["entries"][secondary_id].update(
+                            name=secondary_name, skills=secondary_skills,
                         )
                     else:
-                        original["agents"]["entries"]["debugger"] = bundle["agents"]["debugger"]["config"]
+                        original["agents"]["entries"][secondary_id] = bundle["agents"][secondary_id]["config"]
                     original["skills"]["load"]["extraDirs"].append("/opt/oncall-skills/skills")
                 self.assertEqual(json.loads(config.read_bytes()), original)
             expected = OLD if failure else NEW
@@ -432,17 +440,17 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(mounted.read_bytes(), initial if failure else new_prompt)
             self.assertEqual(mounted.stat().st_mode & 0o777, 0o640)
             if multi:
-                self.assertEqual((debugger.parent / "notes.md").read_text(), "operator notebook")
+                self.assertEqual((secondary.parent / "notes.md").read_text(), "operator notebook")
                 if failure == "agent-collision":
-                    self.assertEqual(debugger.read_bytes(), b"unmanaged agent instructions")
+                    self.assertEqual(secondary.read_bytes(), b"unmanaged agent instructions")
                 elif failure:
                     if existing_debugger:
-                        self.assertEqual(debugger.read_bytes(), old_debugger_prompt)
+                        self.assertEqual(secondary.read_bytes(), old_secondary_prompt)
                     else:
-                        self.assertFalse(debugger.exists())
+                        self.assertFalse(secondary.exists())
                 else:
-                    self.assertEqual(debugger.read_bytes(), debugger_prompt)
-                    self.assertEqual(debugger.stat().st_mode & 0o777, 0o640 if existing_debugger else 0o600)
+                    self.assertEqual(secondary.read_bytes(), secondary_prompt)
+                    self.assertEqual(secondary.stat().st_mode & 0o777, 0o640 if existing_debugger else 0o600)
             if failure not in (
                 "busy", "drift", "bundle", "workspace", "mount", "agent-collision", "config-collision",
                         "agent-mount", "agent-mount-parent", "agent-mount-file", "legacy-downgrade", "progress-override", "progress-null"
@@ -463,10 +471,10 @@ class ReleaseTest(unittest.TestCase):
                     self.assertEqual(proof.get("appliedConfigHash"), "installed-config-hash")
                 if multi:
                     expected_hashes = {"oncall": sha(old_prompt)} if failure else {
-                        "oncall": sha(new_prompt), "debugger": sha(debugger_prompt)
+                        "oncall": sha(new_prompt), secondary_id: sha(secondary_prompt)
                     }
                     if failure and existing_debugger:
-                        expected_hashes["debugger"] = sha(old_debugger_prompt)
+                        expected_hashes[secondary_id] = sha(old_secondary_prompt)
                     self.assertEqual(proof["agentPromptSha256"], expected_hashes)
                     self.assertEqual(proof["appliedConfigHash"], "installed-config-hash")
                     model_checks = {
@@ -474,7 +482,13 @@ class ReleaseTest(unittest.TestCase):
                         if check["name"].startswith("models-")
                     }
                     if failure not in ("preflight", "receipt"):
-                        self.assertEqual(model_checks, {"models-oncall", "models-debugger"})
+                        expected_model_checks = {"models-oncall"}
+                        if not coordinator:
+                            expected_model_checks.add(f"models-{secondary_id}")
+                        self.assertEqual(model_checks, expected_model_checks)
+
+    def test_script_only_coordinator_installs_without_model_credentials(self):
+        self.exercise(multi=True, secondary_id="oncall-coordinator")
 
     def test_cutover_and_recovery(self):
         for failure in (
