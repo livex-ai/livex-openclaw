@@ -81,7 +81,7 @@ The paths below are under `~/.openclaw`, the default state directory.
 | `agents/<id>/agent/openclaw-agent.sqlite` | The agent's sessions, transcripts and agent-local credentials |
 | `agents/<id>/sessions/` | Legacy JSONL sessions only; `openclaw doctor --fix` imports them into SQLite |
 | `agents/<id>/agent/codex-home/` | The Codex app-server home for that agent (`homeScope: "agent"`) |
-| workspace dirs | Default `workspace/` for `main`. `oncall` uses `livex-native/agents/oncall` |
+| workspace dirs | Default `workspace/` for `main`. `oncall` uses `livex-native/agents/oncall`. OpenClaw writes per-install files there (`SOUL.md` on `agents add`, later `IDENTITY.md`, `memory/` ...); `agents/oncall/.gitignore` keeps them out of git |
 | `skills/` | Shared skills for all agents. Per-agent skills live in `<workspace>/skills/` |
 | `credentials/` | Channel credential files, such as WhatsApp auth. Many older files here are migrated into SQLite by `openclaw doctor --fix` |
 
@@ -93,8 +93,8 @@ The paths below are under `~/.openclaw`, the default state directory.
   `files` list in `package.json`. Link it with
   `openclaw plugins install -l <dir> --force`, add the id to `plugins.allow`, and
   add the tool names to the agent's `tools.allow`.
-- **Agent:** copy `agents/oncall/`, then edit `AGENTS.md` and the `skills/` it
-  needs. Run `openclaw agents add <id> --workspace <dir> --model openai/gpt-6-astra
+- **Agent:** copy `agents/oncall/` (including its `.gitignore`), then edit
+  `AGENTS.md` and the `skills/` it needs. Run `openclaw agents add <id> --workspace <dir> --model openai/gpt-6-astra
   --non-interactive`, and add an `agents.entries.<id>` block like the one in the
   fragment.
 
@@ -140,3 +140,25 @@ From `plugins/livex-gcp-readonly/`, on Node 24 or later (Node 20 cannot load the
 node --test *.test.mjs
 python3 -B -m unittest -v test_logging_page.py
 ```
+
+The Gateway itself needs Node 24.16+ or 26.1+; older Node 24 builds are
+refused at startup (`node:sqlite` TEXT truncation, nodejs/node#61954).
+
+### Smoke test on a throwaway Gateway
+
+Run once against an isolated `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` on
+a non-default port (Node 24.22.2), following the 5-minute flow. The build was
+OpenClaw 2026.10.5 at `d18c1dc` with local PR #1-style core changes, not a
+clean `main` build, so it proves the flow and config shape rather than the
+no-core-patch claim:
+
+| Step | Result |
+| --- | --- |
+| `plugins install -l <plugin dir> --force` | Linked; held disabled until configured |
+| `agents add oncall --workspace ... --model openai/gpt-6-astra --non-interactive` | Created; wrote `SOUL.md` into the workspace (now gitignored) |
+| Merge fragment, `config validate` | Valid; applied by hot reload, no restart |
+| `plugins enable livex-gcp-readonly` / `codex` | Both loaded and activated, no diagnostics; both LiveX tools registered |
+| `skills check --agent oncall` | The four skills ready and visible; others excluded by the agent allowlist |
+| One `agent --agent oncall` turn without OpenAI sign-in | Ran through the Codex app-server, passed exec `ask` preflight, stopped at `401 Unauthorized` |
+
+Not covered: a signed-in model reply, real GCP calls, Slack delivery.
