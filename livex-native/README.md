@@ -1,11 +1,12 @@
 # LiveX on stock OpenClaw
 
-This folder shows LiveX running on unmodified OpenClaw. It has three parts:
+This folder shows LiveX running on unmodified OpenClaw. It has these parts:
 
 | Part | Path | What it is |
 | --- | --- | --- |
 | Tool plugin | `plugins/livex-gcp-readonly/` | `livex_gcp_logs_read` (Cloud Logging) and `livex_repository_read` (pinned source), both read-only |
 | Agent workspaces | `agents/oncall/`, `agents/debugger/` | Each has `AGENTS.md` instructions plus its skills in `skills/` |
+| Test-VM deploy | `deploy/` | One command to put a commit on a separate test VM (see [deploy/README.md](deploy/README.md)) |
 | Config fragment | `config/openclaw.fragment.json5` | Enables the plugins, makes Codex the runtime for `openai/*` models, defines the `oncall` and `debugger` agents, and ports PR #1's Slack, routing and tool-floor config |
 
 ## Agents
@@ -86,6 +87,14 @@ You need the `openclaw` CLI (Node 24+) with a running local Gateway, and
 - Nothing hands work from `oncall` to `debugger` automatically. Copy the alert
   thread or identifiers into the debugger conversation yourself. Native
   `subagents` delegation would be a separate change.
+
+## Deploy to a test VM
+
+`deploy/deploy.sh FULL_SHA` uploads this folder to a separate test VM and runs
+it on the official OpenClaw image with health-checked cutover and automatic
+rollback. It replaces PR #1's much larger deploy pipeline. One-time VM setup,
+the exact deploy command, Slack app, Codex sign-in and rollback are in
+[deploy/README.md](deploy/README.md). It has not run against a real VM yet.
 
 ## Execution boundary
 
@@ -202,7 +211,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 | --- | --- |
 | Slack report cards and in-place report edits (the `livex-oncall-reports` plugin, plus Slack block and edit patches in `extensions/slack`) | A channel-reply plugin that renders cards through the Slack plugin's public send API. In-place edits need an upstream "edit own reply" hook in the Slack plugin |
 | Investigation memory and catalog (`livex-investigations`, `slack_investigation_record`, `investigations.md`) | A tool plugin that stores records in plugin state (`openKeyedStoreV2`) and exposes lookup and record tools. Pre-turn history injection needs an upstream context hook |
-| VM deploy pipeline (`deploy/gcp-vm/`) | A separate ops repo or a Claw bundle; it never needed to live in this tree |
+| VM deploy pipeline (`deploy/gcp-vm/`) | Replaced by the much smaller `deploy/` here (test VM, official image, no source build). A production pipeline can live in an ops repo |
 | About 8k lines of core patches (memory-core, Slack dispatch, agent tool context, Codex usage projection, session lineage) | Upstream PRs, one generic hook per need. One example is `runtime.agent.session.withDescendantSessionRead`, which the plugin's `child` recovery uses when the host provides it |
 
 Without that hook, `/livex-gcp-recover child ...` is refused with a clear
