@@ -342,6 +342,7 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
     publisherBotId: "B123456",
     historicalSenderId: "U123456",
     environment: "prd",
+    gcpProject: "example-dev",
     resourceType: "k8s_container",
     resourceLabels: { namespace_name: "prd-worker" },
     broadcastChannelId: "C765432",
@@ -549,7 +550,9 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
           post.args.metadata.event_type === "livex_oncall",
       ),
     ).toBe(true);
-    expect(await fs.readFile(audit, "utf8")).toContain("--project=example-prd");
+    const logCommand = await fs.readFile(audit, "utf8");
+    expect(logCommand).toContain("--project=example-dev");
+    expect(logCommand).not.toContain("example-prd");
     expect(core).toHaveBeenCalledOnce();
 
     availableIncidents = 2;

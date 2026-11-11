@@ -198,6 +198,8 @@ remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
 Slack binding. Enabling this service requires separately reviewed operator
 configuration for exact Slack account/team/channel and trusted publisher,
 cloud project/environment/selectors, Canvas roster and any escalation destination.
+Set `oncall.gcpProject` to scope coordinator investigations to a different GCP
+project. When omitted, the coordinator uses the evidence plugin's `project`.
 Do not grant new credentials or activate the service merely to load this source.
 Canvas reading requires the installed bot’s `files:read` scope and membership in
 the source/roster channels. The packaged manifest declares that scope; actual app

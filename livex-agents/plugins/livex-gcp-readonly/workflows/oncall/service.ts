@@ -314,9 +314,11 @@ export function registerOncall(api: OpenClawPluginApi) {
         context.scheduler.signal.throwIfAborted();
         assertConfigCurrent();
       };
+      const baseGcpConfig = validateConfig(pluginConfig);
+      const gcpConfig = { ...baseGcpConfig, project: config.gcpProject ?? baseGcpConfig.project };
       const serviceCapabilities = createServiceCapabilities({
         config,
-        gcpConfig: pluginConfig,
+        gcpConfig,
         signal: lifecycle,
         now: context.scheduler.now,
         assertCurrent,
@@ -332,11 +334,7 @@ export function registerOncall(api: OpenClawPluginApi) {
         },
         assertCurrent,
       });
-      const sourceId = createReceiptScope(
-        config,
-        validateConfig(pluginConfig),
-        catalog.sourceIdentity,
-      );
+      const sourceId = createReceiptScope(config, gcpConfig, catalog.sourceIdentity);
       let quarantineReported = false;
       const openStore = (assertStoreCurrent: () => void) =>
         createReceiptStore(

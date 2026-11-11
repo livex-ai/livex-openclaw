@@ -14,6 +14,10 @@ export const oncallSchema = z.strictObject({
   publisherAppId: slackId("A").optional(),
   historicalSenderId: slackId("UW"),
   environment: z.string().trim().min(1).max(64),
+  gcpProject: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/)
+    .optional(),
   resourceType: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,127}$/),
   resourceLabels: z
     .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/), z.string().min(1).max(256))
