@@ -5,6 +5,9 @@
 // and the plugin stays disabled until its required config resolves.
 //
 // Everything here is ordinary config; no OpenClaw core patches are needed.
+// Slack bot and app tokens are not part of this fragment: set them the way you
+// already do for your Slack app (channels.slack.botToken / appToken, or
+// `openclaw channels add --channel slack`).
 {
   plugins: {
     // Keep any ids you already allow (for example your channels) in this list.
@@ -74,16 +77,29 @@
     // config has a default: true entry, delete the marker and move that id to
     // agents.defaults.systemAgent.agentId; otherwise unbound traffic has no
     // owner and routing throws.
-    // agents.defaults.systemAgent is deliberately not set here. When `agents add`
-    // grows a one-agent roster, it pins the previous sole agent (often `main`)
-    // as agents.defaults.systemAgent.agentId (src/commands/agents.config.ts:161-186),
-    // and unbound traffic goes there. Route Slack to oncall with bindings (below)
-    // rather than changing it.
     ownership: "explicit",
+    defaults: {
+      timeoutSeconds: 1200,
+      maxConcurrent: 5,
+      // oncall is the default agent, as in PR #1. When `agents add` grows a
+      // one-agent roster it pins the previous sole agent (often `main`) here
+      // (src/commands/agents.config.ts:161-186); merging this fragment REPLACES
+      // that value, so unbound traffic and ambient system work go to oncall.
+      systemAgent: { agentId: "oncall" },
+      // authInheritance is deliberately not set (PR #1 set it to "main"). It is
+      // an upgrade-only owner for a legacy credential store; it already falls
+      // back to the legacy data owner, else "main"
+      // (src/agents/legacy-inherited-auth-dir.ts:9-14), and
+      // config writes pin it automatically when the former owner was not main
+      // (src/config/io.auth-inheritance-owner.ts). Forcing "main" here could
+      // overwrite that pin on an upgraded install and is a no-op on a fresh one.
+    },
     entries: {
       oncall: {
-        name: "LiveX On-call",
-        description: "Read-only production triage from Cloud Logging and pinned source.",
+        // PR #1 parity: its oncall agent is shown as "LiveX Debugger" in Slack.
+        name: "LiveX Debugger",
+        identity: { name: "LiveX Reporting · Debugger" },
+        description: "Mention-triggered production investigations with reviewed local execution and evidence-backed next actions.",
         model: "openai/gpt-6-astra",
         skills: [
           "investigate-alerts",
@@ -92,6 +108,12 @@
           "verification-before-completion",
         ],
         tools: {
+          // The global profile is "minimal" (below). The agent profile wins over
+          // it (src/agents/agent-tools.policy.ts:338-339), and the profile step
+          // runs BEFORE the allow list, so without "full" the allow list below
+          // would be intersected away (tool-policy-pipeline.ts:75-112, 200;
+          // minimal lists only a few core tools, tool-catalog.ts:347-349).
+          profile: "full",
           // OpenClaw tool allowlist: governs OpenClaw-managed tools only (the two
           // LiveX evidence tools plus read-only helpers). Codex's native shell is
           // bounded by the read-only appServer sandbox above, not by this list.
@@ -116,11 +138,13 @@
       // permissionModeDefault "read-only". Neither works here: "deny" fails
       // Codex preflight, and permissionModeDefault is not in main's schema.
       debugger: {
-        name: "LiveX Debugger",
+        // Distinct from oncall's Slack name above; the agent id stays "debugger".
+        name: "LiveX Deep Debugger",
         description: "Read-only diagnosis from admitted evidence and verified repository revisions.",
         model: "openai/gpt-6-astra",
         skills: ["debug", "systematic-debugging", "verification-before-completion"],
         tools: {
+          profile: "full", // same reason as oncall: global profile is "minimal"
           // OpenClaw-managed tools only; no Slack message tool for this role.
           allow: ["read", "skills_read", "livex_gcp_logs_read", "livex_repository_read"],
           // Same reason as oncall: "ask" keeps the read-only Codex sandbox and
@@ -133,14 +157,91 @@
     },
   },
 
-  // Routing (example only; channel ids differ per install, so nothing is set).
-  // A peer binding beats account- and channel-wide bindings
-  // (src/routing/resolve-route.ts:334-350). `openclaw agents bind --agent oncall
-  // --bind slack` makes oncall own the default Slack account; then add one
-  // peer binding so a dedicated channel goes to debugger:
-  //
-  // bindings: [
-  //   { agentId: "oncall", match: { channel: "slack" } },
-  //   { agentId: "debugger", match: { channel: "slack", peer: { kind: "channel", id: "C0DEBUGGER" } } },
-  // ],
+  // Global tool floor, as in PR #1: every agent without its own settings gets
+  // the minimal profile, no elevated mode, and no unattended exec.
+  tools: {
+    profile: "minimal",
+    // PR #1 used mode "deny" here. On the Codex runtime that fails preflight for
+    // every agent that sets no exec mode of its own, including the `main` agent
+    // that `agents add` creates (extensions/codex/src/app-server/config-options.ts:148-152,
+    // config-exec-policy.ts:93-103). An agent's own mode replaces the global one
+    // (extensions/codex/src/app-server/config-exec-approvals.ts:33-41), so oncall and debugger work either way;
+    // "ask" keeps all other agents runnable and sends escalation to a human.
+    exec: { mode: "ask" },
+    elevated: { enabled: false },
+  },
+
+  // Slack behavior ported from PR #1's deployed config. Tokens are set elsewhere.
+  channels: {
+    slack: {
+      enabled: true,
+      groupPolicy: "open",
+      allowBots: false,
+      joinIntro: false,
+      // No ack or typing reactions.
+      ackReaction: "",
+      typingReaction: "",
+      requireMention: true,
+      // Only the configured user can talk to the bot, in any channel it is in.
+      allowFrom: ["${SLACK_SENDER_ID}"],
+      channels: {
+        "*": {
+          enabled: true,
+          requireMention: true,
+          requireMentionInBotThreads: true,
+          replyToMode: "all",
+          allowBots: false,
+          users: ["${SLACK_SENDER_ID}"],
+        },
+      },
+      dm: { enabled: false, groupEnabled: false },
+      dmPolicy: "disabled",
+      implicitMentions: { replyToBot: false, threadParticipation: false },
+      commands: { native: false, nativeSkills: false },
+      slashCommand: { enabled: false },
+      streaming: {
+        mode: "off",
+        nativeTransport: true,
+        progress: {
+          style: "card",
+          nativeTaskCards: true,
+          toolProgress: false,
+          commandText: "status",
+          commentary: false,
+          narration: false,
+        },
+      },
+      actions: { reactions: true },
+    },
+  },
+
+  // Every Slack channel message goes to oncall. A peer binding with id "*"
+  // matches any channel-kind peer on the default Slack account; DMs are
+  // direct-kind and do not match (src/routing/route-binding-index.ts:241-250,
+  // peer-kind-match.ts:5-13), and DMs are disabled above anyway.
+  // accountId: use the Slack account id you added the app under ("default"
+  // unless you passed --account), or "*" for every Slack account. A mismatch
+  // makes the binding (and the debugger example below) silently not match.
+  bindings: [
+    {
+      agentId: "oncall",
+      match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "*" } },
+    },
+    // Optional: give debugger one dedicated channel. Channel ids are per
+    // install, so this stays commented out. An exact peer beats the wildcard
+    // above (src/routing/resolve-route.ts:335-336 before :343), so only that
+    // channel (and its threads) goes to debugger:
+    //
+    // {
+    //   agentId: "debugger",
+    //   match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "C0DEBUGGER" } },
+    // },
+  ],
+
+  messages: {
+    // Usage footer on Slack only. The footer itself is config. PR #1's cost
+    // estimate inside it came from a core patch and is not part of this port.
+    responseUsage: { default: "off", slack: "full" },
+    groupChat: { visibleReplies: "automatic" },
+  },
 }

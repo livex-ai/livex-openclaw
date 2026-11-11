@@ -6,18 +6,21 @@ This folder shows LiveX running on unmodified OpenClaw. It has three parts:
 | --- | --- | --- |
 | Tool plugin | `plugins/livex-gcp-readonly/` | `livex_gcp_logs_read` (Cloud Logging) and `livex_repository_read` (pinned source), both read-only |
 | Agent workspaces | `agents/oncall/`, `agents/debugger/` | Each has `AGENTS.md` instructions plus its skills in `skills/` |
-| Config fragment | `config/openclaw.fragment.json5` | Enables the plugins, makes Codex the runtime for `openai/*` models, defines the `oncall` and `debugger` agents |
+| Config fragment | `config/openclaw.fragment.json5` | Enables the plugins, makes Codex the runtime for `openai/*` models, defines the `oncall` and `debugger` agents, and ports PR #1's Slack, routing and tool-floor config |
 
 ## Agents
 
 | Agent | Role | Skills | OpenClaw tools (`tools.allow`) |
 | --- | --- | --- | --- |
-| `oncall` (LiveX On-call) | Triage Slack alerts: urgency, error summaries, trends, investigations | `investigate-alerts`, `debug`, `systematic-debugging`, `verification-before-completion` | `read`, `skills_read`, `message` (actions `read`, `reactions`), `livex_gcp_logs_read`, `livex_repository_read` |
-| `debugger` (LiveX Debugger) | Deep diagnosis of one issue: cause, deployed revision, next action | `debug`, `systematic-debugging`, `verification-before-completion` | `read`, `skills_read`, `livex_gcp_logs_read`, `livex_repository_read` |
+| `oncall`, shown in Slack as "LiveX Debugger" (PR #1's agent) | Triage Slack alerts: urgency, error summaries, trends, investigations | `investigate-alerts`, `debug`, `systematic-debugging`, `verification-before-completion` | `read`, `skills_read`, `message` (actions `read`, `reactions`), `livex_gcp_logs_read`, `livex_repository_read` |
+| `debugger`, named "LiveX Deep Debugger" | Deep diagnosis of one issue: cause, deployed revision, next action | `debug`, `systematic-debugging`, `verification-before-completion` | `read`, `skills_read`, `livex_gcp_logs_read`, `livex_repository_read` |
 
-Both run on Codex with `tools.exec.mode: "ask"`, `elevated` off, and
-`fs.workspaceOnly`. The fragment sets `agents.ownership: "explicit"`, which a
-roster of more than one agent needs.
+Both run on Codex with `tools.profile: "full"` (their own `allow` list then
+narrows it), `tools.exec.mode: "ask"`, `elevated` off, and `fs.workspaceOnly`.
+Agents without their own tool settings, such as `main`, get the global floor:
+profile `minimal`, exec `ask`, elevated off. The fragment sets
+`agents.ownership: "explicit"`, which a roster of more than one agent needs, and
+`agents.defaults.systemAgent` to `oncall`.
 
 `scripts/setup.sh` ties them together. Nothing outside this folder changes.
 
@@ -43,16 +46,17 @@ You need the `openclaw` CLI (Node 24+) with a running local Gateway, and
    `CLOUDSDK_CONFIG`, `GCP_PROJECT`, `SLACK_SENDER_ID` and `PYTHON_PATH`
    variables for the Gateway. The script never restarts the Gateway; config
    changes apply on the next hot reload.
-3. **Route Slack.** `agents add` pins the previous sole agent (often `main`) as
-   `agents.defaults.systemAgent.agentId`, and unbound Slack traffic goes there.
-   Send Slack to `oncall` with `openclaw agents bind --agent oncall --bind slack`
-   (the default Slack account; `slack:*` covers every account). To give
-   `debugger` one dedicated Slack channel, add a peer binding to
-   `openclaw.json`, as in the commented example at the end of the fragment:
-   `{ agentId: "debugger", match: { channel: "slack", peer: { kind: "channel", id: "C…" } } }`.
-   A peer binding wins over the Slack-wide binding
-   (`src/routing/resolve-route.ts:334-350`), so only that channel goes to
-   `debugger`.
+3. **Slack routing is in the fragment.** It routes every Slack channel message
+   on the default account to `oncall` with a peer binding (`id: "*"`), sets
+   `oncall` as `agents.defaults.systemAgent` (replacing the `main` that
+   `agents add` pins), and carries PR #1's `channels.slack` behavior: mention
+   required, only `SLACK_SENDER_ID` may talk to the bot, DMs off. You do not
+   need `openclaw agents bind`. Set the Slack bot and app tokens the way you do
+   for any Slack app. To give `debugger` one dedicated channel, uncomment the
+   example peer binding in the fragment and put that channel's id in it. An
+   exact peer binding beats the wildcard
+   (`src/routing/resolve-route.ts:335-336` before `:343`), so only that channel
+   goes to `debugger`.
 4. **Control UI, Plugins.** Check that `codex` and `livex-gcp-readonly` are
    enabled, and fill in any plugin config fields that are missing.
 5. **Control UI, Agents.** Open `oncall` or `debugger`. You can also choose
@@ -68,10 +72,9 @@ You need the `openclaw` CLI (Node 24+) with a running local Gateway, and
 ## How to use the debugger
 
 - Open `debugger` from the Control UI **Agents** page and chat with it, or give
-  it one dedicated Slack channel with a peer binding (step 3). Do not run
-  `agents bind --agent debugger --bind slack`. That binds the whole Slack
-  account, not one channel (`docs/cli/agents.md:228-234`), and would send every
-  alert to `debugger`.
+  it one dedicated Slack channel with the commented peer binding in the fragment
+  (step 3). Do not run `agents bind --agent debugger --bind slack`. That binds
+  the whole Slack account, not one channel (`docs/cli/agents.md:228-234`).
 - Thread replies keep the parent channel as the routing peer, so they follow
   the same binding. A runtime conversation binding on a thread (for example a
   focused session) overrides config bindings
@@ -161,11 +164,37 @@ OpenClaw core `src/`.
 | Codex `appServer.approvalPolicy` | `on-request` | `on-request` (same) |
 | Effective Codex approvals reviewer | `auto_review` | `user`, a human, set by exec mode `ask` |
 | `oncall` `message` actions | `read`, `react`, `reactions` | `read`, `reactions` |
-| `oncall` `tools.profile` | `full` | not set; the exact `allow` list applies |
+| `oncall` `tools.profile` | `full` | `full` (same) |
 | `oncall` `tools.exec.mode` | `auto` | `ask` |
+| Global `tools.exec.mode` | `deny` | `ask`. `deny` fails Codex preflight for any agent without its own exec mode, such as `main` (`extensions/codex/src/app-server/config-options.ts:148-152`); an agent's own mode replaces the global one (`config-exec-approvals.ts:33-41`) |
+| `agents.defaults.authInheritance` | `main` | not set. It is an upgrade-only credential-store owner that falls back to the legacy data owner, else `main` (`src/agents/legacy-inherited-auth-dir.ts:9-14`) |
+| Heartbeats | default (every `30m`, to `systemAgent`) | same. With `systemAgent: oncall`, oncall gets a Codex heartbeat turn every 30 minutes, as in PR #1. Set `agents.defaults.heartbeat.every: "0m"` to turn them off |
+| Shared skills (`skills.load.extraDirs`) | `${SHARED_SKILLS_ROOT}` | not set; skills live in each agent's workspace |
 | `debugger` `tools.exec.mode` | `deny` (PR example) | `ask`; `deny` fails Codex preflight |
 | `debugger` `permissionModeDefault` | `read-only` | dropped; not in main's config schema |
-| `debugger` `tools.profile` | `full` | not set; the exact `allow` list applies |
+| `debugger` `tools.profile` | `full` | `full` (same) |
+
+### Parity with PR #1
+
+The deployed non-core config is ported, so the Slack bot behaves like PR #1's
+"LiveX Debugger" except where it needs core code.
+
+| PR #1 behavior | Here |
+| --- | --- |
+| Slack config: mention required, one allowed user, DMs off, no ack or typing reactions, thread replies, task-card progress, usage footer | ✓ `channels.slack`, `messages` |
+| Every Slack channel goes to `oncall`; `oncall` is the default agent | ✓ peer-wildcard binding, `systemAgent` |
+| Agent names and identity ("LiveX Debugger", "LiveX Reporting · Debugger") | ✓ |
+| Global tool floor: minimal profile, elevated off | ✓ |
+| Codex as runtime, same `appServer` home scope | ✓, but sandbox `read-only` and exec `ask` (PR #1: `workspace-write` and `auto`) |
+| `react` message action | ✗ dropped on purpose; only `read` and `reactions` |
+| Shared-skills directory | ✗ replaced by per-agent workspace skills |
+| Report cards, priority colors, Resolved badge | ✗ needs core (Slack block patches) |
+| In-place report edits, amendments, linked sync | ✗ needs core |
+| Investigation memory and trends | ✗ needs core (`slack_investigation_record`) |
+| Read-only default for reply sessions (`permissionModeDefault`) | ✗ not in main's schema |
+| Cost estimate in the usage footer | ✗ needs core (the footer itself is config) |
+| Queued-turn channel identity | ✗ needs core |
+| Delegated requester context for sub-agents | ✗ needs core (`delegated-context`) |
 
 **Dropped:**
 
@@ -194,7 +223,18 @@ refused at startup (`node:sqlite` TEXT truncation, nodejs/node#61954).
 
 ### Smoke test on a throwaway Gateway
 
-Run twice (oncall alone, then both agents with Slack routing) against an isolated `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` on
+Latest run, against the fragment with the PR #1 config port (global tools
+floor, Slack channel block, wildcard binding, `systemAgent: oncall`):
+
+| Check | Result |
+| --- | --- |
+| Merge fragment after `agents add oncall` / `debugger`, `config validate` | Valid; `systemAgent: oncall`; names `LiveX Debugger` / `LiveX Deep Debugger` |
+| Route probe (`resolveAgentRoute`), fragment as shipped | Public channel, private channel and threads go to `oncall` (`binding.peer.wildcard`); DM to `oncall` (default) |
+| Route probe, plus the commented debugger peer binding | Only `C0DEBUGGER` goes to `debugger` (`binding.peer`); everything else unchanged |
+| `resolveEffectiveToolPolicy` per agent | `oncall` and `debugger`: profile `full` narrowed by their `allow` lists; `main`: global `minimal` |
+| One turn each for `oncall`, `debugger` and `main`, no OpenAI sign-in | All passed Codex preflight (global and agent exec `ask`), stopped at `401 Unauthorized`; 0 preflight errors |
+
+Earlier runs, before the config port. Run twice (oncall alone, then both agents with Slack routing) against an isolated `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` on
 a non-default port (Node 24.22.2), following the 5-minute flow. The build was
 OpenClaw 2026.10.5 at `d18c1dc` with local PR #1-style core changes, not a
 clean `main` build, so it proves the flow and config shape rather than the
@@ -212,4 +252,6 @@ no-core-patch claim:
 | One turn each for `oncall` and `debugger`, without OpenAI sign-in | Ran through the Codex app-server, passed exec `ask` preflight, stopped at `401 Unauthorized` |
 | Workspaces after the turns | `SOUL.md`, `IDENTITY.md` and `USER.md` written into both; all gitignored |
 
-Not covered: a signed-in model reply, real GCP calls, Slack delivery.
+Not covered: a signed-in model reply, real GCP calls, Slack delivery, and how
+the Slack progress card (`streaming.progress.style: "card"`) renders on stock
+main without PR #1's Slack patches.

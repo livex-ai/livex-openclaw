@@ -99,7 +99,8 @@ cat <<EOF
 # 6. In the Control UI:
 #    - Plugins: confirm codex and livex-gcp-readonly are enabled; fill any
 #      missing livex-gcp-readonly config fields.
-#    - Agents: open "oncall" for triage and "debugger" for deep diagnosis
+#    - Agents: open "oncall" (LiveX Debugger) for triage and "debugger"
+#      (LiveX Deep Debugger) for deep diagnosis
 #      (or use New agent and point it at $AGENTS_DIR/<id>). Neither hands work
 #      to the other automatically. Both LiveX tools answer only Slack turns
 #      from SLACK_SENDER_ID, so a Control UI chat gets no LiveX evidence.
@@ -107,10 +108,11 @@ cat <<EOF
 #      Slack requester, so the GCP tools are not offered to them.
 #    - In a chat with the agent, run /status and check "Runtime: OpenAI Codex".
 #
-# 7. Route Slack: unbound traffic goes to agents.defaults.systemAgent (often
-#    main). Send Slack to oncall:
-#      openclaw agents bind --agent oncall --bind slack
-#    For a dedicated debugger channel, add a peer binding to openclaw.json
-#    (commented example at the end of the fragment). Do not bind debugger to
-#    all of slack; that would route every alert to it.
+# 7. Slack routing is in the fragment: every Slack channel goes to oncall
+#    (shown in Slack as "LiveX Debugger") through a peer binding, and oncall
+#    becomes agents.defaults.systemAgent. No agents bind command is needed.
+#    Set the Slack bot and app tokens as you do for any Slack app. For a
+#    dedicated "LiveX Deep Debugger" channel, uncomment the example peer binding
+#    in the fragment and fill in that channel's id. Do not bind debugger to all
+#    of slack; that would route every alert to it.
 EOF
