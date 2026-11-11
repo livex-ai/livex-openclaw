@@ -1,5 +1,5 @@
 // Slack plugin module owns WebClient-scoped message and file delivery primitives.
-import type { MessageMetadata } from "@slack/types";
+import type { MessageAttachment, MessageMetadata } from "@slack/types";
 import type { Block, ChatPostMessageResponse, KnownBlock, WebClient } from "@slack/web-api";
 import { bufferToBlobPart } from "openclaw/plugin-sdk/blob-runtime";
 import {
@@ -217,6 +217,7 @@ export async function postSlackMessageBestEffort(params: {
   replyBroadcast?: boolean;
   identity?: SlackPostMessageIdentity;
   blocks?: (Block | KnownBlock)[];
+  attachments?: MessageAttachment[];
   metadata?: MessageMetadata;
   mrkdwn?: boolean;
   unfurl?: SlackUnfurlOptions;

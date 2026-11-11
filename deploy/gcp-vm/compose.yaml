@@ -1,0 +1,41 @@
+x-runtime: &runtime
+  image: ${OPENCLAW_IMAGE:?immutable runtime image required}
+  user: "1000:1000"
+  env_file: ["${RUNTIME_ENV_FILE:?private runtime env file required}"]
+  environment:
+    HOME: /home/node
+    OPENCLAW_HOME: /home/node
+    OPENCLAW_STATE_DIR: /home/node/.openclaw
+    OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+    OPENCLAW_GATEWAY_PORT: "18791"
+    CLOUDSDK_CONFIG: /home/node/.config/gcloud
+    BROWSER: echo
+  volumes:
+    - "${STATE_DIR:?private state directory required}:/home/node/.openclaw"
+    - "${SDK_STATE_DIR:?SDK state directory required}:/home/node/.config/gcloud"
+    - "${REPOS_DIR:?reviewed repository snapshots required}:/repos:ro"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  init: true
+services:
+  gateway:
+    <<: *runtime
+    entrypoint: ["/bin/sh", "/opt/oncall/start.sh"]
+    ports: ["127.0.0.1:18791:18791"]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18791/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+  cli:
+    <<: *runtime
+    profiles: [tools]
+    entrypoint: ["node", "/app/openclaw.mjs"]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      disable: true

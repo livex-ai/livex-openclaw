@@ -38,3 +38,35 @@ describe("postSlackMessageBestEffort", () => {
     expect(postMessage.mock.calls[0]?.[0]).toBe(payloadState.basePayload);
   });
 });
+
+it("encodes colored attachments without changing accessible text or the original thread", async () => {
+  const { buildSlackPostMessagePayload } = await vi.importActual<
+    typeof import("./post-message-payload.js")
+  >("./post-message-payload.js");
+  const attachments = [
+    {
+      color: "#E3B341",
+      fallback: "Full report; recovery remains unverified.",
+      blocks: [
+        {
+          type: "section" as const,
+          text: { type: "plain_text" as const, text: "Next action: Check installation." },
+        },
+      ],
+    },
+  ];
+  const input = {
+    channelId: "C123",
+    threadTs: "1712345678.123456",
+    text: "Full report; recovery remains unverified.",
+    attachments,
+  };
+
+  expect(buildSlackPostMessagePayload(input)).toEqual({
+    channel: "C123",
+    thread_ts: "1712345678.123456",
+    text: input.text,
+    attachments,
+    unfurl_links: false,
+  });
+});

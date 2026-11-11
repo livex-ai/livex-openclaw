@@ -306,6 +306,11 @@ const EXTENSION_PROVIDERS_VITEST_CONFIG = "test/vitest/vitest.extension-provider
 const EXTENSION_QA_VITEST_CONFIG = "test/vitest/vitest.extension-qa.config.ts";
 const EXTENSION_SIGNAL_VITEST_CONFIG = "test/vitest/vitest.extension-signal.config.ts";
 const EXTENSION_SLACK_VITEST_CONFIG = "test/vitest/vitest.extension-slack.config.ts";
+const LIVEX_INVESTIGATIONS_VITEST_CONFIG = "test/vitest/vitest.livex-investigations.config.ts";
+const LIVEX_PLUGIN_TEST_ROOTS = [
+  "livex-agents/plugins/livex-investigations",
+  "livex-agents/plugins/livex-oncall-reports",
+];
 const EXTENSION_DATABASE_WORKERS_VITEST_CONFIG =
   "test/vitest/vitest.extension-database-workers.config.ts";
 const EXTENSION_TELEGRAM_VITEST_CONFIG = "test/vitest/vitest.extension-telegram.config.ts";
@@ -620,6 +625,7 @@ const VITEST_CONFIG_BY_KIND: Record<string, string> = {
   extensionQa: EXTENSION_QA_VITEST_CONFIG,
   extensionSignal: EXTENSION_SIGNAL_VITEST_CONFIG,
   extensionSlack: EXTENSION_SLACK_VITEST_CONFIG,
+  livexInvestigations: LIVEX_INVESTIGATIONS_VITEST_CONFIG,
   extensionFull: FULL_EXTENSIONS_VITEST_CONFIG,
   channel: CHANNEL_VITEST_CONFIG,
   extension: EXTENSIONS_VITEST_CONFIG,
@@ -4359,6 +4365,10 @@ function shouldUseBroadChangedTargets(env = process.env) {
   return parsePermissiveBooleanToken(env[BROAD_CHANGED_ENV_KEY]) === true;
 }
 
+function isLivexPluginTarget(target: string) {
+  return LIVEX_PLUGIN_TEST_ROOTS.some((root) => isPathAtOrUnder(target, root));
+}
+
 export function isRoutableChangedTarget(changedPath: string) {
   if (GENERATED_CHANGED_TEST_TARGET_PATTERNS.some((pattern) => pattern.test(changedPath))) {
     return false;
@@ -4369,6 +4379,7 @@ export function isRoutableChangedTarget(changedPath: string) {
   const surface = getChangedPathFacts(changedPath).surface;
   return (
     ["source", "package", "extension", "rootTest"].includes(surface) ||
+    isLivexPluginTarget(changedPath) ||
     changedPath === "ui" ||
     changedPath.startsWith("ui/") ||
     ["src", "test", "extensions", "packages"].includes(changedPath)
@@ -4433,6 +4444,12 @@ function resolvePreciseChangedTestTargets(
   options: ChangedTestTargetOptions & { skipImportGraph?: boolean },
 ) {
   const cwd = options.cwd ?? process.cwd();
+  // Keep the extracted plugin and its report adapter in normal changed-path coverage.
+  // Each package is small; include its whole suite for non-test source/config changes.
+  const livexRoot = LIVEX_PLUGIN_TEST_ROOTS.find((root) => isPathAtOrUnder(changedPath, root));
+  if (livexRoot) {
+    return [isTestFileTarget(changedPath) ? changedPath : livexRoot];
+  }
   const pluginSdkInclude = resolvePluginSdkLightIncludePattern(changedPath);
   const mappedTargets =
     SOURCE_TEST_TARGETS.get(changedPath) ??
@@ -4937,6 +4954,9 @@ export function resolveChangedTestTargetPlanForArgs(
 
 function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership = false) {
   const relative = toRepoRelativeTarget(arg, cwd);
+  if (isLivexPluginTarget(relative)) {
+    return "livexInvestigations";
+  }
   if (!beforeDatabaseWorkerOwnership && databaseWorkerExtensionTestFiles.includes(relative)) {
     return "extensionDatabaseWorkers";
   }

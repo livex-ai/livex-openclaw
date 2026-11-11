@@ -1,5 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
+import type { MessageAttachment } from "@slack/types";
 import type { Block, KnownBlock, WebClient } from "@slack/web-api";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { editSlackRenderedMessage } from "../../actions.js";
 import { buildSlackBlocksFallbackText } from "../../blocks-fallback.js";
 import { buildSlackEditTextPayload } from "../../edit-text.js";
@@ -13,7 +16,65 @@ type SlackReadbackMessage = {
   ts?: string;
   text?: string;
   blocks?: unknown[];
+  attachments?: unknown[];
 };
+
+export function matchesSlackPlainTextBlocks(blocks: unknown, text: string): boolean {
+  if (blocks === undefined || (Array.isArray(blocks) && blocks.length === 0)) {
+    return true;
+  }
+  if (!Array.isArray(blocks) || blocks.length !== 1) {
+    return false;
+  }
+  const { block_id: _id, ...block } = blocks[0] ?? {};
+  // Slack may generate this exact rich-text representation for a plain reply.
+  return isDeepStrictEqual(block, {
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  });
+}
+
+function normalizeCardReadback(value: unknown, expected: unknown, attachment = false): unknown {
+  if (Array.isArray(value)) {
+    const expectedItems = Array.isArray(expected) ? expected : [];
+    return value.map((item, index) => normalizeCardReadback(item, expectedItems[index]));
+  }
+  const record = asOptionalRecord(value);
+  if (!record) {
+    return value;
+  }
+  const expectedRecord = asOptionalRecord(expected) ?? {};
+  return Object.fromEntries(
+    Object.entries(record)
+      .filter(
+        ([key]) =>
+          !(
+            (key === "block_id" || (attachment && key === "id")) &&
+            !Object.hasOwn(expectedRecord, key)
+          ),
+      )
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [
+        key,
+        attachment && key === "color" && typeof entry === "string"
+          ? entry.replace(/^#/u, "").toLowerCase()
+          : normalizeCardReadback(entry, expectedRecord[key]),
+      ]),
+  );
+}
+
+function attachmentsMatch(expected: MessageAttachment[], actual?: unknown[]): boolean {
+  if (expected.length !== (actual?.length ?? 0)) {
+    return false;
+  }
+  // Slack assigns attachment/block IDs and returns hex colors without '#'.
+  // Compare the owned appearance, retaining all other fields and content.
+  return expected.every(
+    (attachment, index) =>
+      JSON.stringify(normalizeCardReadback(attachment, attachment, true)) ===
+      JSON.stringify(normalizeCardReadback(actual?.[index], attachment, true)),
+  );
+}
 
 function buildExpectedSlackEditText(params: {
   text: string;
@@ -91,23 +152,44 @@ async function readSlackMessageAfterEditError(params: {
   return message?.ts && message.ts === params.messageId ? message : null;
 }
 
-async function didSlackPreviewEditApplyAfterError(params: {
-  client: WebClient;
-  token: string;
-  channelId: string;
-  messageId: string;
-  text: string;
-  blocks?: (Block | KnownBlock)[];
-  threadTs?: string;
-}): Promise<boolean> {
-  const readback = await readSlackMessageAfterEditError(params);
+export async function didSlackReplyEditApply(
+  params: {
+    client: WebClient;
+    token: string;
+    channelId: string;
+    messageId: string;
+    text: string;
+    blocks?: (Block | KnownBlock)[];
+    attachments?: MessageAttachment[];
+    threadTs?: string;
+    exactContent?: boolean;
+  },
+  observed?: SlackReadbackMessage,
+): Promise<boolean> {
+  const readback = observed ?? (await readSlackMessageAfterEditError(params));
   if (!readback) {
+    return false;
+  }
+  if (
+    params.attachments !== undefined &&
+    !attachmentsMatch(params.attachments, readback.attachments)
+  ) {
     return false;
   }
   const expectedText = buildExpectedSlackEditText({
     text: params.text,
     blocks: params.blocks,
   });
+  const actualText = normalizeSlackOutboundText((readback.text ?? "").trim());
+  if (params.exactContent || params.attachments?.length) {
+    const blocks = params.blocks ?? [];
+    const matchesBlocks =
+      params.exactContent && blocks.length === 0
+        ? matchesSlackPlainTextBlocks(readback.blocks, readback.text ?? "")
+        : JSON.stringify(normalizeCardReadback(readback.blocks ?? [], blocks)) ===
+          JSON.stringify(normalizeCardReadback(blocks, blocks));
+    return actualText === expectedText && matchesBlocks;
+  }
   const acceptedTexts = new Set([
     expectedText,
     normalizeSlackOutboundText(
@@ -124,7 +206,6 @@ async function didSlackPreviewEditApplyAfterError(params: {
       acceptedTexts.add(normalizeSlackOutboundText(message.text));
     }
   }
-  const actualText = normalizeSlackOutboundText((readback.text ?? "").trim());
   if (params.blocks?.length) {
     return acceptedTexts.has(actualText) && blocksMatch(params.blocks, readback.blocks);
   }
@@ -139,6 +220,7 @@ export async function finalizeSlackPreviewEdit(params: {
   messageId: string;
   text: string;
   blocks?: (Block | KnownBlock)[];
+  attachments?: MessageAttachment[];
   threadTs?: string;
 }): Promise<void> {
   try {
@@ -146,11 +228,12 @@ export async function finalizeSlackPreviewEdit(params: {
       token: params.token,
       accountId: params.accountId,
       client: params.client,
-      ...(params.blocks?.length ? { blocks: params.blocks } : {}),
+      ...(params.blocks !== undefined ? { blocks: params.blocks } : {}),
+      ...(params.attachments !== undefined ? { attachments: params.attachments } : {}),
     });
   } catch (err) {
     try {
-      const applied = await didSlackPreviewEditApplyAfterError(params);
+      const applied = await didSlackReplyEditApply(params);
       if (applied) {
         logVerbose(
           `slack: preview final edit response failed but readback matched message ${params.channelId}/${params.messageId}; suppressing duplicate fallback send`,

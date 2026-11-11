@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { DeliverOutboundPayloadsParams } from "../../infra/outbound/deliver-contracts.js";
 import { OutboundDeliveryError } from "../../infra/outbound/deliver-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
@@ -9,7 +10,7 @@ import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
-import { setReplyPayloadMetadata } from "../reply-payload.js";
+import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { setBlockReplyDelivery } from "./block-reply-delivery.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
@@ -22,7 +23,7 @@ const { a2aChannelPlugin } = await loadBundledPluginFacade<{ a2aChannelPlugin: C
 });
 
 const channelState = vi.hoisted(() => ({
-  outcomes: [] as Array<"delivered" | "failed" | "held" | "ambiguous">,
+  outcomes: [] as Array<"delivered" | "failed" | "held" | "ambiguous" | "partial">,
   deliver: vi.fn(),
 }));
 
@@ -162,10 +163,25 @@ beforeEach(() => {
   );
   channelState.outcomes = [];
   channelState.deliver.mockReset();
-  channelState.deliver.mockImplementation(async (params: { channel: string }) => {
+  channelState.deliver.mockImplementation(async (params: DeliverOutboundPayloadsParams) => {
     const outcome = channelState.outcomes.shift();
     if (outcome === "delivered") {
-      return [{ channel: params.channel, messageId: `message-${channelState.outcomes.length}` }];
+      const results = [
+        { channel: params.channel, messageId: `message-${channelState.outcomes.length}` },
+      ];
+      params.onPayloadDeliveryOutcome?.({
+        index: 0,
+        status: "sent",
+        results,
+        acceptedPayload: params.payloads[0],
+      });
+      return results;
+    }
+    if (outcome === "partial") {
+      throw new OutboundDeliveryError("second physical send failed", {
+        cause: new Error("transport unavailable"),
+        results: [{ channel: "slack", messageId: "partial-final" }],
+      });
     }
     if (outcome === "held" || outcome === "ambiguous") {
       const error = new OutboundDeliveryError("delivery still owned by transport", {
@@ -184,6 +200,200 @@ afterEach(() => {
 });
 
 describe("follow-up delivery channel boundary", () => {
+  it("passes a confirmed final receipt and awaits source-owned completion recording", async () => {
+    let release: (() => void) | undefined;
+    const recorded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let recordingFinished = false;
+    const delivered = vi.fn(async (_payload: ReplyPayload, _receipt?: unknown) => {
+      await recorded;
+      recordingFinished = true;
+    });
+    const pending = deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Completed investigation" }],
+      correlations: [{ begin() {}, onReplyDelivered: delivered }],
+    });
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(1));
+    expect(delivered.mock.calls[0]?.[1]).toEqual({
+      kind: "final",
+      messageId: "message-0",
+      complete: true,
+    });
+    expect(recordingFinished).toBe(false);
+    release?.();
+    await pending;
+    expect(recordingFinished).toBe(true);
+  });
+
+  it("projects one source-owned queued final before origin routing and publishes that exact payload", async () => {
+    const projected: ReplyPayload = {
+      text: "Canonical compact report",
+      channelData: { slack: { marker: "card" } },
+    };
+    const prepareReply = vi.fn(() => projected);
+    const delivered = vi.fn();
+    const unrelatedPolicy = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Legacy acknowledgement" }],
+      correlations: [
+        { begin() {}, onReplyDelivered: unrelatedPolicy },
+        { begin() {}, prepareReply, onReplyDelivered: delivered },
+      ],
+    });
+    expect(prepareReply).toHaveBeenCalledWith(
+      { text: "Legacy acknowledgement" },
+      { kind: "final" },
+    );
+    expect(channelState.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ payloads: [expect.objectContaining(projected)] }),
+      undefined,
+    );
+    expect(delivered.mock.calls[0]?.[0]).toMatchObject(projected);
+    expect(unrelatedPolicy).toHaveBeenCalledOnce();
+  });
+  it("publishes the accepted post-policy payload rather than the prepared report", async () => {
+    const accepted: ReplyPayload = {
+      text: "Policy-approved replacement",
+      isError: true,
+      channelData: { slack: { blocks: [] } },
+    };
+    setReplyPayloadMetadata(accepted, { independentDeliveryIntentId: "accepted-only" });
+    channelState.deliver.mockImplementationOnce(async (params: DeliverOutboundPayloadsParams) => {
+      const results = [{ channel: "slack", messageId: "accepted-final" }];
+      params.onPayloadDeliveryOutcome?.({
+        index: 0,
+        status: "sent",
+        results,
+        acceptedPayload: accepted,
+      });
+      return results;
+    });
+    const delivered = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: [],
+      payloads: [{ text: "Original acknowledgement" }],
+      correlations: [
+        {
+          begin() {},
+          prepareReply: () => ({ text: "Prepared report" }),
+          onReplyDelivered: delivered,
+        },
+      ],
+    });
+    expect(delivered).toHaveBeenCalledExactlyOnceWith(accepted, {
+      kind: "final",
+      messageId: "accepted-final",
+      complete: true,
+    });
+    expect(getReplyPayloadMetadata(delivered.mock.calls[0]?.[0])).toEqual({
+      independentDeliveryIntentId: "accepted-only",
+    });
+  });
+
+  it.each(["missing", "incomplete", "multiple"] as const)(
+    "does not invent accepted content for a %s payload receipt",
+    async (evidence) => {
+      channelState.deliver.mockImplementationOnce(async (params: DeliverOutboundPayloadsParams) => {
+        const results = [{ channel: "slack", messageId: "identified-final" }];
+        if (evidence !== "missing") {
+          params.onPayloadDeliveryOutcome?.({
+            index: 0,
+            status: "sent",
+            results,
+            acceptedPayload: { text: "Partial report" },
+            ...(evidence === "incomplete"
+              ? { incompleteReason: "adapter_returned_no_identity" as const }
+              : {}),
+          });
+          if (evidence === "multiple") {
+            params.onPayloadDeliveryOutcome?.({
+              index: 0,
+              status: "sent",
+              results,
+              acceptedPayload: { text: "Second part" },
+            });
+          }
+        }
+        return results;
+      });
+      const delivered = vi.fn();
+      const observed = vi.fn();
+      await deliverBatch({
+        messageProvider: "slack",
+        originatingChannel: "slack",
+        outcomes: [],
+        payloads: [{ text: "Original report" }],
+        correlations: [{ begin() {}, onReplyDelivered: delivered }],
+        onObservedReplyDelivery: observed,
+      });
+      expect(delivered).not.toHaveBeenCalled();
+      expect(observed).toHaveBeenCalledOnce();
+    },
+  );
+  it("does not rewrite or cross-publish a collected final with multiple projection owners", async () => {
+    const first = {
+      begin() {},
+      prepareReply: vi.fn(() => ({ text: "First source report" })),
+      onReplyDelivered: vi.fn(),
+    };
+    const second = {
+      begin() {},
+      prepareReply: vi.fn(() => ({ text: "Second source report" })),
+      onReplyDelivered: vi.fn(),
+    };
+    const unrelatedPolicy = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Collected answer" }],
+      correlations: [first, second, { begin() {}, onReplyDelivered: unrelatedPolicy }],
+    });
+    expect(first.prepareReply).not.toHaveBeenCalled();
+    expect(second.prepareReply).not.toHaveBeenCalled();
+    expect(first.onReplyDelivered).not.toHaveBeenCalled();
+    expect(second.onReplyDelivered).not.toHaveBeenCalled();
+    expect(channelState.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloads: [expect.objectContaining({ text: "Collected answer" })],
+      }),
+      undefined,
+    );
+    expect(unrelatedPolicy).toHaveBeenCalledOnce();
+  });
+  it("keeps ordinary delivery but does not publish when a queued projector declines the payload", async () => {
+    const delivered = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["delivered"],
+      payloads: [{ text: "Unrelated answer" }],
+      correlations: [{ begin() {}, prepareReply: () => undefined, onReplyDelivered: delivered }],
+    });
+    expect(channelState.deliver).toHaveBeenCalledOnce();
+    expect(delivered).not.toHaveBeenCalled();
+  });
+  it("does not publish a partial origin receipt without a complete accepted payload", async () => {
+    const delivered = vi.fn();
+    await deliverBatch({
+      messageProvider: "slack",
+      originatingChannel: "slack",
+      outcomes: ["partial"],
+      payloads: [{ text: "Completed investigation" }],
+      correlations: [{ begin() {}, onReplyDelivered: delivered }],
+    });
+    expect(delivered).not.toHaveBeenCalled();
+  });
+
   it("suppresses repeated source failures before transport without falling back to another dispatcher", async () => {
     const delivered = vi.fn();
     const { onBlockReply, result } = await deliverBatch({

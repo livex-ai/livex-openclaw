@@ -1,6 +1,7 @@
 // Slack tests cover preview finalize plugin behavior.
 import type { WebClient } from "@slack/web-api";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSlackPlatformError } from "./dispatch.preview.test-support.js";
 
 const editSlackMessageMock = vi.fn();
 
@@ -33,6 +34,122 @@ describe("finalizeSlackPreviewEdit", () => {
   beforeEach(() => {
     editSlackMessageMock.mockReset();
   });
+
+  it("preserves a missing-message error after an empty readback", async () => {
+    const error = createSlackPlatformError("message_not_found");
+    editSlackMessageMock.mockRejectedValueOnce(error);
+    const client = createClient();
+
+    await expect(
+      finalizeSlackPreviewEdit({
+        client,
+        token: "xoxb-test",
+        channelId: "C123",
+        messageId: "171234.567",
+        threadTs: "171234.000000",
+        text: "Full report",
+      }),
+    ).rejects.toBe(error);
+    expect(editSlackMessageMock).toHaveBeenCalledOnce();
+    expect(client.conversations.replies).toHaveBeenCalledOnce();
+  });
+
+  it("does not accept matching text when the colored attachment did not update", async () => {
+    editSlackMessageMock.mockRejectedValueOnce(new Error("socket closed after commit"));
+    const attachments = [
+      {
+        color: "#E3B341",
+        fallback: "Full report",
+        blocks: [
+          {
+            type: "section" as const,
+            text: { type: "plain_text" as const, text: "Next action: Check installation." },
+          },
+        ],
+      },
+    ];
+    const client = createClient({
+      replyMessages: [
+        {
+          ts: "171234.567",
+          text: "Full report",
+          attachments: [{ ...attachments[0], color: "#2EB67D" }],
+        },
+      ],
+    });
+    const input = {
+      client,
+      token: "xoxb-test",
+      channelId: "C123",
+      messageId: "171234.567",
+      threadTs: "171234.000000",
+      text: "Full report",
+      attachments,
+    };
+
+    await expect(finalizeSlackPreviewEdit(input)).rejects.toThrow("socket closed after commit");
+  });
+
+  it.each([false, true])(
+    "accepts the same attachment only after the divider clears (stale divider: %s)",
+    async (staleDivider) => {
+      editSlackMessageMock.mockRejectedValueOnce(new Error("socket closed after commit"));
+      const attachments = [
+        {
+          color: "#E3B341",
+          fallback: "Full report",
+          blocks: [
+            {
+              type: "section" as const,
+              text: { type: "plain_text" as const, text: "Next action: Check installation." },
+            },
+          ],
+        },
+      ];
+      const client = createClient({
+        replyMessages: [
+          {
+            ts: "171234.567",
+            text: "Full report",
+            blocks: staleDivider ? [{ type: "divider" }] : [],
+            attachments: [
+              {
+                ...attachments[0],
+                id: 1,
+                color: "e3b341",
+                blocks: [{ ...attachments[0].blocks[0], block_id: "slack-generated" }],
+              },
+            ],
+          },
+        ],
+      });
+      const input = {
+        client,
+        token: "xoxb-test",
+        channelId: "C123",
+        messageId: "171234.567",
+        threadTs: "171234.000000",
+        text: "Full report",
+        blocks: [],
+        attachments,
+      };
+
+      if (staleDivider) {
+        await expect(finalizeSlackPreviewEdit(input)).rejects.toThrow("socket closed after commit");
+      } else {
+        await expect(finalizeSlackPreviewEdit(input)).resolves.toBeUndefined();
+      }
+      expect(editSlackMessageMock.mock.calls[0]?.[3]).toMatchObject({ blocks: [], attachments });
+      expect(client.conversations.replies).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ts: "171234.000000",
+          oldest: "171234.567",
+          latest: "171234.567",
+          inclusive: true,
+        }),
+      );
+    },
+  );
 
   it("recovers an applied edit beyond the first busy-thread readback page", async () => {
     editSlackMessageMock.mockRejectedValueOnce(new Error("socket closed after commit"));

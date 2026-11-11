@@ -13,7 +13,7 @@ import {
 import { floorPositiveFiniteNumber } from "openclaw/plugin-sdk/number-runtime";
 import { resolveCodexAppServerHomeDir } from "./auth-bridge.js";
 import { resolveProjectionPromptBudgetTokens } from "./context-engine-projection.js";
-import { isJsonObject, type JsonValue } from "./protocol.js";
+import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
 import {
   assertCodexBindingMayBeReplaced,
   type CodexBindingAuthority,
@@ -66,6 +66,7 @@ async function listCodexAppServerRolloutFilesForThread(
   threadId: string,
   codexHome?: string,
   rolloutPath?: string,
+  pinnedOnly = false,
 ): Promise<CodexAppServerRolloutFile[]> {
   const resolvedAgentDir = path.resolve(agentDir);
   const resolvedCodexHome = codexHome?.trim()
@@ -103,6 +104,9 @@ async function listCodexAppServerRolloutFilesForThread(
       // Older Codex servers and moved rollouts still need root-scoped discovery.
     }
   }
+  if (pinnedOnly) {
+    return [];
+  }
   const files: CodexAppServerRolloutFile[] = [];
   for (const root of new Set(roots)) {
     const stack = [root];
@@ -138,6 +142,7 @@ async function listCodexAppServerRolloutFilesForThread(
 }
 
 type CodexAppServerRolloutTokenSnapshot = {
+  cumulativeBilling?: JsonObject | null;
   totalTokens?: number;
   modelContextWindow?: number;
   // A turn started after the latest window was reported and never reported its own.
@@ -147,6 +152,7 @@ type CodexAppServerRolloutTokenSnapshot = {
 async function readCodexAppServerRolloutTokenSnapshot(
   file: string,
   openedHandle?: Awaited<ReturnType<typeof fs.open>>,
+  latestBillingOnly = false,
 ): Promise<CodexAppServerRolloutTokenSnapshot | undefined> {
   let handle = openedHandle;
   try {
@@ -156,12 +162,23 @@ async function readCodexAppServerRolloutTokenSnapshot(
   }
   let snapshot: CodexAppServerRolloutTokenSnapshot | undefined;
   try {
-    let position = (await handle.stat()).size;
+    const fileSize = (await handle.stat()).size;
+    let position = fileSize;
+    const floor = latestBillingOnly
+      ? Math.max(0, fileSize - 4 * CODEX_APP_SERVER_ROLLOUT_TAIL_READ_BYTES)
+      : 0;
     const partialLineFragments: Buffer[] = [];
     const applySnapshotLine = (line: string): boolean => {
-      const lineSnapshot = readCodexAppServerRolloutTokenSnapshotLine(line);
+      const lineSnapshot = readCodexAppServerRolloutTokenSnapshotLine(line, latestBillingOnly);
       if (lineSnapshot === undefined) {
         return false;
+      }
+      if (latestBillingOnly) {
+        if (lineSnapshot.cumulativeBilling === undefined) {
+          return false;
+        }
+        snapshot = lineSnapshot;
+        return true;
       }
       snapshot ??= {};
       // A newer turn without a window must not borrow an earlier model's observation.
@@ -175,13 +192,16 @@ async function readCodexAppServerRolloutTokenSnapshot(
 
     // Codex appends token snapshots to its rollout. Walk backward so a growing
     // thread does not reparse its entire conversation before every new turn.
-    while (position > 0) {
-      const bytesToRead = Math.min(position, CODEX_APP_SERVER_ROLLOUT_TAIL_READ_BYTES);
+    while (position > floor) {
+      const bytesToRead = Math.min(position - floor, CODEX_APP_SERVER_ROLLOUT_TAIL_READ_BYTES);
       const nextPosition = position - bytesToRead;
       const chunk = Buffer.allocUnsafe(bytesToRead);
       const bytesRead = await readFileWindowFully(handle, chunk, nextPosition);
       if (bytesRead < bytesToRead) {
         return snapshot;
+      }
+      if (latestBillingOnly && position === fileSize && chunk.at(-1) !== 0x0a) {
+        return undefined;
       }
       let lineEnd = bytesRead;
       // Negative Buffer offsets wrap from the end, so stop when byte zero is consumed.
@@ -206,7 +226,7 @@ async function readCodexAppServerRolloutTokenSnapshot(
       }
       position = nextPosition;
     }
-    if (partialLineFragments.length > 0) {
+    if (floor === 0 && partialLineFragments.length > 0) {
       applySnapshotLine(Buffer.concat(partialLineFragments.toReversed()).toString("utf8"));
     }
   } finally {
@@ -217,6 +237,7 @@ async function readCodexAppServerRolloutTokenSnapshot(
 
 function readCodexAppServerRolloutTokenSnapshotLine(
   line: string,
+  latestBillingOnly: boolean,
 ): CodexAppServerRolloutTokenSnapshot | undefined {
   if (!line.trim()) {
     return undefined;
@@ -227,27 +248,74 @@ function readCodexAppServerRolloutTokenSnapshotLine(
       return { windowSupersededByNewerTurn: true };
     }
     const payload = isJsonObject(parsed) ? parsed.payload : undefined;
-    const info =
-      isJsonObject(payload) && payload.type === "token_count" && isJsonObject(payload.info)
-        ? payload.info
-        : undefined;
+    if (!isJsonObject(payload) || payload.type !== "token_count") {
+      return undefined;
+    }
+    const info = isJsonObject(payload.info) ? payload.info : undefined;
+    const cumulative = isJsonObject(info?.total_token_usage) ? info.total_token_usage : undefined;
+    if (latestBillingOnly) {
+      if (!isJsonObject(parsed) || parsed.type !== "event_msg") {
+        return undefined;
+      }
+      return {
+        cumulativeBilling: cumulative
+          ? {
+              inputTokens: cumulative.input_tokens ?? null,
+              cachedInputTokens: cumulative.cached_input_tokens ?? null,
+              cacheWriteInputTokens:
+                cumulative.cache_write_input_tokens === undefined
+                  ? 0
+                  : cumulative.cache_write_input_tokens,
+              outputTokens: cumulative.output_tokens ?? null,
+              totalTokens: cumulative.total_tokens ?? null,
+            }
+          : null,
+      };
+    }
     if (!info) {
       return undefined;
     }
-    const usage = isJsonObject(info.last_token_usage)
-      ? info.last_token_usage
-      : isJsonObject(info.total_token_usage)
-        ? info.total_token_usage
-        : undefined;
+    const usage = isJsonObject(info?.last_token_usage) ? info.last_token_usage : cumulative;
     const value = usage?.total_tokens ?? usage?.totalTokens;
     const totalTokens = typeof value === "number" && Number.isFinite(value) ? value : undefined;
-    const windowValue = info.model_context_window ?? info.modelContextWindow;
+    const windowValue = info?.model_context_window ?? info?.modelContextWindow;
     const modelContextWindow = floorPositiveFiniteNumber(windowValue);
     return totalTokens !== undefined || modelContextWindow !== undefined
       ? { totalTokens, modelContextWindow }
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Read only the pinned rollout for the selected native thread, without root discovery. */
+export async function readCodexAppServerPreTurnUsage(params: {
+  agentDir: string;
+  codexHome?: string;
+  threadId: string;
+  rolloutPath?: string;
+}): Promise<JsonObject | null> {
+  const { agentDir, codexHome, threadId, rolloutPath } = params;
+  if (!rolloutPath || !path.basename(rolloutPath).endsWith(`-${threadId}.jsonl`)) {
+    return null;
+  }
+  const [file] = await listCodexAppServerRolloutFilesForThread(
+    agentDir,
+    threadId,
+    codexHome,
+    rolloutPath,
+    true,
+  );
+  if (!file?.handle) {
+    return null;
+  }
+  try {
+    return (
+      (await readCodexAppServerRolloutTokenSnapshot(file.path, file.handle, true))
+        ?.cumulativeBilling ?? null
+    );
+  } catch {
+    return null;
   }
 }
 

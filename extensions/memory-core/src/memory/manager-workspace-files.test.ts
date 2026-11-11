@@ -80,8 +80,10 @@ describe("Gateway index over Harness workspace files", () => {
     };
     const files: MemoryWorkspaceFiles = {
       assertCurrent() {},
-      async listFiles(_workspace, extraPaths, multimodal, skipped) {
-        return (await listMemoryFiles(harness, extraPaths, multimodal, skipped)).map(local);
+      async listFiles(_workspace, extraPaths, multimodal, skipped, fileOptions) {
+        return (await listMemoryFiles(harness, extraPaths, multimodal, skipped, fileOptions)).map(
+          local,
+        );
       },
       async inspectFile(file, _workspace, multimodal) {
         const entry = await buildFileEntry(remote(file), harness, multimodal);

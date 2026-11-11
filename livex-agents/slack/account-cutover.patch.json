@@ -1,0 +1,97 @@
+{
+  "secrets": {
+    "providers": {
+      "slack-oncall": {
+        "source": "file",
+        "path": "${OPENCLAW_STATE_DIR}/secrets/slack-oncall.json",
+        "mode": "json"
+      }
+    }
+  },
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "defaultAccount": "oncall",
+      "accounts": {
+        "default": {
+          "enabled": false
+        },
+        "oncall": {
+          "name": "LiveX Oncall",
+          "enabled": true,
+          "mode": "socket",
+          "postAs": "bot",
+          "appToken": {
+            "source": "file",
+            "provider": "slack-oncall",
+            "id": "/appToken"
+          },
+          "botToken": {
+            "source": "file",
+            "provider": "slack-oncall",
+            "id": "/botToken"
+          },
+          "userToken": "",
+          "userTokenReadOnly": true,
+          "groupPolicy": "open",
+          "requireMention": true,
+          "implicitMentions": {
+            "replyToBot": false,
+            "threadParticipation": false
+          },
+          "allowBots": false,
+          "joinIntro": false,
+          "presenceEvents": {
+            "mode": "off"
+          },
+          "ackReaction": "",
+          "typingReaction": "",
+          "reactionNotifications": "off",
+          "actions": {
+            "reactions": true
+          },
+          "commands": {
+            "native": false,
+            "nativeSkills": false
+          },
+          "slashCommand": {
+            "enabled": false
+          },
+          "dmPolicy": "disabled",
+          "dm": {
+            "enabled": false,
+            "groupEnabled": false
+          },
+          "channels": {
+            "*": {
+              "enabled": true,
+              "requireMention": true,
+              "replyToMode": "all",
+              "allowBots": false,
+              "users": [
+                "${SLACK_SENDER_ID}"
+              ],
+              "requireMentionInBotThreads": true
+            }
+          },
+          "allowFrom": [
+            "${SLACK_SENDER_ID}"
+          ]
+        }
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "oncall",
+      "match": {
+        "channel": "slack",
+        "accountId": "oncall",
+        "peer": {
+          "kind": "channel",
+          "id": "*"
+        }
+      }
+    }
+  ]
+}

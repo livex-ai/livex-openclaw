@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -172,3 +174,19 @@ it.each(["input end", "output error"] as const)(
     }
   },
 );
+
+it("keeps workspace notes out of catalog-only remote discovery", async () => {
+  await fs.mkdir(path.join(state.workspaceDir, "memory"), { recursive: true });
+  await fs.writeFile(path.join(state.workspaceDir, "MEMORY.md"), "private note");
+  await fs.writeFile(path.join(state.workspaceDir, "memory", "other.md"), "private daily note");
+  const catalog = state.path("investigations.md");
+  await fs.writeFile(catalog, "approved catalog");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  input.end(JSON.stringify({ operation: "list", includeWorkspace: false, extraPaths: [catalog] }));
+  await serveMemoryFiles({ workspace: state.workspaceDir, input, output });
+  const result = JSON.parse(output.read().toString()) as { result: { files: string[] } };
+  expect(result.result.files).toEqual([catalog]);
+  input.destroy();
+  output.destroy();
+});

@@ -233,6 +233,7 @@ export function createSlackMessageHandler(params: {
               } = last.opts;
               let visibleDrop = false;
               let settlementHandedOff = false;
+              let pendingReplyTurn: PreparedSlackMessage["replyTurn"];
               try {
                 admissionLifecycle.abortSignal.throwIfAborted();
                 const { prepareSlackMessage, dispatchPreparedSlackMessage } =
@@ -273,6 +274,7 @@ export function createSlackMessageHandler(params: {
                   releaseClaims();
                   return;
                 }
+                pendingReplyTurn = prepared.replyTurn;
                 await turnAdoptionLifecycle?.onSessionRouted?.(prepared.route.sessionKey);
                 const deferredHeartbeatIntervals = [
                   turnAdoptionLifecycle?.deferredHeartbeatIntervalMs,
@@ -323,6 +325,8 @@ export function createSlackMessageHandler(params: {
                   prepared.ctxPayload.MessageSidFirst = sourceMessageIds[0];
                   prepared.ctxPayload.MessageSidLast = sourceMessageIds.at(-1);
                 }
+                // Dispatch owns immediate cleanup from entry, including setup failures.
+                pendingReplyTurn = undefined;
                 await dispatchPreparedSlackMessage(prepared);
                 if (!turnAdoptionLifecycle && !settlementHandedOff) {
                   await commitClaims();
@@ -334,6 +338,8 @@ export function createSlackMessageHandler(params: {
               } catch (error) {
                 releaseClaims(error);
                 throw error;
+              } finally {
+                pendingReplyTurn?.releaseImmediate();
               }
             })();
             for (const completion of completions) {

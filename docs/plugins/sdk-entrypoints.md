@@ -75,6 +75,15 @@ the typed public Plugin SDK. Bundled backend authors should follow the
 - [Building provider plugins](/plugins/sdk-provider-plugins) - provider registration and hooks
 - [Decision models](/plugins/sdk-overview/capabilities#decision-models-contract-version-1) - `openclaw/plugin-sdk/decisions` and the typed decision provider contract
 
+## Reply-turn contributions
+
+`openclaw/plugin-sdk/reply-turns` exposes `ReplyTurnProvider`, its prepared-turn
+and delivery contracts, `prepareAgentReplyTurn`, and `createReplyTurnDelivery`.
+Register a provider with `api.registerReplyTurnProvider`; see the
+[reply-turn lifetime and transport contract](/plugins/sdk-runtime#reply-turn-providers).
+This surface reuses existing adoption and queued-delivery ownership rather than
+adding a separate queue or persistence service.
+
 ## Code Mode executor runtime
 
 Use `openclaw/plugin-sdk/code-mode-executor-runtime` to implement the `quickjs`

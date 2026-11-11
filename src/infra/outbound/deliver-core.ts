@@ -1,5 +1,6 @@
 // Executes normalized outbound payloads against the selected channel transport.
 import { resolveChunkMode, resolveTextChunkLimit } from "../../auto-reply/chunk.js";
+import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { payloadRequiresDurablePayloadTransport } from "../../channels/message/capabilities.js";
 import { resolveReceiptSourceId } from "../../channels/message/receipt.js";
 import { renderPresentationForDelivery } from "../../channels/plugins/outbound/presentation-delivery.js";
@@ -455,6 +456,17 @@ export async function deliverOutboundPayloadsCore(
       };
       const deliveryTarget = () =>
         deliveryHandler.buildTargetRef({ threadId: preparedTarget.threadId });
+      // Keep accepted content independent of adapters and later lifecycle observers.
+      // An uncloneable extension payload can still send, but cannot prove its content.
+      let acceptedPayload: typeof effectivePayload | undefined;
+      try {
+        acceptedPayload = copyReplyPayloadMetadata(
+          effectivePayload,
+          structuredClone(effectivePayload),
+        );
+      } catch {
+        acceptedPayload = undefined;
+      }
       const beforeCount = results.length;
       let mirroredPayload = payloadSummary;
       let mediaMessageIds: { first?: string; last?: string } | undefined;
@@ -507,6 +519,7 @@ export async function deliverOutboundPayloadsCore(
         }
         await sendTextChunks(deliveryHandler, fallbackText, sendOverrides);
         mirroredPayload = { ...payloadSummary, text: fallbackText, mediaUrls: [] };
+        acceptedPayload = undefined;
       } else {
         // Media observers use final adapter identities, not intermediate progress
         // results that may also remain in the reconciled delivery list.
@@ -544,6 +557,7 @@ export async function deliverOutboundPayloadsCore(
           index: payloadIndex,
           status: "sent",
           results: deliveredResults,
+          ...(acceptedPayload ? { acceptedPayload } : {}),
           ...(incompleteReason ? { incompleteReason } : {}),
           reportedPlacement: payloadEvidence.placement.snapshot(),
         });

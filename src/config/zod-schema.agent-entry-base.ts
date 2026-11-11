@@ -90,6 +90,7 @@ export const AgentEntryBaseSchema = z.strictObject({
   decisionModel: DecisionModelSchema.optional(),
   models: AgentModelMapSchema.optional(),
   modelPolicy: AgentModelPolicySchema.optional(),
+  permissionModeDefault: z.literal("read-only").optional(),
   thinkingDefault: z.enum(ALL_THINKING_LEVELS).optional(),
   verboseDefault: z.enum(["off", "on", "full"]).optional(),
   toolProgressDetail: z.enum(["explain", "raw"]).optional(),

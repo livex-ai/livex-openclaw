@@ -146,6 +146,9 @@ export function buildSlackEventDeliveryKey(
     text: renderedText || reply.trimmedText,
     mediaUrls: reply.mediaUrls,
     blocks: slackBlocks ?? null,
+    ...(renderPlan.mode === "single" && renderPlan.attachments?.length
+      ? { attachments: renderPlan.attachments }
+      : {}),
   });
 }
 
@@ -182,4 +185,9 @@ export async function resolveSlackStreamRecipientTeamId(params: {
     }
   }
   return params.fallbackTeamId;
+}
+
+export function formatSlackGroupThreadReply(text: string, participant: { name: string }): string {
+  const name = participant.name.replace(/[\\`*_{}[\]()<>#!|]/g, "\\$&").replace(/\s+/g, " ");
+  return `**${name}**\n${text}`;
 }

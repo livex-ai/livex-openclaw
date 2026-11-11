@@ -156,15 +156,31 @@ from later tool events.
 
 ## Auth order
 
-In the default per-agent home, auth is selected in this order:
+Auth is selected in this order:
 
 1. Ordered OpenAI auth profiles for the agent, preferably under
    `auth.order.openai`. Run `openclaw doctor --fix` to migrate older legacy
    Codex auth profile ids and legacy Codex auth order.
-2. The app-server's existing account in that agent's Codex home.
+2. The native Codex account, only with explicit `appServer.homeScope: "user"`
+   and when no host credential or account selection owns the route.
 3. For local stdio app-server launches only, `CODEX_API_KEY`, then
-   `OPENAI_API_KEY`, when no app-server account is present and OpenAI auth
-   is still required.
+   `OPENAI_API_KEY`, when the selected route requires API-key authentication
+   and no app-server account is present.
+
+The default agent home uses OpenClaw auth profiles. Credentials are handed to
+Codex for that process; `codex-home/auth.json` is not its runtime auth store.
+For a headless VM, run the following command with the service's state directory
+and configuration, then approve the code in a browser:
+
+```bash
+openclaw models auth login --provider openai --method device-code --agent oncall
+```
+
+Replace `oncall` with the configured agent ID. Model selection is separate from
+sign-in. Keep the complete OpenClaw state directory across container replacement.
+Do not copy a Desktop Codex auth file into the managed agent home. See
+[OpenAI runtimes](/providers/openai/runtimes) for supported auth import and
+explicit user-home behavior.
 
 When OpenClaw sees a ChatGPT subscription-style Codex auth profile, it
 removes `CODEX_API_KEY` and `OPENAI_API_KEY` from the spawned Codex child

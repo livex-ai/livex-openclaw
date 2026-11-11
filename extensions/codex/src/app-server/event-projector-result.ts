@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { AgentHarnessToolResultTelemetry } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { resolveCodexTtsProvenanceTransfer } from "openclaw/plugin-sdk/codex-mcp-projection";
+import type { Model } from "openclaw/plugin-sdk/llm";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   attemptTerminal,
@@ -27,7 +28,7 @@ import { CodexToolSearchEvidenceProjection } from "./event-projector-tool-search
 import { CodexToolTranscriptProjection } from "./event-projector-tool-transcript.js";
 import { CodexUsageProjection } from "./event-projector-usage.js";
 import { readCodexProviderRefusal, type CodexProviderRefusal } from "./event-projector-values.js";
-import type { CodexTurn, JsonValue } from "./protocol.js";
+import type { CodexTurn, JsonObject, JsonValue } from "./protocol.js";
 import { CodexTranscriptCheckpoint } from "./transcript-checkpoint.js";
 import { attachCodexAssistantItemIds } from "./upstream-prompt-provenance.js";
 import { resolveCodexPromptError } from "./usage-limit-error.js";
@@ -103,7 +104,7 @@ export abstract class CodexTurnProjection {
   protected aborted = false;
   protected contextTokens: number | undefined;
   protected contextTokensSource: "runtime" | "runtime-configured" | "resolved" | undefined;
-  protected readonly usageProjection = new CodexUsageProjection();
+  protected readonly usageProjection: CodexUsageProjection;
   protected completedCompactionCount = 0;
 
   constructor(
@@ -111,7 +112,14 @@ export abstract class CodexTurnProjection {
     protected readonly threadId: string,
     protected readonly turnId: string,
     protected readonly options: CodexAppServerEventProjectorOptions = {},
+    billing?: { model: Model; baseline?: JsonObject | null },
   ) {
+    const pricingModel = billing
+      ? billing.model.id === params.model.id && billing.model.provider === params.model.provider
+        ? billing.model
+        : null
+      : undefined;
+    this.usageProjection = new CodexUsageProjection(pricingModel, billing?.baseline);
     this.settlement = new CodexProjectionSettlement(params, () => !this.projectionClosed);
     this.transcriptCheckpoint = new CodexTranscriptCheckpoint(params, threadId, turnId);
     this.asyncDeliveryProjection = new CodexAsyncDeliveryProjection(

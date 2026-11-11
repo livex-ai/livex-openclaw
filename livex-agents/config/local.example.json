@@ -1,0 +1,10 @@
+{
+  "gcloudPath": "/opt/google-cloud-sdk/bin/gcloud",
+  "cloudSdkConfig": "/home/operator/.config/gcloud",
+  "gcloudAccount": "oncall-reader@example.com",
+  "openclawCommand": "/usr/local/bin/openclaw",
+  "pythonPath": "/usr/bin/python3",
+  "gcloudSdkRoot": "/opt/google-cloud-sdk",
+  "project": "example-project",
+  "slackSenderId": "U000000001"
+}

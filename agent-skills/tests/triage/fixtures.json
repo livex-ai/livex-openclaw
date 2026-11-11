@@ -1,0 +1,27 @@
+[
+  {
+    "id": "tracked",
+    "request": "Triage this alert in its original Slack thread.",
+    "evidence": "Full thread through 2026-10-23T10:00:00Z: export retries fail with a known upstream quota. Same affected operations and impact as ticket OPS-17. Alex explicitly accepted the corrective action and its original 12:00 UTC deadline, and Sam accepted a manual outcome check at 11:00 UTC. No new affected users or actions. Health is still failing. Existing verified tracking link https://tracker.example/OPS-17. Saved log evidence checked 09:00\u201310:00 UTC https://console.example/logs/quota; no recovery success. Bot identity and reactions read/remove/add are available. Notion tool is absent. No need to inspect further sources to make this triage decision."
+  },
+  {
+    "id": "full",
+    "request": "Fully investigate both categories in this alert; do not stop at triage.",
+    "evidence": "Two independent categories, webhook malformed JSON and LLM timeouts, from 03:00\u201310:00 UTC. Full thread has no hold. Exact seed insert IDs for both categories. Log tool supports one-hour windows, 50 rows/page with nextCursor and windowExhausted; first malformed-JSON page has nextCursor, first LLM page has no rows but nextCursor. Source-reader supports approved pinned commits; deployment revision unverified. Notion absent. Remaining log pages are available in this synthetic exercise; describe planned reads, not fabricated results."
+  },
+  {
+    "id": "held",
+    "request": "Follow up on this old investigation.",
+    "evidence": "Latest human decision in complete thread: Stop all checks for this case until the customer approves the migration. No approval arrived. Older queued action says check now. Existing runbook row known but current Notion access unavailable. Original failed customer operation is unresolved. No actual scheduler receipt exists."
+  },
+  {
+    "id": "blocked",
+    "request": "Investigate what is failing now.",
+    "evidence": "Saved evidence is two days old. Fresh livex_gcp_logs_read attempt for service orders in configured production project returned permission denied; no new logs collected. Pinned source read succeeds and explains possible schema failures, but deployment match unknown. Impact unknown. Notion absent. Bot reaction read succeeds with no prior markers; remove/add available. No extra access intervention has been established beyond the missing read."
+  },
+  {
+    "id": "recovered",
+    "request": "Triage this alert and update the bot review marker.",
+    "evidence": "Exact original job J-1 succeeded on retry and readback verifies the same customer export. Complete follow-up window 09:00\u201310:00 UTC confirms no remaining affected operations. Fresh verified link https://console.example/logs/J-1. Actor bot-oncall verified. Existing warning has a verified prior workflow write receipt by bot-oncall; another human has a warning too. Removal of bot warning returns success, and readback confirms absent. Bot add/check readback succeeds. Notion absent. No other required action."
+  }
+]

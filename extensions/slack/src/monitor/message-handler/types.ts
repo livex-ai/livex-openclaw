@@ -2,6 +2,7 @@ import type { MessageMetadata } from "@slack/types";
 import type { InboundReplyRecordOptions } from "openclaw/plugin-sdk/channel-inbound";
 import type { ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import type { FinalizedMsgContext, GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
+import type { PreparedReplyTurn } from "openclaw/plugin-sdk/reply-turns";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import type { SlackSendIdentity } from "../../send.js";
@@ -30,6 +31,7 @@ export type PreparedSlackMessage = {
   channelConfig: SlackChannelConfigResolved | null;
   replyTarget: string;
   ctxPayload: FinalizedMsgContext;
+  replyTurn?: PreparedReplyTurn;
   turn: {
     record: InboundReplyRecordOptions;
   };

@@ -1,0 +1,12 @@
+{
+  "oncall": [
+    "investigate-alerts",
+    "debug",
+    "systematic-debugging",
+    "verification-before-completion"
+  ],
+  "debugging": [
+    "systematic-debugging",
+    "verification-before-completion"
+  ]
+}

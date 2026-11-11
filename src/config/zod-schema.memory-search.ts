@@ -5,6 +5,7 @@ import { sensitive } from "./zod-schema.sensitive.js";
 export const MemorySearchSchema = z
   .strictObject({
     enabled: z.boolean().optional(),
+    includeWorkspace: z.boolean().optional(),
     rememberAcrossConversations: z.boolean().optional(),
     sources: z.array(z.union([z.literal("memory"), z.literal("sessions")])).optional(),
     extraPaths: z

@@ -96,6 +96,35 @@ const multimodal: MemoryMultimodalSettings = normalizeMemoryMultimodalSettings({
 describe("memory host SDK package internals", () => {
   const getTmpDir = setupTempDirLifecycle("memory-package-");
 
+  it("discovers only explicit extra files when workspace memory is excluded", async () => {
+    const workspaceDir = path.join(getTmpDir(), "workspace");
+    const catalog = path.join(getTmpDir(), "investigations.md");
+    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "private root");
+    await fs.writeFile(path.join(workspaceDir, "USER.md"), "private profile");
+    await fs.writeFile(path.join(workspaceDir, "memory", "note.md"), "private note");
+    await fs.writeFile(catalog, "approved catalog");
+
+    expect(
+      await listMemoryFiles(workspaceDir, [catalog], undefined, undefined, {
+        includeWorkspace: false,
+      }),
+    ).toEqual([catalog]);
+    expect(
+      await listMemoryFiles(workspaceDir, [], undefined, undefined, {
+        includeWorkspace: false,
+      }),
+    ).toEqual([]);
+    expect((await listMemoryFiles(workspaceDir, [catalog])).toSorted()).toEqual(
+      [
+        catalog,
+        path.join(workspaceDir, "MEMORY.md"),
+        path.join(workspaceDir, "USER.md"),
+        path.join(workspaceDir, "memory", "note.md"),
+      ].toSorted(),
+    );
+  });
+
   it.skipIf(process.platform === "win32")(
     "rejects an uppercase explicit extra file on case-sensitive hosts",
     async () => {

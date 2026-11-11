@@ -15,6 +15,9 @@ import type {
   PluginRecord,
   PluginTextTransformsRegistration,
 } from "./registry-types.js";
+import { registerLinkedReportEditAuthority } from "./reply-turn-report-edits.js";
+import type { ReplyTurnProvider } from "./reply-turn.types.js";
+import type { AgentReportProfile } from "./report-profile.types.js";
 import { validateStorageProviderContract } from "./storage-provider-registry.js";
 import type { CliBackendPlugin, ProviderPlugin } from "./types.js";
 import { validateWorkerProviderContract } from "./worker-provider-registry.js";
@@ -211,6 +214,94 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     );
   };
 
+  const registerReportProfile = (record: PluginRecord, profile: AgentReportProfile) => {
+    const validNames = (values: readonly string[]) =>
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every(
+        (value) => typeof value === "string" && value.length > 0 && value === value.trim(),
+      );
+    if (
+      !profile.id?.trim() ||
+      profile.id !== profile.id.trim() ||
+      !validNames(profile.agentIds) ||
+      !validNames(profile.channels) ||
+      !profile.inputSchema ||
+      typeof profile.inputSchema !== "object" ||
+      !profile.instructions?.trim() ||
+      typeof profile.prepare !== "function" ||
+      typeof profile.appendNotice !== "function" ||
+      (profile.amend !== undefined && typeof profile.amend !== "function") ||
+      (profile.prepareLegacy !== undefined && typeof profile.prepareLegacy !== "function")
+    ) {
+      reportRegistrationError(record, "invalid agent report profile contract");
+      return;
+    }
+    if (
+      registry.reportProfiles.some(
+        (entry) =>
+          entry.profile.id === profile.id ||
+          (entry.profile.agentIds.some((id) => profile.agentIds.includes(id)) &&
+            entry.profile.channels.some((channel) => profile.channels.includes(channel))),
+      )
+    ) {
+      // Retain conflicting claims as diagnostics so resolution cannot depend on load order.
+      reportRegistrationError(record, `report profile already registered: ${profile.id}`);
+    }
+    registry.reportProfiles.push(createRegistration(record, { profile }));
+  };
+
+  const registerReplyTurnProvider = (record: PluginRecord, provider: ReplyTurnProvider) => {
+    const validNames = (values: readonly string[]) =>
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every(
+        (value) => typeof value === "string" && value.length > 0 && value === value.trim(),
+      );
+    if (
+      !provider.id?.trim() ||
+      provider.id !== provider.id.trim() ||
+      !validNames(provider.agentIds) ||
+      !validNames(provider.channels) ||
+      typeof provider.prepare !== "function" ||
+      (provider.allowLinkedReportEdits !== undefined &&
+        typeof provider.allowLinkedReportEdits !== "boolean")
+    ) {
+      reportRegistrationError(record, "invalid reply turn provider contract");
+      return;
+    }
+    if (
+      registry.replyTurnProviders.some(
+        (entry) =>
+          entry.provider.id === provider.id ||
+          (entry.provider.agentIds.some((id) => provider.agentIds.includes(id)) &&
+            entry.provider.channels.some((channel) => provider.channels.includes(channel))),
+      )
+    ) {
+      // Keep every claim so the resolver fails closed independently of registration order.
+      reportRegistrationError(record, `reply turn provider already registered: ${provider.id}`);
+    }
+    const instance = getPluginInstance(record);
+    const prepare: ReplyTurnProvider["prepare"] = async (input) => {
+      const turn = await provider.prepare(input);
+      if (turn) {
+        // Each returned factory has its own executable result contract. Data remains data.
+        instance?.admitFactory(turn.lifecycle);
+        instance?.admitFactory(turn.createDelivery, ["deliver", "queuedCorrelation"]);
+      }
+      return turn;
+    };
+    instance?.admitFactory(prepare, [
+      "assertCurrent",
+      "lifecycle",
+      "releaseImmediate",
+      "createDelivery",
+    ]);
+    const registration = createRegistration(record, { provider: { ...provider, prepare } });
+    registerLinkedReportEditAuthority(registration);
+    registry.replyTurnProviders.push(registration);
+  };
+
   const registerEmbeddingProvider = (record: PluginRecord, adapter: EmbeddingProviderAdapter) => {
     const id = adapter.id.trim();
     if (!id) {
@@ -331,6 +422,8 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     registerAgentExecutorController,
     registerCliBackend,
     registerTextTransforms,
+    registerReportProfile,
+    registerReplyTurnProvider,
     registerEmbeddingProvider,
     registerWorkerProvider: createContractProviderRegistrar(
       "worker",
