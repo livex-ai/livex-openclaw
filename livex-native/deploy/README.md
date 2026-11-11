@@ -108,6 +108,11 @@ validate` in the new image; start the new gateway; wait up to 120 s for
 
 ### Plugins
 
+OpenClaw treats a local tarball as an unverified source and asks for capability
+consent, even for the official Slack package. `apply.mjs` passes
+`--accept-capabilities` for the sha512-pinned tarball, then checks the accepted
+surface: anything beyond the Slack channel and its skills fails the deploy.
+
 - **codex** is bundled in the official image (`docs/install/docker.md`). Apply
   never installs it and fails if `plugins list` does not show it.
 - **Slack** is a separate package (`bundledDist: false`). The image build runs

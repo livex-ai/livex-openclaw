@@ -112,10 +112,29 @@ function ensurePlugins() {
   }
   if (!fs.existsSync(slackTarball)) throw new Error(`Slack plugin tarball missing: ${slackTarball}`);
   console.log(`plugin slack: ${have ?? "absent"} -> ${pinned} (local tarball)`);
-  const result = runCli(["plugins", "install", `npm-pack:${slackTarball}`, "--force"]);
-  if (result.status !== 0) throw new Error(`slack plugin install failed (exit ${result.status})`);
+  // A local tarball is an unverified source to OpenClaw, so it asks for capability
+  // consent even for the official package. The tarball is the sha512-pinned
+  // @openclaw/slack build, so consent is given here and the accepted surface is
+  // checked below: anything beyond the Slack channel and its skills fails the deploy.
+  const result = runCli(["plugins", "install", `npm-pack:${slackTarball}`, "--force", "--accept-capabilities"]);
+  if (result.status !== 0) {
+    // CLI output carries no secrets; show it so the cause is visible in the deploy log.
+    process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+    throw new Error(`slack plugin install failed (exit ${result.status})`);
+  }
   const after = listedPlugins().get("slack")?.version;
   if (after !== pinned) throw new Error(`slack plugin is ${after ?? "absent"} after install, expected ${pinned}`);
+  const inspected = runCli(["plugins", "inspect", "slack", "--json"]);
+  if (inspected.status !== 0) throw new Error("`plugins inspect slack --json` failed");
+  const info = JSON.parse(inspected.stdout.slice(inspected.stdout.indexOf("{")));
+  const capabilities = JSON.stringify(info.capabilities ?? []);
+  const surface = info.install?.acceptedSurface ?? {};
+  const extra = ["providers", "tools", "contracts", "hooks", "mcpServers", "cliCommands", "cliBackends", "dangerousConfigFlags"]
+    .filter((key) => (surface[key] ?? []).length > 0);
+  if (capabilities !== '[{"kind":"channel","ids":["slack"]}]' || extra.length > 0) {
+    throw new Error(`slack plugin declares more than the Slack channel (capabilities ${capabilities}; extra ${extra.join(",") || "none"}); refusing`);
+  }
+  console.log("plugin slack: installed, capabilities = Slack channel only");
 }
 
 function backupConfig() {
