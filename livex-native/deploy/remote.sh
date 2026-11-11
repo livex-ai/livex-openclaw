@@ -13,9 +13,18 @@ umask 077
 sha=${1:-}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "Usage: remote.sh FULL_COMMIT_SHA" >&2; exit 2; }
 
-# Same allowlist as deploy.sh: only ever run on a test VM.
-[[ $(hostname) =~ ^livex-openclaw-test(-[a-z0-9-]+)?$ ]] \
-  || { echo "Refusing to run on host '$(hostname)': not a livex-openclaw-test VM." >&2; exit 1; }
+# Same allowlist as deploy.sh: a test VM, or livex-openclaw-dev only in the explicit
+# side-by-side mode (LIVEX_ON_DEV_VM=1). This script never touches /opt/livex-openclaw.
+on_dev=0
+[[ ${LIVEX_ON_DEV_VM:-0} == 1 ]] && on_dev=1
+dev_container=livex-openclaw-dev-gateway-1
+if ((on_dev)); then
+  [[ $(hostname) == livex-openclaw-dev ]] \
+    || { echo "Refusing: LIVEX_ON_DEV_VM=1 but host is '$(hostname)'." >&2; exit 1; }
+else
+  [[ $(hostname) =~ ^livex-openclaw-test(-[a-z0-9-]+)?$ ]] \
+    || { echo "Refusing to run on host '$(hostname)': not a livex-openclaw-test VM." >&2; exit 1; }
+fi
 
 root=${LIVEX_ROOT:-/opt/livex-openclaw-test}
 project=livex-openclaw-test
@@ -92,6 +101,7 @@ restore_state() {
 
 previous=""
 [[ -s $root/current ]] && previous=$(<"$root/current")
+dev_stopped=0 # set when this run stopped PR #1's Gateway (side-by-side mode)
 have_snapshot=0
 restored=1
 phase=prepare # prepare -> stopped (old gateway down) -> done
@@ -120,17 +130,30 @@ on_exit() {
         echo "  Fix by hand: tar -tzf the snapshot, then restore it over $state, then start the previous image (README, Rollback)." >&2
       fi
     fi
+    local test_ready=0
     if ((!restored)); then
       :
     elif [[ -n $previous ]]; then
       echo "Rolling back to $previous" >&2
       if dc "$previous" up -d --pull never gateway >&2 && wait_ready; then
+        test_ready=1
         echo "Rollback ready on $previous; $sha was NOT activated." >&2
       else
         echo "ROLLBACK ALSO FAILED. Inspect: sudo docker logs livex-openclaw-test-gateway-1" >&2
       fi
     else
       echo "First deploy failed: gateway left stopped (state unchanged or restored)." >&2
+    fi
+    # Side-by-side mode: if this run stopped PR #1 and no livex-native Gateway is
+    # ready now, bring PR #1 back so Slack is not left without a bot. Stop ours first
+    # so the two never share the Slack app.
+    if ((dev_stopped && !test_ready)); then
+      dc "$new_image" stop gateway >/dev/null 2>&1 || true
+      if docker start "$dev_container" >/dev/null; then
+        echo "PR #1's Gateway ($dev_container) was started again." >&2
+      else
+        echo "Could not start PR #1's Gateway: sudo docker start $dev_container" >&2
+      fi
     fi
   fi
   exit "$rc"
@@ -164,6 +187,13 @@ dc "$new_image" run --rm --no-deps -T \
   --entrypoint node cli /opt/livex-native/deploy/apply.mjs
 dc "$new_image" run --rm --no-deps -T cli config validate
 
+if ((on_dev)) && [[ $(docker inspect --format '{{.State.Running}}' "$dev_container" 2>/dev/null) == true ]]; then
+  # One Slack app, one active Gateway: stop PR #1 only now, after the new image is
+  # built and its config validated. `stop` keeps its unless-stopped container down.
+  echo "== stop PR #1 Gateway ($dev_container)"
+  docker stop "$dev_container" >/dev/null
+  dev_stopped=1
+fi
 echo "== start $new_image"
 dc "$new_image" up -d --pull never gateway
 wait_ready || { echo "$health_url not ready within ${health_timeout}s." >&2; exit 1; }
@@ -197,8 +227,9 @@ for dir in $(ls -1t "$root/releases" 2>/dev/null); do
   count=$((count + 1))
   [[ $dir == "$sha" || $previous == *":$dir" || $count -le $keep ]] || rm -rf "${root:?}/releases/$dir"
 done
-# Best-effort housekeeping: old build cache, and failed-state dirs beyond the newest two.
-docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+# Best-effort housekeeping: old build cache (not on the shared dev VM, where the
+# cache also serves PR #1's builds), and failed-state dirs beyond the newest two.
+((on_dev)) || docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
 for dir in $(ls -1dt "$root"/state.failed.* 2>/dev/null | tail -n +3); do rm -rf "$dir" || true; done
 echo "== disk after deploy"
 df -h "$root" || true
