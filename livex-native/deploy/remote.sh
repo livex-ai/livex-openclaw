@@ -102,6 +102,7 @@ restore_state() {
 previous=""
 [[ -s $root/current ]] && previous=$(<"$root/current")
 dev_stopped=0 # set when this run stopped PR #1's Gateway (side-by-side mode)
+was_running=0 # our gateway was running before this deploy (rollback only restarts it then)
 have_snapshot=0
 restored=1
 phase=prepare # prepare -> stopped (old gateway down) -> done
@@ -133,6 +134,14 @@ on_exit() {
     local test_ready=0
     if ((!restored)); then
       :
+    elif [[ -n $previous ]] && ((!was_running)); then
+      # Ours was not running before this deploy (for example the operator switched
+      # back to PR #1), so a rollback must not start it.
+      echo "Previous release $previous was not running before this deploy; left stopped." >&2
+    elif [[ -n $previous ]] && ((on_dev)) \
+      && [[ $(docker inspect --format '{{.State.Running}}' "$dev_container" 2>/dev/null) == true ]]; then
+      # Never run two Gateways on one Slack app.
+      echo "PR #1's Gateway is running; not starting $previous next to it." >&2
     elif [[ -n $previous ]]; then
       echo "Rolling back to $previous" >&2
       if dc "$previous" up -d --pull never gateway >&2 && wait_ready; then
@@ -172,6 +181,7 @@ docker build \
   -f "$deploy/Dockerfile" -t "$new_image" "$release"
 
 echo "== stop gateway, snapshot state, apply config"
+[[ $(docker inspect --format '{{.State.Running}}' "$project-gateway-1" 2>/dev/null) == true ]] && was_running=1
 phase=stopped
 dc "$new_image" stop gateway
 # Snapshot after the stop so SQLite files are quiescent. Only this directory

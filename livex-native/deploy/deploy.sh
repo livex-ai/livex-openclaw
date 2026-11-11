@@ -82,8 +82,10 @@ upload="livex-deploy-$sha.tgz"
 if ((on_dev)); then
   # 1. Idempotent side-by-side setup on the dev VM (creates /opt/livex-openclaw-test
   #    and, once, runtime.env from PR #1's running Gateway). Sent from the reviewed sha.
+  # The script goes over stdin (`bash -s`), so it doesn't depend on the remote
+  # login shell's quoting.
   bootstrap=$(git -C "$repo" show "$sha:livex-native/deploy/dev-bootstrap.sh")
-  run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="sudo bash -c $(printf %q "$bootstrap")"
+  run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="sudo bash -s" <<<"$bootstrap"
 else
   # 1. The VM must already be set up (README); also proves access before uploading.
   run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="sudo test -d $root/state && sudo test -r $root/runtime.env"
