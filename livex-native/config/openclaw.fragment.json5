@@ -1,0 +1,106 @@
+// LiveX on stock OpenClaw: merge these keys into ~/.openclaw/openclaw.json.
+//
+// Set the environment variables below for the Gateway process (or replace the
+// ${...} placeholders with literal values). Missing variables stay visibly unresolved
+// and the plugin stays disabled until its required config resolves.
+//
+// Everything here is ordinary config; no OpenClaw core patches are needed.
+{
+  plugins: {
+    // Keep any ids you already allow (for example your channels) in this list.
+    allow: ["openai", "codex", "slack", "livex-gcp-readonly"],
+    entries: {
+      openai: { enabled: true },
+      // Codex is the agent's brain: OpenAI model turns run in the Codex app-server.
+      codex: {
+        enabled: true,
+        config: {
+          // Codex's native shell stays available inside a read-only sandbox.
+          // With tools.exec.mode "ask" the effective policy is sandbox read-only,
+          // approvalPolicy on-request, approvalsReviewer user: any escalation
+          // request goes to a human (extensions/codex/src/app-server/config.test.ts:141-153).
+          appServer: {
+            homeScope: "agent",
+            sandbox: "read-only",
+            approvalPolicy: "on-request",
+          },
+          sessionCatalog: { enabled: false },
+          supervision: { enabled: false },
+        },
+      },
+      slack: { enabled: true },
+      "livex-gcp-readonly": {
+        enabled: true,
+        config: {
+          gcloudPath: "${GCLOUD_PATH}",
+          cloudSdkConfig: "${CLOUDSDK_CONFIG}",
+          gcloudAccount: "${GCLOUD_ACCOUNT}",
+          project: "${GCP_PROJECT}",
+          allowedChannelId: "*",
+          allowedSenderId: "${SLACK_SENDER_ID}",
+          paging: {
+            enabled: true,
+            pythonPath: "${PYTHON_PATH}",
+            sdkRoot: "${GCLOUD_SDK_ROOT}",
+          },
+          repositories: [],
+        },
+      },
+    },
+    // No plugins.load.paths here: scripts/setup.sh runs
+    // `openclaw plugins install -l <livex-native>/plugins/livex-gcp-readonly`,
+    // which records the absolute path. Without setup.sh, add that absolute path
+    // to plugins.load.paths yourself (one entry, so the plugin id is found once).
+  },
+
+  // Every openai/* model turn uses the Codex runtime (/status: "Runtime: OpenAI Codex").
+  models: {
+    providers: {
+      openai: {
+        agentRuntime: { id: "codex" },
+      },
+    },
+  },
+
+  agents: {
+    // `openclaw agents add oncall ...` creates this entry and writes its absolute
+    // workspace path; merge the rest into it. workspace is intentionally omitted
+    // here so a merge never replaces that path. Without setup.sh, add
+    // workspace: "<absolute path to livex-native>/agents/oncall".
+    // A roster with more than one agent needs ownership: "explicit" (or one
+    // legacy default: true entry); keep whichever your config already uses.
+    entries: {
+      oncall: {
+        name: "LiveX On-call",
+        description: "Read-only production triage from Cloud Logging and pinned source.",
+        model: "openai/gpt-6-astra",
+        skills: [
+          "investigate-alerts",
+          "debug",
+          "systematic-debugging",
+          "verification-before-completion",
+        ],
+        tools: {
+          // OpenClaw tool allowlist: governs OpenClaw-managed tools only (the two
+          // LiveX evidence tools plus read-only helpers). Codex's native shell is
+          // bounded by the read-only appServer sandbox above, not by this list.
+          allow: [
+            "read",
+            "skills_read",
+            "message",
+            "livex_gcp_logs_read",
+            "livex_repository_read",
+          ],
+          message: { actions: { allow: ["read", "reactions"] } },
+          // "deny"/"allowlist" fail Codex preflight
+          // (extensions/codex/src/app-server/config-exec-policy.ts:93-103).
+          // "auto" forces model-backed approval review. "ask" keeps the read-only
+          // sandbox and routes any escalation request to a human.
+          exec: { mode: "ask" },
+          elevated: { enabled: false },
+          fs: { workspaceOnly: true },
+        },
+      },
+    },
+  },
+}

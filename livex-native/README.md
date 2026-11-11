@@ -1,0 +1,142 @@
+# LiveX on stock OpenClaw
+
+This folder shows LiveX running on unmodified OpenClaw. It has three parts:
+
+| Part | Path | What it is |
+| --- | --- | --- |
+| Tool plugin | `plugins/livex-gcp-readonly/` | `livex_gcp_logs_read` (Cloud Logging) and `livex_repository_read` (pinned source), both read-only |
+| Agent workspace | `agents/oncall/` | `AGENTS.md` triage instructions plus four skills in `skills/` |
+| Config fragment | `config/openclaw.fragment.json5` | Enables the plugins, makes Codex the runtime for `openai/*` models, defines the `oncall` agent |
+
+`scripts/setup.sh` ties them together. Nothing outside this folder changes.
+
+## 5-minute flow
+
+You need the `openclaw` CLI (Node 24+) with a running local Gateway, and
+`gcloud` signed in to an account that can read the project's logs.
+
+1. **Run the setup script.** It prints the commands first:
+
+   ```sh
+   livex-native/scripts/setup.sh           # dry run, prints commands
+   livex-native/scripts/setup.sh --apply   # runs them
+   ```
+
+   It installs `@openclaw/codex`, links the LiveX plugin
+   (`openclaw plugins install -l`), and runs `openclaw agents add oncall`. Then
+   sign in yourself, because the login is interactive:
+   `openclaw models auth login --provider openai`.
+2. **Merge the config.** Copy the keys from `config/openclaw.fragment.json5` into
+   `~/.openclaw/openclaw.json`, and set the `GCLOUD_*`,
+   `CLOUDSDK_CONFIG`, `GCP_PROJECT`, `SLACK_SENDER_ID` and `PYTHON_PATH`
+   variables for the Gateway. The script never restarts the Gateway; config
+   changes apply on the next hot reload.
+3. **Control UI, Plugins.** Check that `codex` and `livex-gcp-readonly` are
+   enabled, and fill in any plugin config fields that are missing.
+4. **Control UI, Agents.** Open `oncall`. You can also choose **New agent** and
+   point it at `livex-native/agents/oncall`.
+5. **Control UI, Automations.** Add a schedule that sends `oncall` a prompt.
+   Scheduled runs have no Slack requester, and the GCP tools are offered only
+   to a Slack turn from `allowedSenderId` in an allowed channel, so scheduled
+   runs cannot use them on stock main. Use schedules for non-GCP tasks, or add
+   an automation-caller option to the plugin config later.
+6. **Verify.** In a chat with the agent, `/status` shows `Runtime: OpenAI Codex`.
+   If the chat already has a session, run `/new` first.
+
+## Execution boundary
+
+`agents.entries.oncall.tools.allow` governs OpenClaw-managed tools only.
+Session permission modes and tool rules describe OpenClaw tools, and native
+harnesses keep their own tool surface (`docs/gateway/permission-modes.md:19`).
+Codex's native shell therefore still exists. With `tools.exec.mode: "ask"`, the
+effective Codex policy is `sandbox: "read-only"`, `approvalPolicy: "on-request"`
+and `approvalsReviewer: "user"`. Writes are blocked, and any request to step
+outside the sandbox goes to a human
+(`extensions/codex/src/app-server/config.test.ts:141-153`). `"deny"` and
+`"allowlist"` fail Codex preflight, and `"auto"` hands approvals to model review.
+
+The read-only sandbox blocks writes and network access but does not confine
+reads to the workspace. The "don't read credentials" rule in `AGENTS.md` is
+therefore advisory. Point `CLOUDSDK_CONFIG` at a directory that holds only a
+narrowly scoped, read-only credential. A host exec-approvals file with a `deny`
+or `allowlist` floor also makes Codex refuse turns
+(`extensions/codex/src/app-server/config.test.ts:854-935`); check it with
+`openclaw approvals get --gateway`.
+
+## Install mode
+
+The script uses a linked install because OpenClaw loads a plugin's TypeScript
+entry (`index.ts`) only from source checkouts and linked or local paths. An
+`npm-pack:` install needs compiled JavaScript (`dist/index.js`). Add a build step
+before you package the plugin that way.
+
+## Where data lives
+
+The paths below are under `~/.openclaw`, the default state directory.
+
+| Path | Contents |
+| --- | --- |
+| `openclaw.json` | Config: plugins, models, agents, channels |
+| `state/openclaw.sqlite` | Shared state: plugin state (including this plugin's log-page cache), shared auth store, pairing |
+| `agents/<id>/agent/openclaw-agent.sqlite` | The agent's sessions, transcripts and agent-local credentials |
+| `agents/<id>/sessions/` | Legacy JSONL sessions only; `openclaw doctor --fix` imports them into SQLite |
+| `agents/<id>/agent/codex-home/` | The Codex app-server home for that agent (`homeScope: "agent"`) |
+| workspace dirs | Default `workspace/` for `main`. `oncall` uses `livex-native/agents/oncall` |
+| `skills/` | Shared skills for all agents. Per-agent skills live in `<workspace>/skills/` |
+| `credentials/` | Channel credential files, such as WhatsApp auth. Many older files here are migrated into SQLite by `openclaw doctor --fix` |
+
+## Add the next plugin or agent
+
+- **Plugin:** copy `plugins/livex-gcp-readonly/` and give it a new
+  `openclaw.plugin.json` `id`, a new `contracts.tools` list and a new
+  `configSchema`. Then change `index.ts` to register your tools, and update the
+  `files` list in `package.json`. Link it with
+  `openclaw plugins install -l <dir> --force`, add the id to `plugins.allow`, and
+  add the tool names to the agent's `tools.allow`.
+- **Agent:** copy `agents/oncall/`, then edit `AGENTS.md` and the `skills/` it
+  needs. Run `openclaw agents add <id> --workspace <dir> --model openai/gpt-6-astra
+  --non-interactive`, and add an `agents.entries.<id>` block like the one in the
+  fragment.
+
+## Compared with PR #1
+
+PR #1 added `livex-agents/` and `agent-skills/`, and patched OpenClaw core in
+121 files (about 8.1k lines) under `src/`, `extensions/` and `packages/`.
+
+**Kept here:** the read-only GCP log and repository plugin with its tests, the
+on-call triage instructions, the four skills, and Codex as the runtime. The
+plugin's `delegated-context.test.mjs` is intentionally omitted because it imports
+OpenClaw core `src/`.
+
+**Policy changes from PR head:**
+
+| Setting | PR head | Here |
+| --- | --- | --- |
+| Codex `appServer.sandbox` | `workspace-write` | `read-only` |
+| Codex `appServer.approvalPolicy` | `on-request` | `on-request` (same) |
+| Effective Codex approvals reviewer | `auto_review` | `user`, a human, set by exec mode `ask` |
+| `oncall` `message` actions | `read`, `react`, `reactions` | `read`, `reactions` |
+| `oncall` `tools.profile` | `full` | not set; the exact `allow` list applies |
+| `oncall` `tools.exec.mode` | `auto` | `ask` |
+
+**Dropped:**
+
+| Dropped | How it could come back |
+| --- | --- |
+| Slack report cards and in-place report edits (the `livex-oncall-reports` plugin, plus Slack block and edit patches in `extensions/slack`) | A channel-reply plugin that renders cards through the Slack plugin's public send API. In-place edits need an upstream "edit own reply" hook in the Slack plugin |
+| Investigation memory and catalog (`livex-investigations`, `slack_investigation_record`, `investigations.md`) | A tool plugin that stores records in plugin state (`openKeyedStoreV2`) and exposes lookup and record tools. Pre-turn history injection needs an upstream context hook |
+| VM deploy pipeline (`deploy/gcp-vm/`) | A separate ops repo or a Claw bundle; it never needed to live in this tree |
+| About 8k lines of core patches (memory-core, Slack dispatch, agent tool context, Codex usage projection, session lineage) | Upstream PRs, one generic hook per need. One example is `runtime.agent.session.withDescendantSessionRead`, which the plugin's `child` recovery uses when the host provides it |
+
+Without that hook, `/livex-gcp-recover child ...` is refused with a clear
+message. Recovery in the same thread still works.
+
+## Checks
+
+From `plugins/livex-gcp-readonly/`, on Node 24 or later (Node 20 cannot load the
+`.ts` operation module):
+
+```sh
+node --test *.test.mjs
+python3 -B -m unittest -v test_logging_page.py
+```

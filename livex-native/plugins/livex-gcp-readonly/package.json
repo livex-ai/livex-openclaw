@@ -1,0 +1,33 @@
+{
+  "name": "@livex/local-gcp-readonly",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only Cloud Logging and pinned-source evidence tools for LiveX investigations.",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "core.mjs",
+    "paging.mjs",
+    "recovery.mjs",
+    "repository.mjs",
+    "page-store.mjs",
+    "page-store-operation.mjs",
+    "page-store-operation-api.ts",
+    "logging-page.py",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test *.test.mjs && python3 -B -m unittest -v test_logging_page.py"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.10.5"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.10.5",
+      "minGatewayVersion": "2026.10.5"
+    }
+  }
+}
