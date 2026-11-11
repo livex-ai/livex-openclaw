@@ -443,9 +443,39 @@ async function investigate(
   },
 ) {
   const lifetime = AbortSignal.any([signal, AbortSignal.timeout(owner.config.maxRunMs)]);
+  const { session, runEmbeddedAgent } = owner.api.runtime.agent;
+  const agentId = "oncall";
+  const storePath = session.resolveStorePath(owner.sourceConfig.session?.store, { agentId });
+  const sessionTarget = {
+    agentId,
+    sessionId: identity.sessionId,
+    sessionKey: identity.sessionKey,
+    storePath,
+  };
+  const assertCurrent = () => {
+    lifetime.throwIfAborted();
+    owner.assertCurrent();
+  };
+  assertCurrent();
+  const entry = {
+    pluginOwnerId: owner.api.id,
+    sessionId: identity.sessionId,
+    updatedAt: Date.now(),
+  };
+  const created = await session.prepareSessionEntryPatch({
+    ...sessionTarget,
+    authority: { kind: "host", assertCurrent },
+    fallbackEntry: entry,
+    requireWriteSuccess: true,
+    prepare: (_entry, context) => (context.existingEntry ? null : entry),
+  });
+  if (created?.sessionId !== identity.sessionId) {
+    throw new Error("Could not create the reserved Oncall Debugger session");
+  }
+  assertCurrent();
   const token = owner.capabilities.issue(receipt.alert, {
     ...identity,
-    agentId: "oncall",
+    agentId,
     signal: lifetime,
   });
   try {
@@ -455,7 +485,8 @@ async function investigate(
       identity,
       token,
       signal: lifetime,
-      run: owner.api.runtime.agent.runEmbeddedAgent,
+      assertCurrent,
+      run: (params) => runEmbeddedAgent({ ...params, sessionTarget }),
     });
   } finally {
     owner.capabilities.revoke(token);

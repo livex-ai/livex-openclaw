@@ -13,6 +13,8 @@ import {
   setAppliedRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../../../src/config/runtime-snapshot.js";
+import { resolveSessionStorePathCore } from "../../../../src/config/sessions/paths.js";
+import { readSessionEntryReadOnlyInWorker } from "../../../../src/config/sessions/session-entry-read-runtime.js";
 import {
   createCronServiceWithStateForTest,
   createNoopLogger,
@@ -662,6 +664,16 @@ function slackResponse(method: string, currentTime: number, availableIncidents: 
 }
 
 async function executeProductionRun(run: any) {
+  const storePath = resolveSessionStorePathCore(run.config.session?.store, { agentId: "oncall" });
+  await expect(
+    readSessionEntryReadOnlyInWorker({ agentId: "oncall", sessionKey: run.sessionKey, storePath }),
+  ).resolves.toMatchObject({ sessionId: run.sessionId, pluginOwnerId: "livex-gcp-readonly" });
+  expect(run.sessionTarget).toEqual({
+    agentId: "oncall",
+    sessionId: run.sessionId,
+    sessionKey: run.sessionKey,
+    storePath,
+  });
   const admitted = await resolvePreparedRunAdmission({ ...run, runtimeKind: "embedded" });
   const attempt = {
     ...createParams(state.path("actual.jsonl"), state.workspaceDir, {
