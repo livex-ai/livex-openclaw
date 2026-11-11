@@ -378,6 +378,29 @@ reconciliation.
 
 ## Add an agent using native configuration
 
+### Pilot a Control UI agent on DEV
+
+Use the [SSH tunnel above](#authorized-cutover-and-private-access) to open the DEV
+Control UI. **New agent** requires the Gateway's `openclaw.chat` method and
+`operator.admin` scope.
+
+1. In **Agents → New agent**, request a custom agent with an unused ID and a
+   new workspace. Review the proposed identity and workspace before approving.
+2. In **Manage agents**, verify the agent has a read-only policy and a narrow
+   tool allowlist. Leave Slack routing, delegation, and schedules unconfigured.
+3. Run a harmless task in a fresh session. Record the agent ID, workspace, tool
+   policy, and result for comparison after an update.
+4. After the next authorized DEV image update, confirm those settings are still
+   present and repeat the task in another fresh session. If a setting changed,
+   capture the before/after values and the deployed revision for investigation.
+
+The Control UI writes this agent to persistent VM configuration. Keep its ID
+outside the Git-managed bundle during the pilot. Moving an existing agent into
+the bundle needs an explicit ownership transfer because activation rejects
+adopting an existing unmanaged ID.
+
+### Add a Git-managed role
+
 Only Oncall is registered by default. `livex-agents/config/examples/debugger.json`
 and `verifier.json` are inactive native configuration fragments, not an additional
 schema or runtime. To enable a role in a future reviewed deployment:
