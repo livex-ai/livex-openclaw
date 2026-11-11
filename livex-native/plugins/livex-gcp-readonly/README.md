@@ -13,7 +13,9 @@ does), or list this directory in `plugins.load.paths`. OpenClaw loads the
 TypeScript entry only from linked or local paths; an `npm pack` /
 `npm-pack:` install needs a JavaScript build step (`dist/`) first. Add `livex-gcp-readonly` to `plugins.allow`, set its configuration under
 `plugins.entries`, and add `livex_gcp_logs_read` and `livex_repository_read` to
-the agent tool allowlist. The manifest lists required configuration fields. Keep
+the agent tool allowlist. The manifest lists required configuration fields. Set `SLACK_SENDER_ID` (the
+`allowedSenderId` value) before enabling the plugin: an unresolved or malformed
+sender ID makes the repository tool fail at creation instead of staying hidden. Keep
 credentials and local paths outside the repository.
 
 Use `mode: discover` with observed correlation IDs or 1–10 `insertIds`, exact UTC

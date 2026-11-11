@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the LiveX on-call agent on a stock OpenClaw install.
+# Set up the LiveX oncall and debugger agents on a stock OpenClaw install.
 #
 # Default is a dry run that only prints the commands. Pass --apply to run them.
 # This script never restarts a Gateway and never runs interactive sign-in.
@@ -20,9 +20,9 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLUGIN_DIR="$ROOT/plugins/livex-gcp-readonly"
-WORKSPACE_DIR="$ROOT/agents/oncall"
+AGENTS_DIR="$ROOT/agents"
+AGENT_IDS=(oncall debugger)
 FRAGMENT="$ROOT/config/openclaw.fragment.json5"
-AGENT_ID="oncall"
 MODEL="openai/gpt-6-astra"
 
 run() {
@@ -79,12 +79,14 @@ echo "#    and makes a re-run safe."
 run openclaw plugins install -l "$PLUGIN_DIR" --force
 echo
 
-echo "# 4. Create the on-call agent with this folder as its workspace."
-if [ "$APPLY" -eq 1 ] && has_agent "$AGENT_ID"; then
-  echo "agent $AGENT_ID already exists; skipping agents add."
-else
-  run openclaw agents add "$AGENT_ID" --workspace "$WORKSPACE_DIR" --model "$MODEL" --non-interactive
-fi
+echo "# 4. Create each agent with its folder under agents/ as its workspace."
+for agent_id in "${AGENT_IDS[@]}"; do
+  if [ "$APPLY" -eq 1 ] && has_agent "$agent_id"; then
+    echo "agent $agent_id already exists; skipping agents add."
+  else
+    run openclaw agents add "$agent_id" --workspace "$AGENTS_DIR/$agent_id" --model "$MODEL" --non-interactive
+  fi
+done
 echo
 
 cat <<EOF
@@ -97,9 +99,18 @@ cat <<EOF
 # 6. In the Control UI:
 #    - Plugins: confirm codex and livex-gcp-readonly are enabled; fill any
 #      missing livex-gcp-readonly config fields.
-#    - Agents: open "$AGENT_ID" (or use New agent and point it at
-#      $WORKSPACE_DIR).
+#    - Agents: open "oncall" for triage and "debugger" for deep diagnosis
+#      (or use New agent and point it at $AGENTS_DIR/<id>). Neither hands work
+#      to the other automatically. Both LiveX tools answer only Slack turns
+#      from SLACK_SENDER_ID, so a Control UI chat gets no LiveX evidence.
 #    - Automations: add a schedule for non-GCP tasks. Scheduled runs have no
 #      Slack requester, so the GCP tools are not offered to them.
 #    - In a chat with the agent, run /status and check "Runtime: OpenAI Codex".
+#
+# 7. Route Slack: unbound traffic goes to agents.defaults.systemAgent (often
+#    main). Send Slack to oncall:
+#      openclaw agents bind --agent oncall --bind slack
+#    For a dedicated debugger channel, add a peer binding to openclaw.json
+#    (commented example at the end of the fragment). Do not bind debugger to
+#    all of slack; that would route every alert to it.
 EOF

@@ -63,12 +63,23 @@
   },
 
   agents: {
-    // `openclaw agents add oncall ...` creates this entry and writes its absolute
-    // workspace path; merge the rest into it. workspace is intentionally omitted
-    // here so a merge never replaces that path. Without setup.sh, add
-    // workspace: "<absolute path to livex-native>/agents/oncall".
-    // A roster with more than one agent needs ownership: "explicit" (or one
-    // legacy default: true entry); keep whichever your config already uses.
+    // `openclaw agents add <id> ...` (scripts/setup.sh) creates each entry and
+    // writes its absolute workspace path; merge the rest into it. workspace is
+    // intentionally omitted here so a merge never replaces that path. Without
+    // setup.sh, add workspace: "<absolute path to livex-native>/agents/<id>".
+    //
+    // A roster with more than one agent needs ownership: "explicit" or exactly
+    // one legacy default: true entry, and "explicit" cannot be combined with a
+    // default: true marker (src/config/zod-schema.agents.ts:72-86). If your
+    // config has a default: true entry, delete the marker and move that id to
+    // agents.defaults.systemAgent.agentId; otherwise unbound traffic has no
+    // owner and routing throws.
+    // agents.defaults.systemAgent is deliberately not set here. When `agents add`
+    // grows a one-agent roster, it pins the previous sole agent (often `main`)
+    // as agents.defaults.systemAgent.agentId (src/commands/agents.config.ts:161-186),
+    // and unbound traffic goes there. Route Slack to oncall with bindings (below)
+    // rather than changing it.
+    ownership: "explicit",
     entries: {
       oncall: {
         name: "LiveX On-call",
@@ -101,6 +112,35 @@
           fs: { workspaceOnly: true },
         },
       },
+      // Diagnosis role. PR #1's example set exec mode "deny" and
+      // permissionModeDefault "read-only". Neither works here: "deny" fails
+      // Codex preflight, and permissionModeDefault is not in main's schema.
+      debugger: {
+        name: "LiveX Debugger",
+        description: "Read-only diagnosis from admitted evidence and verified repository revisions.",
+        model: "openai/gpt-6-astra",
+        skills: ["debug", "systematic-debugging", "verification-before-completion"],
+        tools: {
+          // OpenClaw-managed tools only; no Slack message tool for this role.
+          allow: ["read", "skills_read", "livex_gcp_logs_read", "livex_repository_read"],
+          // Same reason as oncall: "ask" keeps the read-only Codex sandbox and
+          // sends any escalation request to a human.
+          exec: { mode: "ask" },
+          elevated: { enabled: false },
+          fs: { workspaceOnly: true },
+        },
+      },
     },
   },
+
+  // Routing (example only; channel ids differ per install, so nothing is set).
+  // A peer binding beats account- and channel-wide bindings
+  // (src/routing/resolve-route.ts:334-350). `openclaw agents bind --agent oncall
+  // --bind slack` makes oncall own the default Slack account; then add one
+  // peer binding so a dedicated channel goes to debugger:
+  //
+  // bindings: [
+  //   { agentId: "oncall", match: { channel: "slack" } },
+  //   { agentId: "debugger", match: { channel: "slack", peer: { kind: "channel", id: "C0DEBUGGER" } } },
+  // ],
 }
