@@ -31,7 +31,7 @@ RUN mkdir -p /opt/oncall/plugins/livex-gcp-readonly/node_modules/@livex /opt/onc
     && ln -s /app/node_modules/zod /opt/oncall/plugins/livex-gcp-readonly/node_modules/zod \
     && ln -s /opt/oncall/plugins/livex-investigations /opt/oncall/plugins/livex-gcp-readonly/node_modules/@livex/investigations \
     && ln -s /app/dist/extensions/slack /opt/oncall/plugins/livex-gcp-readonly/node_modules/@openclaw/slack \
-    && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-gcp-readonly/index.ts"); for (const spec of ["zod", "@livex/investigations/oncall-catalog", "@openclaw/slack/api.js", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/security-runtime"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("GCP plugin requires the declared zod version in the reviewed base");'
+    && node -e 'const { createRequire } = require("node:module"); const req = createRequire("/opt/oncall/plugins/livex-gcp-readonly/index.ts"); for (const spec of ["zod", "@livex/investigations/oncall-catalog", "@openclaw/slack/integration-api.js", "openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sdk/security-runtime"]) req.resolve(spec); if (req("zod/package.json").version !== req("./package.json").dependencies.zod) throw new Error("GCP plugin requires the declared zod version in the reviewed base");'
 COPY livex-agents/config/openclaw.template.json /opt/agent-build/livex-agents/config/openclaw.template.json
 COPY livex-agents/workspaces /opt/agent-build/livex-agents/workspaces
 COPY agent-skills /opt/agent-build/agent-skills

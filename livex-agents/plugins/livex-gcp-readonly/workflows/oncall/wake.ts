@@ -1,7 +1,7 @@
 import {
   SLACK_ROOT_MESSAGE_SIGNAL,
   type SlackRootMessageSignalSource,
-} from "@openclaw/slack/api.js";
+} from "@openclaw/slack/integration-api.js";
 import type {
   OpenClawPluginApi,
   OpenClawPluginServiceContextV2,

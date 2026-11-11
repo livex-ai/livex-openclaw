@@ -143,7 +143,7 @@ class PrepareTests(unittest.TestCase):
 # This loader uses real repository SDK aliases, not stand-in SDK exports.
 RUNTIME_CATALOG_PROBE = r"""import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 const [root, gcp, agentDir] = process.argv.slice(2);
@@ -168,6 +168,22 @@ const load = createJiti(path.join(gcp, "index.ts"), {
   moduleCache: false,
   tryNative: true,
 });
+const slackImports = new Set();
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const resolved = nextResolve(specifier, context);
+    const match = resolved.url.match(/\/slack\/(api|integration-api)\.[jt]s$/u);
+    if (match) slackImports.add(match[1]);
+    return resolved;
+  },
+});
+try {
+  const { registerOncall } = await load.import(path.join(gcp, "workflows/oncall/service.ts"));
+  assert.equal(typeof registerOncall, "function");
+  assert.deepEqual([...slackImports], ["integration-api"]);
+} finally {
+  hooks.deregister();
+}
 const { createOncallCatalogReader } = await load.import(resolved);
 const { serializeCatalog, createIssueId } = await load.import(
   path.join(path.dirname(resolved), "schema.ts"),
@@ -310,7 +326,8 @@ class SourcePackageTests(unittest.TestCase):
         (app / 'node_modules/zod').symlink_to(root / 'node_modules/zod', target_is_directory=True)
         (app / 'src').symlink_to(root / 'src', target_is_directory=True)
         (app / 'dist/extensions/slack').mkdir(parents=True)
-        (app / 'dist/extensions/slack/api.js').symlink_to(root / 'extensions/slack/api.ts')
+        (app / 'dist/extensions/slack/integration-api.js').symlink_to(
+            root / 'extensions/slack/integration-api.ts')
         exports = {f'./plugin-sdk/{name}': f'./src/plugin-sdk/{name}.ts'
                    for name in ('plugin-entry', 'security-runtime')}
         (app / 'package.json').write_text(json.dumps({'name': 'openclaw', 'exports': exports}))

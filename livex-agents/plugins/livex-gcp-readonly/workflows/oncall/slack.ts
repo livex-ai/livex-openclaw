@@ -2,7 +2,7 @@ import {
   createSlackWebClient,
   createSlackWriteClient,
   resolveSlackAccount,
-} from "@openclaw/slack/api.js";
+} from "@openclaw/slack/integration-api.js";
 import { resolveAgentOutboundIdentity } from "openclaw/plugin-sdk/channel-outbound";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";

@@ -13,7 +13,7 @@ const boundary = vi.hoisted(() => ({
     users: { info: vi.fn(), list: vi.fn() },
   },
 }));
-vi.mock("@openclaw/slack/api.js", () => ({
+vi.mock("@openclaw/slack/integration-api.js", () => ({
   resolveSlackAccount: () => ({ enabled: true, botToken: "xoxb-synthetic-canvas" }),
   createSlackWebClient: () => boundary.read,
   createSlackWriteClient: boundary.write,
