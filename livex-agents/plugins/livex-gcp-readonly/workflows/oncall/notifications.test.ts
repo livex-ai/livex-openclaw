@@ -40,11 +40,13 @@ async function setup(findings: Finding[]) {
 it("suppresses all known Critical paging while unknown findings page with sanitized evidence", async () => {
   const app = await setup([
     { ...finding, classification: "known" },
-    { ...finding, id: "two", classification: "unknown" },
+    { ...finding, id: "two", classification: "unknown", priority: "Medium" },
   ]);
   await app.tick();
   expect(app.slack.send).toHaveBeenCalledTimes(2);
   const texts = vi.mocked(app.slack.send).mock.calls.map(([input]) => input.text);
+  expect(vi.mocked(app.slack.send).mock.calls[0]?.[0].cards).toHaveLength(2);
+  expect(vi.mocked(app.slack.send).mock.calls[1]?.[0].cards).toBeUndefined();
   expect(texts[0]).not.toMatch(/<@|<!|@channel/);
   expect(texts[1]!.match(/<@/g)).toHaveLength(1);
   expect(texts[1]).toContain("<@U123456>");
@@ -71,6 +73,20 @@ it("anchors t0 after a slow confirmed transport and never starts it without a ro
   expect(app.slack.send).toHaveBeenCalledTimes(2);
   await app.tick(now + 720_000);
   expect(app.slack.send).toHaveBeenCalledTimes(3);
+});
+
+it("keeps a compact summary when findings contain more links than Slack can display", async () => {
+  const evidence = Array.from(
+    { length: 10 },
+    (_, index) => `https://console.cloud.google.com/logs/query?query=${index}${"x".repeat(650)}`,
+  );
+  const app = await setup([{ ...finding, classification: "unknown", evidence }]);
+  await app.tick(now, {});
+  const sent = vi.mocked(app.slack.send).mock.lastCall?.[0];
+  expect(sent?.cards).toHaveLength(1);
+  expect(sent?.text).toContain("8 evidence links omitted to fit Slack");
+  expect(sent?.text).toContain(evidence[0]);
+  expect(sent?.text).toContain("Checked window unknown");
 });
 
 it("persists every reminder tier and spaces delayed recovery by the last confirmed delivery", async () => {

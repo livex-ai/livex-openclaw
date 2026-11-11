@@ -8,6 +8,9 @@
       "./index.ts"
     ]
   },
+  "exports": {
+    "./compact-report": "./compact-report.ts"
+  },
   "dependencies": {
     "zod": "4.6.6"
   },

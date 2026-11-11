@@ -2738,6 +2738,9 @@ importers:
       '@livex/investigations':
         specifier: workspace:*
         version: link:../livex-investigations
+      '@livex/oncall-reports':
+        specifier: workspace:*
+        version: link:../livex-oncall-reports
       '@openclaw/slack':
         specifier: workspace:*
         version: link:../../../extensions/slack

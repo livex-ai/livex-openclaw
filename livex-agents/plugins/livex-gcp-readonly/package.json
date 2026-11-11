@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@livex/investigations": "workspace:*",
+    "@livex/oncall-reports": "workspace:*",
     "@openclaw/slack": "workspace:*",
     "zod": "4.6.6"
   },

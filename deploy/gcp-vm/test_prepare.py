@@ -291,18 +291,22 @@ class SourcePackageTests(unittest.TestCase):
             app = base / 'app'
             self.prepare_real_source_base(root, app)
             plugins = base / 'opt/oncall/plugins'
-            for name in ('livex-gcp-readonly', 'livex-investigations'):
+            for name in ('livex-gcp-readonly', 'livex-investigations', 'livex-oncall-reports'):
                 shutil.copytree(root / 'livex-agents/plugins' / name, plugins / name,
                                 ignore=shutil.ignore_patterns('node_modules', '__pycache__'))
             owner = plugins / 'livex-investigations'
-            (owner / 'node_modules').mkdir()
-            (owner / 'node_modules/zod').symlink_to(root / 'node_modules/zod', target_is_directory=True)
-            (owner / 'node_modules/openclaw').symlink_to(app, target_is_directory=True)
+            for dependency in (owner, plugins / 'livex-oncall-reports'):
+                (dependency / 'node_modules').mkdir()
+                (dependency / 'node_modules/zod').symlink_to(
+                    root / 'node_modules/zod', target_is_directory=True)
+                (dependency / 'node_modules/openclaw').symlink_to(app, target_is_directory=True)
             command = commands[0].replace('/opt/oncall', str(base / 'opt/oncall')).replace('/app', str(app))
             setup = subprocess.run(['sh', '-eu', '-c', command], text=True, capture_output=True, timeout=30)
             self.assertEqual(setup.returncode, 0, setup.stderr)
             package = plugins / 'livex-gcp-readonly'
             self.assertEqual((package / 'node_modules/@livex/investigations').resolve(), owner.resolve())
+            self.assertEqual((package / 'node_modules/@livex/oncall-reports').resolve(),
+                             (plugins / 'livex-oncall-reports').resolve())
             self.assertEqual((package / 'node_modules/@openclaw/slack').resolve(),
                              (app / 'dist/extensions/slack').resolve())
             agent = base / 'agent'

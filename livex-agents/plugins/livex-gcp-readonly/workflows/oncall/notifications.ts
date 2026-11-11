@@ -1,10 +1,15 @@
 import type { OncallConfig } from "./config.js";
 import { nextNotification, safeText } from "./policy.js";
+import { renderOncallFinding } from "./report.js";
 import { isDefiniteSlackRejection } from "./slack.js";
 import type { ReceiptStore } from "./state.js";
 import type { Delivery, Finding, Receipt, Roster, SlackTransport } from "./types.js";
 
-type Effect = { step: number; tier?: number; text: string; channel?: string; finding?: number };
+type Effect = Pick<Parameters<SlackTransport["send"]>[0], "text" | "cards" | "channel"> & {
+  step: number;
+  tier?: number;
+  finding?: number;
+};
 type Context = {
   store: ReceiptStore;
   settlementStore: ReceiptStore;
@@ -189,6 +194,7 @@ async function deliver(receipt: Receipt, effect: Effect, ctx: Context) {
   try {
     const messageTs = await ctx.slack.send({
       text: effect.text,
+      ...(effect.cards ? { cards: effect.cards } : {}),
       channel: effect.channel,
       threadTs: effect.channel ? undefined : receipt.alert.ts,
     });
@@ -230,11 +236,7 @@ export async function notifyReceipt(receipt: Receipt, roster: Roster, ctx: Conte
     ctx.health("Oncall rotation is incomplete; unresolved slots cannot be paged.");
   }
   if (!receipt.summary || receipt.summary.status === "rejected") {
-    const summary = findings.map(renderFinding).join("\n\n").slice(0, 28_000);
-    const warning = roster.error
-      ? "\nRotation incomplete; refresh the configured Canvas before paging unresolved slots."
-      : "";
-    await deliver(receipt, { step: 0, text: `Investigation result\n${summary}${warning}` }, ctx);
+    await deliver(receipt, summaryEffect(receipt, findings, roster), ctx);
   }
   if (!findings.some((finding) => activeUnknown(finding, ctx.config.maxNudges))) {
     return;
@@ -246,6 +248,24 @@ export async function notifyReceipt(receipt: Receipt, roster: Roster, ctx: Conte
   for (const [index, finding] of findings.entries()) {
     await notifyFinding(receipt, finding, index, roster, ctx);
   }
+}
+
+function summaryEffect(receipt: Receipt, findings: Finding[], roster: Roster): Effect {
+  const warning = roster.error
+    ? "Rotation incomplete; refresh the configured Canvas before paging unresolved slots."
+    : undefined;
+  const display = findings.length ? findings : [{ classification: "unclassified" } as const];
+  const reports = display.map((finding, index) =>
+    renderOncallFinding(finding, receipt.alert, index === 0 ? warning : undefined),
+  );
+  const digest = reports.map(
+    ({ form }) => `${form.title.slice(0, 75)} · ${form.priority} · ${form.summary.slice(0, 75)}`,
+  );
+  return {
+    step: 0,
+    text: reports.length === 1 ? reports[0]!.text : ["Investigation result", ...digest].join("\n"),
+    cards: reports.map(({ card }) => card),
+  };
 }
 
 async function notifyFinding(

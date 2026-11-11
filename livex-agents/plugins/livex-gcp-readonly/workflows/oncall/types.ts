@@ -1,3 +1,4 @@
+import type { PreparedCompactReport } from "@livex/oncall-reports/compact-report";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
 
 export const SERVICE_TOOLS = ["livex_oncall_logs_read", "livex_oncall_assessment_submit"];
@@ -71,7 +72,12 @@ export type SlackTransport = {
   history(oldest: string, cursor?: string): Promise<{ messages: SlackMessage[]; cursor?: string }>;
   roster(): Promise<Roster>;
   acknowledged(ts: string): Promise<boolean>;
-  send(params: { text: string; threadTs?: string; channel?: string }): Promise<string>;
+  send(params: {
+    text: string;
+    cards?: PreparedCompactReport["card"][];
+    threadTs?: string;
+    channel?: string;
+  }): Promise<string>;
 };
 export type RunAgent = (
   params: Parameters<

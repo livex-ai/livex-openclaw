@@ -276,7 +276,7 @@ export function createOncallSlack(params: {
       }
       return false;
     },
-    async send({ text, threadTs, channel = config.channelId }) {
+    async send({ text, cards, threadTs, channel = config.channelId }) {
       if (![config.channelId, config.broadcastChannelId].includes(channel)) {
         throw new Error("Oncall delivery target is outside configured channels");
       }
@@ -294,6 +294,16 @@ export function createOncallSlack(params: {
         channel,
         thread_ts: threadTs,
         text: `\u2063${text}`,
+        ...(cards?.length
+          ? {
+              blocks: cards[0]!.blocks,
+              attachments: cards.map(({ blocks, attachment, fallbackText }, index) => ({
+                ...attachment,
+                fallback: fallbackText,
+                blocks: index === 0 ? attachment.blocks : [...blocks, ...(attachment.blocks ?? [])],
+              })),
+            }
+          : {}),
         username: senderName,
         parse: "none",
         link_names: false,

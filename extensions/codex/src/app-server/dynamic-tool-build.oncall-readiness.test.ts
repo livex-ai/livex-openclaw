@@ -544,6 +544,40 @@ it("the Oncall script runs headlessly across workspaces and admits only eligible
     );
     const posts = calls.filter((call) => call.method === "chat.postMessage");
     expect(posts[0]!.args.text).not.toContain("<@");
+    const summary = posts[0]!.args;
+    expect({
+      ...summary,
+      blocks: JSON.parse(summary.blocks),
+      attachments: JSON.parse(summary.attachments),
+    }).toMatchObject({
+      thread_ts: (currentTime / 1000).toFixed(6),
+      blocks: [
+        expect.objectContaining({
+          text: expect.objectContaining({ text: expect.stringContaining("*Title:*") }),
+        }),
+      ],
+      attachments: [
+        expect.objectContaining({
+          color: "#D92D20",
+          blocks: [
+            expect.objectContaining({
+              text: expect.objectContaining({
+                text: expect.stringContaining("*Priority:* Critical"),
+              }),
+            }),
+            expect.objectContaining({
+              text: expect.objectContaining({ text: expect.stringContaining("*Next action:*") }),
+            }),
+            expect.objectContaining({
+              text: expect.objectContaining({ text: expect.stringContaining("*Summary:*") }),
+            }),
+            expect.objectContaining({
+              text: expect.objectContaining({ text: expect.stringContaining("*Evidence:*") }),
+            }),
+          ],
+        }),
+      ],
+    });
     expect(posts[1]!.args.text).toContain("<@U123456>");
     expect(
       posts.every(
