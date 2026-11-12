@@ -19,7 +19,7 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PLUGIN_DIR="$ROOT/plugins/livex-gcp-readonly"
+PLUGIN_IDS=(livex-gcp-readonly livex-slack-summary)
 AGENTS_DIR="$ROOT/agents"
 AGENT_IDS=(debugger)
 FRAGMENT="$ROOT/config/openclaw.fragment.json5"
@@ -72,11 +72,13 @@ echo "# 2. Sign in to OpenAI for Codex. Interactive; run it yourself:"
 echo "#      openclaw models auth login --provider openai --agent debugger"
 echo
 
-echo "# 3. Install the LiveX evidence plugin from this folder."
+echo "# 3. Install the LiveX evidence and Slack summary plugins."
 echo "#    Linked install: OpenClaw loads TypeScript entries only from source"
 echo "#    checkouts and linked/local paths. --force confirms the local source"
 echo "#    and makes a re-run safe."
-run openclaw plugins install -l "$PLUGIN_DIR" --force
+for plugin_id in "${PLUGIN_IDS[@]}"; do
+  run openclaw plugins install -l "$ROOT/plugins/$plugin_id" --force
+done
 echo
 
 echo "# 4. Create each agent with its folder under agents/ as its workspace."
@@ -98,8 +100,8 @@ cat <<EOF
 #    $ROOT/README.md before merging. Config changes apply on hot reload.
 #
 # 6. In the Control UI:
-#    - Plugins: confirm codex and livex-gcp-readonly are enabled; fill any
-#      missing livex-gcp-readonly config fields.
+#    - Plugins: confirm codex, livex-gcp-readonly and livex-slack-summary
+#      are enabled; fill any missing livex-gcp-readonly config fields.
 #    - Agents: open "debugger" (LiveX Debugger) for triage and diagnosis.
 #      Both LiveX tools answer only Slack turns from SLACK_SENDER_ID.
 #      A Control UI chat has no LiveX evidence tools.

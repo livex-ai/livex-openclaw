@@ -1,0 +1,14 @@
+{
+  "id": "livex-slack-summary",
+  "name": "LiveX Slack investigation summaries",
+  "description": "Render validated LiveX Debugger alert summaries in Slack threads.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

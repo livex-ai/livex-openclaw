@@ -1,0 +1,172 @@
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import manifest from "./openclaw.plugin.json" with { type: "json" };
+
+const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V1";
+const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${SUMMARY_MARKER}[ \\t]*(?=\\r?\\n|$)`, "u");
+const MAX_EVIDENCE_URL = 1600;
+const DEBUGGER_SLACK_THREAD = /^agent:debugger:slack:channel:[cg][a-z0-9]+:thread:\d+\.\d+$/u;
+const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
+const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
+const PRIORITY_LABELS = new Map([
+  ["critical", "Critical"],
+  ["high", "High"],
+  ["medium", "Medium"],
+  ["low", "Low"],
+  ["unknown", "Unknown"],
+]);
+
+function isBoundedLine(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maxLength &&
+    !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
+  );
+}
+
+function readEvidenceLink(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_EVIDENCE_URL ||
+    !value.startsWith("https://") ||
+    /[\s\p{Cc}<>|\\]/u.test(value)
+  ) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value);
+    const escapedUrl = url.href.replaceAll("&", "&amp;");
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      escapedUrl.length <= MAX_EVIDENCE_URL
+    ) {
+      return `<${escapedUrl}|View evidence>`;
+    }
+  } catch {
+    // An invalid evidence link invalidates the marked summary.
+  }
+  return undefined;
+}
+
+function readSummary(text: string) {
+  // Read only the compact JSON line. Evidence belongs to the native assistant
+  // transcript and must never be copied into the replacement Slack payload.
+  const envelope = /^\S+\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
+  const json = envelope?.[1];
+  if (!json) {
+    return undefined;
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const fields = value as Record<string, unknown>;
+  const { priority, provisional, impact, nextAction, owner, checkedWindow, evidenceUrl } = fields;
+  const priorityLabel = typeof priority === "string" ? PRIORITY_LABELS.get(priority) : undefined;
+  const link = readEvidenceLink(evidenceUrl);
+  if (
+    Object.keys(fields).length !== 7 ||
+    !priorityLabel ||
+    typeof provisional !== "boolean" ||
+    !isBoundedLine(impact, 240) ||
+    !isBoundedLine(nextAction, 120) ||
+    !isBoundedLine(owner, 50) ||
+    !isBoundedLine(checkedWindow, 64) ||
+    link === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    priority:
+      provisional && priority !== "unknown" ? `${priorityLabel} (provisional)` : priorityLabel,
+    impact,
+    nextAction,
+    owner,
+    checkedWindow,
+    evidenceLink: link,
+  };
+}
+
+function plainText(text: string) {
+  return { type: "plain_text", text };
+}
+
+function section(text: string) {
+  return { type: "section", text: plainText(text) };
+}
+
+export default definePluginEntry({
+  id: manifest.id,
+  name: manifest.name,
+  description: manifest.description,
+  register(api) {
+    api.on("reply_payload_sending", ({ kind, channel, sessionKey, payload }) => {
+      if (
+        kind !== "final" ||
+        channel !== "slack" ||
+        !sessionKey ||
+        !DEBUGGER_SLACK_THREAD.test(sessionKey) ||
+        payload.isReasoning ||
+        payload.isCommentary ||
+        payload.isStatusNotice
+      ) {
+        return;
+      }
+      const text = payload.text?.trimStart();
+      if (!text || !MARKED_LINE.test(text)) {
+        return;
+      }
+
+      // A misplaced marker still identifies an envelope. Fail closed instead
+      // of passing the JSON and retained evidence through as an ordinary reply.
+      const hasCanonicalMarker = text.split(/\r?\n/u, 1)[0] === SUMMARY_MARKER;
+
+      const { replyToId, replyToTag, replyToCurrent } = payload;
+      const route = { replyToId, replyToTag, replyToCurrent };
+      const summary = hasCanonicalMarker ? readSummary(text) : undefined;
+      if (!summary) {
+        return { payload: { ...route, text: INVALID_SUMMARY } };
+      }
+
+      const evidenceLink = summary.evidenceLink
+        ? [
+            {
+              type: "mrkdwn",
+              text: summary.evidenceLink,
+              verbatim: true,
+            },
+          ]
+        : [];
+      return {
+        payload: {
+          ...route,
+          channelData: {
+            slack: {
+              blocks: [
+                { type: "header", text: plainText(`Priority: ${summary.priority}`) },
+                section(`Impact: ${summary.impact}`),
+                section(`Next action: ${summary.nextAction}\nOwner: ${summary.owner}`),
+                section(`Evidence: ${summary.checkedWindow}`),
+                { type: "context", elements: [...evidenceLink, plainText(FULL_EVIDENCE_HINT)] },
+              ],
+            },
+          },
+        },
+      };
+    });
+  },
+});

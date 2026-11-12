@@ -184,8 +184,37 @@ current conversation's normal reply.
 
 ### Default summary
 
-Use this layout for a requester reply about one alert. Aim for 60–100 words; preserve material uncertainty even when
-it needs more space. Keep each labeled field, including **Owner**, on its own line:
+For one alert in a Slack channel thread handled by the `debugger` agent, return
+this envelope as the entire final answer. Line 1 is the exact marker. Line 2 is one JSON object with the
+seven fields below. Then a blank line and the full evidence report. Do not add
+code fences, attachments, reply directives, or any text before the marker.
+
+```text
+LIVEX_ALERT_SUMMARY_V1
+{"priority":"unknown","provisional":false,"impact":"Observed outcome and the uncertainty that matters.","nextAction":"One concrete next check.","owner":"Unassigned","checkedWindow":"YYYY-MM-DD HH:MM–HH:MM UTC (fresh)","evidenceUrl":null}
+
+Full evidence report goes here.
+```
+
+- Use `critical`, `high`, `medium`, `low`, or `unknown` only. Keep priority
+  unknown if the evidence or severity mapping is missing. Set `provisional` for
+  a tentative assigned priority.
+- Use single-line plain strings. Maximum lengths in characters are 240 for
+  `impact`, 120 for `nextAction`, 50 for `owner`, and 64 for `checkedWindow`.
+  Include UTC bounds and whether the evidence is fresh or saved. Use
+  `Unassigned` when ownership is unverified. Use one verified HTTPS source
+  in `evidenceUrl` or null when none is available.
+- Put decisive customer impact, material uncertainty and the next action in the
+  card fields. Keep identifiers, query diagnostics, secondary hypotheses and
+  additional sources in the full report after the blank line. The Gateway sends
+  the card and retains the authored report in this thread’s native session.
+- If asked for full evidence or an explicit detailed/table reply, return the
+  requested report directly, without the envelope marker. Reuse this thread’s retained
+  evidence and label its freshness. If history is unavailable, say so and
+  describe the exact evidence needed.
+
+For single-alert replies on other routes, aim for 60–100 words and preserve
+material uncertainty. Keep each labeled field, including **Owner**, on its own line:
 
 ```text
 {outcome emoji} {priority, marked provisional when applicable, or Priority unknown} · {disposition}

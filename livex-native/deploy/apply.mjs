@@ -29,7 +29,7 @@ const openclawCmd = (process.env.LIVEX_OPENCLAW_CMD ?? "node /app/openclaw.mjs")
 const json5 = createRequire(process.env.LIVEX_JSON5_FROM ?? "/app/package.json")("json5");
 
 const GCP_PLUGIN = "livex-gcp-readonly";
-const pluginDir = path.join(nativeDir, "plugins", GCP_PLUGIN);
+const managedPluginIds = [GCP_PLUGIN, "livex-slack-summary"];
 const GATEWAY_PORT = 18789;
 const priorOncallWildcard = {
   agentId: "oncall",
@@ -243,11 +243,13 @@ function applyConfig(fragment, ids) {
 
   for (const id of ids) next.agents.entries[id].workspace = workspaceFor(id);
 
-  // Exactly one load path for the plugin; drop stale copies from other locations.
+  // Keep one load path per managed plugin from this release.
   const paths = (next.plugins?.load?.paths ?? []).filter(
-    (p) => p === pluginDir || !p.endsWith(`/plugins/${GCP_PLUGIN}`),
+    (p) => !managedPluginIds.some((id) => p.endsWith(`/plugins/${id}`)),
   );
-  if (!paths.includes(pluginDir)) paths.push(pluginDir);
+  for (const id of managedPluginIds) {
+    paths.push(path.join(nativeDir, "plugins", id));
+  }
   next.plugins ??= {};
   next.plugins.load = { ...next.plugins.load, paths };
 

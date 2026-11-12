@@ -11,7 +11,7 @@
 {
   plugins: {
     // Keep any ids you already allow (for example your channels) in this list.
-    allow: ["openai", "codex", "slack", "livex-gcp-readonly"],
+    allow: ["openai", "codex", "slack", "livex-gcp-readonly", "livex-slack-summary"],
     entries: {
       openai: { enabled: true },
       // Codex is the agent's brain: OpenAI model turns run in the Codex app-server.
@@ -32,6 +32,7 @@
         },
       },
       slack: { enabled: true },
+      "livex-slack-summary": { enabled: true },
       "livex-gcp-readonly": {
         enabled: true,
         config: {
@@ -50,10 +51,8 @@
         },
       },
     },
-    // No plugins.load.paths here: scripts/setup.sh runs
-    // `openclaw plugins install -l <livex-native>/plugins/livex-gcp-readonly`,
-    // which records the absolute path. Without setup.sh, add that absolute path
-    // to plugins.load.paths yourself (one entry, so the plugin id is found once).
+    // setup.sh links both local plugins and records their absolute paths.
+    // For manual setup, add one load path for each local plugin.
   },
 
   // Every openai/* model turn uses the Codex runtime (/status: "Runtime: OpenAI Codex").

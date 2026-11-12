@@ -5,6 +5,7 @@ This folder runs **LiveX Debugger** on unmodified OpenClaw.
 | Part | Path | What it is |
 | --- | --- | --- |
 | Evidence plugin | `plugins/livex-gcp-readonly/` | Bounded Cloud Logging reads and source reads at approved commits |
+| Slack summary plugin | `plugins/livex-slack-summary/` | Validates Debugger summary JSON and renders the threaded Slack card |
 | Debugger workspace | `agents/debugger/` | Agent instructions and workspace skills |
 | Config fragment | `config/openclaw.fragment.json5` | Codex runtime, Debugger, Slack policy and the default channel route |
 | Deployment | `deploy/` | Isolated DEV staging and test VM deployment with readiness and rollback |
@@ -15,7 +16,7 @@ Use the OpenClaw CLI on Node 24.16+ and a running Gateway. Configure `gcloud`
 with read access to the intended project.
 
 1. Run `livex-native/scripts/setup.sh` to inspect the commands. Add `--apply`
-   to install Codex, link the evidence plugin, and add `debugger` with its
+   to install Codex, link the two LiveX plugins, and add `debugger` with its
    workspace. Sign in for that agent with
    `openclaw models auth login --provider openai --agent debugger`.
 2. Merge `config/openclaw.fragment.json5` into `~/.openclaw/openclaw.json`.
@@ -44,9 +45,14 @@ An authorized Slack mention loads `investigate-alerts` and reads the alert root
 and relevant thread replies. Debugger scopes the workload, UTC window and
 correlation IDs, then reads Cloud Logging or approved source as needed. If the
 alert count disagrees with the logs, Debugger checks request outcomes across
-severity levels before assigning priority. It replies in the same thread with
-impact, priority or `Unknown`, evidence and a next action. Deeper investigations
-use `debug` and `systematic-debugging`.
+severity levels before assigning priority. A single-alert reply in Slack uses
+a short Block Kit card with priority, impact, next action, owner and checked
+evidence. The plugin validates the final JSON and uses the stock threaded
+reply route. Mention the bot in the same thread and ask for full evidence to
+read the retained report. Deeper investigations use `debug` and `systematic-debugging`.
+
+The stock Slack adapter suppresses pre-delivery previews when a reply modifier
+is registered. The shipped config already has Slack streaming off.
 
 The Slack `message` tool can read messages and reactions. The evidence tools
 are available only to a Slack turn from the configured sender in an allowed
@@ -159,7 +165,8 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 | Codex as runtime, same `appServer` home scope | ✓, but sandbox `read-only` and exec `ask` (PR #1: `workspace-write` and `auto`) |
 | `react` message action | ✗ dropped on purpose; only `read` and `reactions` |
 | Shared-skills directory | ✗ replaced by per-agent workspace skills |
-| Report cards, priority colors, Resolved badge | ✗ needs core (Slack block patches) |
+| Compact alert cards | Validated single-alert card with the stock Slack adapter |
+| Legacy priority colors and Resolved badge | ✗ PR #1 report renderer |
 | In-place report edits, amendments, linked sync | ✗ needs core |
 | Investigation memory and trends | ✗ needs core (`slack_investigation_record`) |
 | Read-only default for reply sessions (`permissionModeDefault`) | ✗ not in main's schema |
@@ -171,7 +178,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 
 | Dropped | How it could come back |
 | --- | --- |
-| Slack report cards and in-place report edits (the `livex-oncall-reports` plugin, plus Slack block and edit patches in `extensions/slack`) | A channel-reply plugin that renders cards through the Slack plugin's public send API. In-place edits need an upstream "edit own reply" hook in the Slack plugin |
+| In-place report edits (the `livex-oncall-reports` plugin and Slack edit patches) | An upstream edit-own-reply hook in the Slack plugin |
 | Investigation memory and catalog (`livex-investigations`, `slack_investigation_record`, `investigations.md`) | A tool plugin that stores records in plugin state (`openKeyedStoreV2`) and exposes lookup and record tools. Pre-turn history injection needs an upstream context hook |
 | VM deploy pipeline (`deploy/gcp-vm/`) | Replaced by the much smaller `deploy/` here (test VM, official image, no source build). A production pipeline can live in an ops repo |
 | About 8k lines of core patches (memory-core, Slack dispatch, agent tool context, Codex usage projection, session lineage) | Upstream PRs, one generic hook per need. One example is `runtime.agent.session.withDescendantSessionRead`, which the plugin's `child` recovery uses when the host provides it |

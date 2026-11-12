@@ -126,13 +126,19 @@ function priorConfig(entry, bindings = [slackRoute("oncall")]) {
   };
 }
 
-test("fresh install registers only the Debugger Slack wildcard and system default", (t) => {
+test("fresh install registers the Debugger route and enables its Slack summary", (t) => {
   const { applyTwice } = fixture(t);
   const config = applyTwice();
   assert.deepEqual(Object.keys(config.agents.entries), ["debugger"]);
   assert.equal(config.agents.entries.debugger.name, "LiveX Debugger");
   assert.equal(config.agents.defaults.systemAgent.agentId, "debugger");
   assert.deepEqual(config.bindings, [slackRoute("debugger")]);
+  assert.ok(config.plugins.allow.includes("livex-slack-summary"));
+  assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
+  assert.deepEqual(config.plugins.load.paths, [
+    path.join(nativeDir, "plugins", "livex-gcp-readonly"),
+    path.join(nativeDir, "plugins", "livex-slack-summary"),
+  ]);
 });
 
 test("upgrade retires the stock wildcard while preserving OnCall references, operator routes, and state", (t) => {
@@ -153,6 +159,16 @@ test("upgrade retires the stock wildcard while preserving OnCall references, ope
   config.agents.entries.other = { name: "Operator Agent" };
   config.agents.defaults.heartbeat = { agentId: "oncall" };
   config.talk = { agentId: "oncall" };
+  const operatorPlugin = path.join(state, "plugins", "operator-plugin");
+  config.plugins = {
+    load: {
+      paths: [
+        "/old/plugins/livex-gcp-readonly",
+        operatorPlugin,
+        "/old/plugins/livex-slack-summary",
+      ],
+    },
+  };
   markPriorWorkspace(oncallWorkspace);
   const botToken = { source: "env", provider: "default", id: "CUSTOM_SLACK_BOT" };
   const appToken = { source: "env", provider: "default", id: "CUSTOM_SLACK_APP" };
@@ -180,6 +196,11 @@ test("upgrade retires the stock wildcard while preserving OnCall references, ope
   assert.deepEqual(next.agents.defaults.authInheritance, { agentId: "oncall" });
   assert.deepEqual(next.agents.defaults.heartbeat, { agentId: "oncall" });
   assert.deepEqual(next.talk, { agentId: "oncall" });
+  assert.deepEqual(next.plugins.load.paths, [
+    operatorPlugin,
+    path.join(nativeDir, "plugins", "livex-gcp-readonly"),
+    path.join(nativeDir, "plugins", "livex-slack-summary"),
+  ]);
   assert.deepEqual(next.agents.entries.oncall, config.agents.entries.oncall);
   assert.deepEqual(next.agents.entries.other, config.agents.entries.other);
   assert.deepEqual(next.bindings, [...operatorBindings, slackRoute("debugger")]);

@@ -18,6 +18,9 @@ after that decision. If a runtime/resource failure prevents completion, return
 partial findings, the exact failure, and the remaining evidence needed. Keep
 working notes in the native conversation; do not send intermediate Slack
 messages, separate notifications, or a final answer before that decision.
+For a single alert in a Slack channel thread, use the summary envelope in
+`investigate-alerts`. Answer explicit requests for full evidence from this
+thread’s native history using the skill’s full report instructions.
 
 ## Start and maintain triage or investigation
 
