@@ -318,3 +318,25 @@ test("an opt-in fragment owns OnCall and retains user exact-channel routing", (t
     slackRoute("oncall", "C0OPTIN"),
   ]);
 });
+
+test("the fragment clears every deployed secret from the Codex process environment", () => {
+  const fragment = json5.parse(
+    fs.readFileSync(path.join(nativeDir, "config", "openclaw.fragment.json5"), "utf8"),
+  );
+  const cleared = new Set(fragment.plugins.entries.codex.config.appServer.clearEnv);
+  // Every secret-bearing variable the deploy hands to the Gateway container.
+  const secretName = /\b[A-Z][A-Z0-9_]*_(?:TOKEN|SECRET|PASSWORD|API_KEY)\b/g;
+  const named = new Set();
+  for (const file of ["README.md", "apply.mjs", "compose.yaml", "remote.sh"]) {
+    const text = fs.readFileSync(path.join(nativeDir, "deploy", file), "utf8");
+    for (const name of text.match(secretName) ?? []) named.add(name);
+  }
+  assert.ok(named.has("SLACK_BOT_TOKEN") && named.has("OPENCLAW_GATEWAY_TOKEN"));
+  // Slack credentials dev-bootstrap.sh refuses in runtime.env; cleared in case one is added.
+  for (const name of ["SLACK_USER_TOKEN", "SLACK_SIGNING_SECRET"]) named.add(name);
+  assert.deepEqual(
+    [...named].filter((name) => !cleared.has(name)).sort(),
+    [],
+    "add these to plugins.entries.codex.config.appServer.clearEnv",
+  );
+});

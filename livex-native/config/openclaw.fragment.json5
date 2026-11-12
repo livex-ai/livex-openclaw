@@ -26,6 +26,20 @@
             homeScope: "agent",
             sandbox: "read-only",
             approvalPolicy: "on-request",
+            // The read-only sandbox blocks writes, not reads, and read-only shell
+            // commands need no approval. The Codex process inherits the Gateway's
+            // environment, so remove the Gateway and Slack secrets from it: a
+            // shell command such as `env` must not be able to print them. This
+            // only changes the Codex child process; the Gateway keeps them, so its
+            // /proc environ may still expose them (README, Execution boundary)
+            // (docs/plugins/codex-harness-reference/auth.md, "clearEnv").
+            clearEnv: [
+              "OPENCLAW_GATEWAY_TOKEN",
+              "SLACK_APP_TOKEN",
+              "SLACK_BOT_TOKEN",
+              "SLACK_SIGNING_SECRET",
+              "SLACK_USER_TOKEN",
+            ],
           },
           sessionCatalog: { enabled: false },
           supervision: { enabled: false },

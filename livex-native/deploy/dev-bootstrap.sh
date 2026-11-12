@@ -11,6 +11,20 @@ dev_container=livex-openclaw-dev-gateway-1
 [[ $(hostname) == livex-openclaw-dev ]] \
   || { echo "dev-bootstrap: refusing to run on host '$(hostname)'." >&2; exit 1; }
 
+# An earlier design installed /opt/livex-openclaw-test on this VM with a copy of
+# PR #1's Slack tokens. If its Gateway runs, two Gateways share one Slack app.
+legacy_root=/opt/livex-openclaw-test
+legacy_container=livex-openclaw-test-gateway-1
+if [[ $(docker inspect --type container --format '{{.State.Running}}' "$legacy_container" 2>/dev/null) == true ]]; then
+  echo "dev-bootstrap: $legacy_container is running on PR #1's Slack app. Stop it first: sudo docker stop $legacy_container" >&2
+  exit 1
+fi
+if [[ -e $legacy_root ]] || docker inspect --type container "$legacy_container" >/dev/null 2>&1; then
+  echo "dev-bootstrap: WARNING: leftover install found ($legacy_root and/or the stopped container $legacy_container)." >&2
+  echo "dev-bootstrap: it can hold a copy of PR #1's Slack tokens, and starting that container would put a second Gateway on the same Slack app." >&2
+  echo "dev-bootstrap: remove it once (README, 'Remove the earlier DEV install')." >&2
+fi
+
 for dir in "$root" "$root/releases" "$root/state" "$root/gcloud"; do
   [[ ! -L $dir ]] || { echo "dev-bootstrap: staging paths must be real directories: $dir" >&2; exit 1; }
 done

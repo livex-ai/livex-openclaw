@@ -82,8 +82,34 @@ outside the sandbox goes to a human
 `"allowlist"` fail Codex preflight, and `"auto"` hands approvals to model review.
 
 The read-only sandbox blocks writes and network access but does not confine
-reads to the workspace. The "don't read credentials" rule in `AGENTS.md` is
-therefore advisory. Point `CLOUDSDK_CONFIG` at a directory that holds only a
+reads to the workspace, and read-only shell commands need no approval. The
+"don't read credentials" rule in `AGENTS.md` is therefore advisory, and log text
+the agent reads can carry injected instructions. Two things limit what a shell
+command can reach:
+
+- **Environment:** the fragment sets `appServer.clearEnv` so the Codex process
+  does not inherit `OPENCLAW_GATEWAY_TOKEN` or the Slack tokens and signing
+  secret. Keep those secrets in the environment (SecretRefs), never
+  as literals in `openclaw.json`, and add any new secret variable to `clearEnv`
+  (`deploy/test_apply.mjs` checks the deploy's variables).
+- **Still readable (accepted risk):** the agent's own Codex login under
+  `agents/<id>/agent/codex-home/`, the state databases (`state/openclaw.sqlite`,
+  `agents/<id>/agent/openclaw-agent.sqlite`, which hold sessions and auth
+  profiles), `openclaw.json` (references only) and `CLOUDSDK_CONFIG`. Shell
+  output and replies are not redacted; only the evidence tools redact.
+- **Not verified:** the Gateway runs as the same user in the same container and
+  still holds those secrets, so `/proc/<gateway pid>/environ` may expose them
+  unless Codex's sandbox hides the parent's `/proc`. `clearEnv` therefore
+  narrows the exposure; it does not prove the tokens are unreachable. Check on
+  staging by asking the agent to run
+  `tr '\0' '\n' </proc/1/environ | grep -c _TOKEN`; a count above 0 means they
+  are readable, and closing that needs a separate user or PID namespace for
+  Codex.
+- **Side effect:** Codex hook commands inherit the cleared environment. Their
+  normal path needs no Gateway token; only the fallback after a hook-bridge
+  failure does, and it now fails ("native hook relay unavailable" in the logs).
+
+Point `CLOUDSDK_CONFIG` at a directory that holds only a
 narrowly scoped, read-only credential. A host exec-approvals file with a `deny`
 or `allowlist` floor also makes Codex refuse turns
 (`extensions/codex/src/app-server/config.test.ts:854-935`); check it with

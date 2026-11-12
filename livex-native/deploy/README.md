@@ -48,6 +48,26 @@ Slack replies and GCP tools through an authorized Slack turn.
 | `compose.yaml` | VM | `gateway` (loopback-only port) and `cli` (profile `tools`) |
 | `apply.mjs` | in the `cli` container | Idempotent config merge, plugin install, workspace copy |
 
+### Remove the earlier DEV install
+
+An earlier design installed `/opt/livex-openclaw-test` on `livex-openclaw-dev`
+with a copy of PR #1's Slack tokens in its `runtime.env`, and a
+`livex-openclaw-test-gateway-1` container. Starting that container would put a
+second Gateway on the same Slack app. `dev-bootstrap.sh` refuses to stage while
+it runs and warns while the leftover exists. Remove it once, on the DEV VM:
+
+```bash
+# Must print nothing: no other container may mount the leftover directory.
+sudo docker ps -aq | xargs -r sudo docker inspect --format '{{.Name}} {{range .Mounts}}{{.Source}} {{end}}' | grep /opt/livex-openclaw-test | grep -v '^/livex-openclaw-test-'
+sudo docker rm -f livex-openclaw-test-gateway-1
+sudo docker network rm livex-openclaw-test_default
+sudo rm -f /opt/livex-openclaw-test/runtime.env
+sudo rm -rf /opt/livex-openclaw-test
+```
+
+The last line also deletes that install's state and snapshots; keep the
+directory (minus `runtime.env`) if you still want them.
+
 ## Deploy
 
 ```bash
@@ -273,6 +293,10 @@ lx run --rm --no-deps --entrypoint gcloud cli \
 ```
 
 ## After the first deploy
+
+This section and Rollback are for the dedicated `livex-openclaw-test` VM only. Do
+not run these commands on `livex-openclaw-dev`: there the `livex-openclaw-test`
+project is a leftover (see "Remove the earlier DEV install").
 
 Run the deploy command above. On the VM, define a helper once. Each successful
 deploy points `current-release` and `compose.env` at the new release and image:
