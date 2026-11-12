@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up LiveX Debugger on a stock OpenClaw install.
+# Set up LiveX Debugger and the opt-in LiveX OnCall workspace on a stock OpenClaw install.
 #
 # Default is a dry run that only prints the commands. Pass --apply to run them.
 # This script never restarts a Gateway and never runs interactive sign-in.
@@ -70,6 +70,7 @@ echo
 
 echo "# 2. Sign in to OpenAI for Codex. Interactive; run it yourself:"
 echo "#      openclaw models auth login --provider openai --agent debugger"
+echo "#      openclaw models auth login --provider openai --agent oncall  # if using OnCall"
 echo
 
 echo "# 3. Install the LiveX evidence plugin from this folder."
@@ -90,7 +91,9 @@ done
 echo
 
 cat <<EOF
-# 5. Merge the config fragment into ~/.openclaw/openclaw.json:
+# 5. If using OnCall locally, create its workspace and install its skills
+#    before merging. For Debugger-only setup, omit agents.entries.oncall.
+#    See $ROOT/README.md, then merge the fragment into ~/.openclaw/openclaw.json:
 #      $FRAGMENT
 #    Set the GCLOUD_*, CLOUDSDK_CONFIG, GCP_PROJECT,
 #    SLACK_SENDER_ID and PYTHON_PATH variables for the Gateway process.
@@ -106,5 +109,8 @@ cat <<EOF
 #    - In a chat with the agent, run /status and check "Runtime: OpenAI Codex".
 #
 # 7. The Slack channel wildcard and agents.defaults.systemAgent both point
-#    to debugger. Set the Slack bot and app tokens as for any Slack app.
+#    to debugger. To opt into OnCall for one channel, add its exact peer
+#    binding as described in $ROOT/README.md. Follow those instructions
+#    to add the OnCall workspace and install its skills locally.
+#    Set the Slack bot and app tokens as for any Slack app.
 EOF

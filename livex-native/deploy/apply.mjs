@@ -162,18 +162,22 @@ function workspaceFor(id) {
   return path.join(stateDir, `workspace-${id}`);
 }
 
-function hasPriorOncallWorkspace(entry) {
-  if (
-    entry?.workspace !== workspaceFor("oncall") ||
-    entry.name !== "LiveX Debugger" ||
-    entry.identity?.name !== "LiveX Reporting · Debugger"
-  ) {
+function hasManagedOncallSkills(entry) {
+  if (entry?.workspace !== workspaceFor("oncall")) {
     return false;
   }
   const marker = path.join(entry.workspace, "skills", ".livex-shipped");
   return (
     fs.existsSync(marker) &&
     fs.readFileSync(marker, "utf8").split("\n").includes("investigate-alerts")
+  );
+}
+
+function hasPriorOncallWorkspace(entry) {
+  return (
+    entry?.name === "LiveX Debugger" &&
+    entry.identity?.name === "LiveX Reporting · Debugger" &&
+    hasManagedOncallSkills(entry)
   );
 }
 
@@ -195,8 +199,37 @@ function shadowsDebugger(binding) {
   );
 }
 
+function resolvesToOncall(id) {
+  const lower = id.trim().toLowerCase();
+  // Match the pinned runtime's canonical agent ID handling for this fixed ID.
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(lower)) {
+    return lower === "oncall";
+  }
+  return lower.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") === "oncall";
+}
+
 function prepareConfig(fragment) {
   const current = fs.existsSync(configPath) ? readJson5(configPath) : {};
+  const installedEntries = current.agents?.entries ?? {};
+  const installedOncall = installedEntries.oncall;
+  const shippedOncall = fragment.agents?.entries?.oncall;
+  const priorOncall = hasPriorOncallWorkspace(installedOncall);
+  if (shippedOncall && Object.keys(installedEntries).some((id) => id !== "oncall" && resolvesToOncall(id))) {
+    throw new Error("The oncall ID belongs to an existing custom agent. Review its config before installing LiveX OnCall.");
+  }
+  if (
+    shippedOncall &&
+    installedOncall &&
+    !priorOncall &&
+    !(
+      hasManagedOncallSkills(installedOncall) &&
+      installedOncall.name === shippedOncall.name &&
+      installedOncall.identity?.name === shippedOncall.identity?.name
+    )
+  ) {
+    throw new Error("The oncall ID belongs to an existing custom agent. Review its config before installing LiveX OnCall.");
+  }
+
   let existing = Array.isArray(current.bindings) ? current.bindings : [];
   const debuggerWildcard = { ...priorOncallWildcard, agentId: "debugger" };
   const hasDebuggerDefault = fragment.bindings?.some((binding) =>
@@ -204,9 +237,8 @@ function prepareConfig(fragment) {
   );
   const retiredOncallWildcard =
     hasDebuggerDefault &&
-    !Object.hasOwn(fragment.agents?.entries ?? {}, "oncall") &&
     existing.some((binding) => isDeepStrictEqual(binding, priorOncallWildcard)) &&
-    hasPriorOncallWorkspace(current.agents?.entries?.oncall);
+    priorOncall;
   if (retiredOncallWildcard) {
     // Explicit heartbeat, Talk, cron, and other consumers can still use the installed agent.
     existing = existing.filter((binding) => !isDeepStrictEqual(binding, priorOncallWildcard));
@@ -266,6 +298,8 @@ function applyConfig(fragment, ids) {
     console.log("slack tokens: SLACK_BOT_TOKEN/SLACK_APP_TOKEN not both set; token config skipped");
   }
 
+  // Record shipped workspace ownership before publishing a new agent entry.
+  copyWorkspaces(ids);
   writeConfigAtomic(configPath, next);
   const digest = createHash("sha256").update(JSON.stringify(next)).digest("hex");
   console.log(`config: written (${path.basename(configPath)}, sha256 ${digest.slice(0, 16)})`);
@@ -278,7 +312,7 @@ function copyWorkspaces(ids) {
     const dst = workspaceFor(id);
     fs.mkdirSync(dst, { recursive: true, mode: 0o700 });
     fs.copyFileSync(path.join(src, "AGENTS.md"), path.join(dst, "AGENTS.md"));
-    const skillsSrc = path.join(src, "skills");
+    const skillsSrc = path.join(id === "oncall" ? path.join(nativeDir, "agents", "debugger") : src, "skills");
     if (fs.existsSync(skillsSrc)) {
       fs.mkdirSync(path.join(dst, "skills"), { recursive: true });
       const shipped = new Set(
@@ -316,5 +350,4 @@ prepareConfig(fragment);
 backupConfig();
 ensurePlugins();
 applyConfig(fragment, ids);
-copyWorkspaces(ids);
 console.log(`apply: done for ${releaseSha}`);

@@ -18,7 +18,10 @@ with read access to the intended project.
    to install Codex, link the evidence plugin, and add `debugger` with its
    workspace. Sign in for that agent with
    `openclaw models auth login --provider openai --agent debugger`.
-2. Merge `config/openclaw.fragment.json5` into `~/.openclaw/openclaw.json`.
+2. For local OnCall setup, create its workspace and install its skills
+   using the steps below before merging the fragment. For Debugger-only local
+   setup, omit the `agents.entries.oncall` entry. Merge the selected config
+   from `config/openclaw.fragment.json5` into `~/.openclaw/openclaw.json`.
    Set the Slack bot and app tokens plus `GCLOUD_*`, `CLOUDSDK_CONFIG`,
    `GCP_PROJECT`, `SLACK_SENDER_ID` and `PYTHON_PATH` for the Gateway.
 3. The fragment sets `debugger` as `agents.defaults.systemAgent` and the
@@ -35,7 +38,7 @@ For a manual config merge, review the old `oncall` entry and remove its
 previously shipped Slack wildcard (`default` account, channel peer `*`) before
 activating the new Debugger wildcard. Keep existing OnCall registrations and
 agent data so explicit jobs, channels, and sessions can still use them. A
-fresh install creates only Debugger. Sign in and verify a Debugger turn before
+fresh install of the base Debugger PR creates only Debugger. Sign in and verify a Debugger turn before
 switching live Slack traffic.
 
 ## Debugger flow
@@ -52,6 +55,38 @@ The Slack `message` tool can read messages and reactions. The evidence tools
 are available only to a Slack turn from the configured sender in an allowed
 channel. For a Control UI chat, use evidence supplied by the user. The skill
 reports unavailable evidence and external case updates explicitly.
+
+## Opt in to LiveX OnCall
+
+`oncall` is **LiveX OnCall**, a separate workspace for explicitly assigned
+alert triage and operational follow-up. Select it directly in the Control UI
+or uncomment the exact-channel binding in the fragment and replace
+`C0ONCALL` with the Slack channel ID. If that channel already has an exact
+binding, replace it explicitly to select OnCall. Other Slack mentions and
+the system default go to Debugger. Remove the exact-channel binding to return
+that channel to Debugger.
+
+The DEV/test installer registers this workspace and copies the native skill
+files maintained in Debugger. An existing operator-managed `oncall` agent
+requires an ownership decision before this install can replace its config.
+
+For local setup, check `openclaw agents list` before merging the fragment. Use
+an existing `oncall` entry only if it belongs to this native workspace. On a
+clean local setup, run the following from the repository root:
+
+```sh
+native_dir="$(pwd)/livex-native"
+openclaw agents add oncall --workspace "$native_dir/agents/oncall" --model openai/gpt-6-astra --non-interactive
+for skill in investigate-alerts debug systematic-debugging verification-before-completion; do
+  openclaw skills install "$native_dir/agents/debugger/skills/$skill" --agent oncall
+done
+openclaw models auth login --provider openai --agent oncall
+```
+
+The local install puts each skill and its supporting files inside the OnCall
+workspace. A Slack turn still needs the configured sender and channel to use
+the LiveX evidence tools. Follow-up ownership and any later checks must be
+established in the thread or in authorized evidence.
 
 ## Stage on DEV or deploy to a test VM
 

@@ -49,7 +49,7 @@ function priorOncall(workspace) {
   };
 }
 
-function fixture(t, { includeOncall = false } = {}) {
+function fixture(t, { includeOncall = false, optInChannel = null } = {}) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "livex-apply-"));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const configPath = path.join(state, "openclaw.json");
@@ -65,21 +65,22 @@ function fixture(t, { includeOncall = false } = {}) {
     { mode: 0o700 },
   );
 
-  let releaseDir = nativeDir;
-  if (includeOncall) {
-    releaseDir = path.join(state, "release");
-    fs.mkdirSync(path.join(releaseDir, "config"), { recursive: true });
-    fs.symlinkSync(path.join(nativeDir, "agents"), path.join(releaseDir, "agents"));
-    const fragment = json5.parse(
-      fs.readFileSync(path.join(nativeDir, "config", "openclaw.fragment.json5"), "utf8"),
-    );
-    fragment.agents.entries.oncall = { name: "LiveX OnCall" };
-    fragment.bindings.push(slackRoute("oncall", "C0OPTIN"));
-    fs.writeFileSync(
-      path.join(releaseDir, "config", "openclaw.fragment.json5"),
-      JSON.stringify(fragment),
-    );
+  const releaseDir = path.join(state, "release");
+  fs.mkdirSync(path.join(releaseDir, "config"), { recursive: true });
+  fs.symlinkSync(path.join(nativeDir, "agents"), path.join(releaseDir, "agents"));
+  const fragment = json5.parse(
+    fs.readFileSync(path.join(nativeDir, "config", "openclaw.fragment.json5"), "utf8"),
+  );
+  if (!includeOncall) {
+    delete fragment.agents.entries.oncall;
   }
+  if (optInChannel) {
+    fragment.bindings.push(slackRoute("oncall", optInChannel));
+  }
+  fs.writeFileSync(
+    path.join(releaseDir, "config", "openclaw.fragment.json5"),
+    JSON.stringify(fragment),
+  );
 
   const env = {
     LIVEX_NATIVE_DIR: releaseDir,
@@ -247,19 +248,72 @@ test("ambiguous Slack wildcards stop apply before writing config", (t) => {
   }
 });
 
-test("an opt-in fragment owns OnCall and retains user exact-channel routing", (t) => {
-  const { oncallWorkspace, seed, applyTwice } = fixture(t, { includeOncall: true });
-  const exact = slackRoute("oncall", "C0OPS");
-  const installed = priorConfig(priorOncall(oncallWorkspace), [exact, slackRoute("debugger")]);
-  installed.agents.defaults.systemAgent.agentId = "debugger";
-  seed(installed);
+test("follow-up installs both workspaces with one skill source and Debugger as the default", (t) => {
+  const { state, oncallWorkspace, applyTwice } = fixture(t, { includeOncall: true });
+  const config = applyTwice();
+  assert.equal(config.agents.entries.debugger.name, "LiveX Debugger");
+  assert.equal(config.agents.entries.oncall.name, "LiveX OnCall");
+  assert.equal(config.agents.entries.oncall.workspace, oncallWorkspace);
+  assert.equal(config.agents.defaults.systemAgent.agentId, "debugger");
+  assert.deepEqual(config.bindings, [slackRoute("debugger")]);
+  for (const skill of config.agents.entries.oncall.skills) {
+    const installed = path.join(oncallWorkspace, "skills", skill, "SKILL.md");
+    const debuggerCopy = path.join(state, "workspace-debugger", "skills", skill, "SKILL.md");
+    assert.equal(
+      fs.realpathSync(installed),
+      path.join(fs.realpathSync(oncallWorkspace), "skills", skill, "SKILL.md"),
+    );
+    assert.equal(fs.readFileSync(installed, "utf8"), fs.readFileSync(debuggerCopy, "utf8"));
+  }
+});
+
+test("follow-up can upgrade the earlier OnCall default directly and keep exact routes", (t) => {
+  const { oncallWorkspace, seed, applyTwice } = fixture(t, {
+    includeOncall: true,
+    optInChannel: "C0OPTIN",
+  });
+  const existingExact = slackRoute("oncall", "C0OPS");
+  markPriorWorkspace(oncallWorkspace);
+  seed(priorConfig(priorOncall(oncallWorkspace), [slackRoute("oncall"), existingExact]));
   const config = applyTwice();
   assert.equal(config.agents.entries.oncall.name, "LiveX OnCall");
   assert.equal(config.agents.entries.oncall.workspace, oncallWorkspace);
   assert.equal(config.agents.defaults.systemAgent.agentId, "debugger");
   assert.deepEqual(config.bindings, [
-    exact,
+    existingExact,
     slackRoute("debugger"),
     slackRoute("oncall", "C0OPTIN"),
   ]);
+});
+
+test("opt-in install leaves custom OnCall IDs and config untouched", (t) => {
+  for (const id of ["oncall", "OnCall", "-oncall-"]) {
+    const { configPath, seed, run, read } = fixture(t, { includeOncall: true });
+    const entry = { name: "Custom oncall", workspace: "/operator/oncall" };
+    const config = priorConfig(entry, []);
+    config.agents.entries = { [id]: entry };
+    seed(config);
+    const before = read();
+    const result = run();
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /oncall ID belongs to an existing custom agent/);
+    assert.equal(read(), before);
+    assert.equal(fs.existsSync(`${configPath}.pre-regression`), false);
+  }
+});
+
+test("matching display names without managed skills do not confer OnCall ownership", (t) => {
+  const { oncallWorkspace, seed, run, read } = fixture(t, { includeOncall: true });
+  const entry = {
+    name: "LiveX OnCall",
+    identity: { name: "LiveX OnCall" },
+    workspace: oncallWorkspace,
+  };
+  seed(priorConfig(entry, []));
+  const before = read();
+  const result = run();
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /oncall ID belongs to an existing custom agent/);
+  assert.equal(read(), before);
+  assert.equal(fs.existsSync(oncallWorkspace), false);
 });
