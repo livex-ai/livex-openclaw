@@ -10,6 +10,8 @@ x-runtime: &runtime
     OPENCLAW_STATE_DIR: /home/node/.openclaw
     OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
     OPENCLAW_GATEWAY_PORT: "18789"
+    OPENCLAW_SKIP_CHANNELS: "${LIVEX_STAGE_ONLY:-0}"
+    OPENCLAW_GATEWAY_STARTUP_TRACE: "${LIVEX_STAGE_ONLY:-0}"
     CLOUDSDK_CONFIG: /home/node/.config/gcloud
     BROWSER: echo
   volumes:

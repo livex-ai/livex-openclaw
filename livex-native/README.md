@@ -88,13 +88,15 @@ You need the `openclaw` CLI (Node 24+) with a running local Gateway, and
   thread or identifiers into the debugger conversation yourself. Native
   `subagents` delegation would be a separate change.
 
-## Deploy to a test VM
+## Stage on DEV or deploy to a test VM
 
-`deploy/deploy.sh FULL_SHA` uploads this folder to a separate test VM and runs
-it on the official OpenClaw image with health-checked cutover and automatic
-rollback. It replaces PR #1's much larger deploy pipeline. One-time VM setup,
-the exact deploy command, Slack app, Codex sign-in and rollback are in
-[deploy/README.md](deploy/README.md). It has not run against a real VM yet.
+`deploy/deploy.sh FULL_SHA` runs the official OpenClaw image with a readiness gate
+and rollback. With `LIVEX_ON_DEV_VM=1`, it stages a separate Gateway on port
+18789 with Slack disabled. The existing DEV bot keeps serving. Use a dedicated
+test VM and its own app for Slack verification. See [deploy instructions](deploy/README.md).
+
+The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging
+and recovery are available on hosts that expose the V2 state API.
 
 ## Execution boundary
 

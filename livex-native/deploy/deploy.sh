@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy a reviewed commit's livex-native/ bundle to the SEPARATE test VM.
+# Deploy a reviewed livex-native bundle to the test VM or stage it on DEV.
 # Runs on the operator's Mac. See deploy/README.md for the one-time VM setup.
 #
 #   bash livex-native/deploy/deploy.sh FULL_SHA [--dry-run]
@@ -30,10 +30,8 @@ git -C "$repo" ls-files --error-unmatch -- livex-native/deploy/deploy.sh >/dev/n
 # Deploy exactly the checked-out, reviewed tooling's commit.
 [[ $sha == "$tooling" ]] || { echo "sha must equal the checked-out HEAD ($tooling)." >&2; exit 1; }
 
-# The target is a test VM. The name is allowlisted, the project is fixed, and only
-# the zone can be overridden. LIVEX_ON_DEV_VM=1 is the one explicit exception: it
-# installs side by side on livex-openclaw-dev under /opt/livex-openclaw-test, never
-# touching PR #1's /opt/livex-openclaw, and stops PR #1's Gateway only at cutover.
+# The default target is a dedicated test VM. DEV mode stages a separate Gateway
+# with channel startup disabled and leaves the running DEV Gateway alone.
 on_dev=0
 [[ ${LIVEX_ON_DEV_VM:-0} == 1 ]] && on_dev=1
 project=ai-mvp-dv
@@ -61,7 +59,16 @@ else
   ssh_extra=(--ssh-flag=-4)
   scp_extra=(--scp-flag=-4)
 fi
-root=/opt/livex-openclaw-test
+compose_project=livex-openclaw-test
+default_timeout=120
+if ((on_dev)); then
+  compose_project=livex-openclaw-stage
+  default_timeout=300
+fi
+root=/opt/$compose_project
+health_timeout=${LIVEX_HEALTH_TIMEOUT:-$default_timeout}
+[[ $health_timeout =~ ^[1-9][0-9]{0,3}$ ]] && ((health_timeout <= 3600)) \
+  || { echo "LIVEX_HEALTH_TIMEOUT must be a whole number of seconds from 1 to 3600." >&2; exit 2; }
 
 run() {
   printf '+'
@@ -76,14 +83,13 @@ archive="$work/livex-native-$sha.tgz"
 git -C "$repo" archive --format=tar.gz -o "$archive" "$sha" livex-native
 hash=$(shasum -a 256 "$archive" | cut -d ' ' -f1)
 echo "Archive: livex-native @ $sha (sha256 $hash)"
-echo "Target: $vm ($project, $zone)$( ((on_dev)) && echo ' side by side with PR #1, which is stopped at cutover')"
+echo "Target: $vm ($project, $zone), project $compose_project, readiness timeout ${health_timeout}s"
+if ((on_dev)); then echo "DEV staging: the current DEV Gateway keeps serving Slack."; fi
 
 upload="livex-deploy-$sha.tgz"
 if ((on_dev)); then
-  # 1. Idempotent side-by-side setup on the dev VM (creates /opt/livex-openclaw-test
-  #    and, once, runtime.env from PR #1's running Gateway). Sent from the reviewed sha.
-  # The script goes over stdin (`bash -s`), so it doesn't depend on the remote
-  # login shell's quoting.
+  # 1. Bootstrap the separate staging root. Send reviewed code over stdin so it
+  # does not depend on the remote login shell's quoting.
   bootstrap=$(git -C "$repo" show "$sha:livex-native/deploy/dev-bootstrap.sh")
   run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="sudo bash -s" <<<"$bootstrap"
 else
@@ -94,16 +100,16 @@ fi
 run gcloud compute scp "${location[@]}" ${scp_extra[@]+"${scp_extra[@]}"} "$archive" "$vm:$upload"
 # 3. Verify, unpack, and run remote.sh under the deploy lock. sha and hash are
 #    validated hex, so they are safe to embed.
-inner='set -eu; test -f "$UP"; echo "$HASH  $UP" | sha256sum -c - >/dev/null; rel='"$root"'/releases/$SHA; tmp=$(mktemp -d '"$root"'/releases/.incoming.XXXXXX); tar -xzf "$UP" -C "$tmp"; rm -rf "$rel"; mv "$tmp" "$rel"; rm -f "$UP"; exec bash "$rel/livex-native/deploy/remote.sh" "$SHA"'
-remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev bash -c $(printf %q "$inner")"
+inner='set -eu; test -f "$UP"; echo "$HASH  $UP" | sha256sum -c - >/dev/null; rel='"$root"'/releases/$SHA; if [ ! -d "$rel" ]; then tmp=$(mktemp -d '"$root"'/releases/.incoming.XXXXXX); trap '\''rm -rf "$tmp"'\'' EXIT; tar -xzf "$UP" -C "$tmp"; mv "$tmp" "$rel"; trap - EXIT; fi; rm -f "$UP"; exec bash "$rel/livex-native/deploy/remote.sh" "$SHA"'
+remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_HEALTH_TIMEOUT=$health_timeout bash -c $(printf %q "$inner")"
 run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="$remote_cmd"
 if [[ $dry == 1 ]]; then echo "Dry run: nothing was uploaded or changed."; exit 0; fi
 
-lx="sudo docker compose --project-name livex-openclaw-test -f $root/current-release/livex-native/deploy/compose.yaml --env-file $root/compose.env"
+lx="sudo docker compose --project-name $compose_project -f $root/current-release/livex-native/deploy/compose.yaml --env-file $root/compose.env"
 echo
 echo "Next, once: sign Codex in for the oncall agent (approve the code at https://auth.openai.com/codex/device):"
-printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " -- -t %q\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent oncall"
+printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q -- -t\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent oncall"
 if ((on_dev)); then
-  echo "PR #1's Gateway is stopped. To switch back to it:"
-  printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q\n" "sudo docker stop livex-openclaw-test-gateway-1 && sudo docker start livex-openclaw-dev-gateway-1"
+  echo "After sign-in, check the staged oncall agent (shared Slack stays on the current DEV Gateway):"
+  printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q\n" "$lx exec -T gateway node /app/openclaw.mjs agent --agent oncall --session-key stage-smoke --message 'Reply with READY only.' --json"
 fi

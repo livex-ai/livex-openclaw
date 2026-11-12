@@ -1,41 +1,42 @@
-# Deploy livex-native to the test VM
+# Deploy livex-native
 
-One command puts a reviewed commit of `livex-native/` on a SEPARATE test VM
-(`livex-openclaw-test`) running the official OpenClaw image. By default it never
-touches `livex-openclaw-dev`: `deploy.sh` and `remote.sh` only accept a name matching
-`livex-openclaw-test[-suffix]`, and the install lives in its own
-`/opt/livex-openclaw-test`.
+The default target is the dedicated `livex-openclaw-test` VM. It uses its own
+Slack app and the official OpenClaw image. `LIVEX_ON_DEV_VM=1` stages a candidate
+on the existing DEV VM for Gateway and Codex checks.
 
-## Side by side on the existing dev VM (`LIVEX_ON_DEV_VM=1`)
+## Stage on the existing DEV VM
 
-The one explicit exception. With `LIVEX_ON_DEV_VM=1`, the same install goes onto
-`livex-openclaw-dev` next to PR #1, and reuses PR #1's Slack app:
+The candidate uses `/opt/livex-openclaw-stage`, the `livex-openclaw-stage`
+Compose project, and loopback port `18789`. The current DEV Gateway keeps
+serving Slack on port `18791`.
 
-- **Separate from PR #1.** Everything lives in `/opt/livex-openclaw-test` (compose
-  project `livex-openclaw-test`, port `127.0.0.1:18789`). PR #1's
-  `/opt/livex-openclaw`, image and state (port 18791) are never modified.
-- **First run, automatic:** `dev-bootstrap.sh` creates the directories and, once,
-  `runtime.env` from PR #1's running Gateway: its two Slack tokens (never printed)
-  and the logs project, allowed Slack user and gcloud account from its config. The
-  container reads logs as the VM's attached service account, like PR #1.
-- **Cutover:** PR #1's Gateway (`livex-openclaw-dev-gateway-1`) is stopped only after
-  the new image is built and its config validated, right before the new Gateway
-  starts, because one Slack app must have one active Gateway. If the new Gateway
-  doesn't become ready and no earlier livex-native release is running, PR #1 is
-  started again automatically.
-- **Switch back by hand:** `sudo docker stop livex-openclaw-test-gateway-1 && sudo
-  docker start livex-openclaw-dev-gateway-1` (deploy.sh prints the full command).
-- The global Docker build-cache prune is skipped, since the cache also serves PR #1.
-- SSH uses the same path as PR #1's deploy; add `LIVEX_TEST_IAP=0` if your account
-  lacks IAP tunnel access.
+- Bootstrap reads the GCP project, account, and authorized sender from DEV. It
+  generates a separate Gateway token and leaves Slack credentials out of the
+  staging environment.
+- The candidate disables Slack in config and suppresses channel startup. It
+  keeps the official entrypoint and traces startup, including Doctor. The
+  staging readiness window defaults to 300 seconds.
+- A failed staging attempt rolls back only the staging project and its state.
+  Docker build-cache pruning stays off on DEV.
 
 ```bash
-( set -e; cd <checkout>; sha=<40-hex>; git fetch origin refs/pull/50/head; test "$(git rev-parse FETCH_HEAD)" = "$sha"; test "$(git rev-parse HEAD)" = "$sha"; LIVEX_ON_DEV_VM=1 LIVEX_TEST_IAP=0 bash livex-native/deploy/deploy.sh "$sha" )
+sha=$(git rev-parse HEAD)
+LIVEX_ON_DEV_VM=1 LIVEX_TEST_IAP=0 LIVEX_HEALTH_TIMEOUT=300 \
+  bash livex-native/deploy/deploy.sh "$sha"
 ```
 
-After the first deploy, sign Codex in once for the `oncall` agent (deploy.sh prints
-the exact command; it ends in `models auth login --provider openai --method
-device-code --agent oncall`).
+Run from the reviewed PR checkout. Drop `LIVEX_TEST_IAP=0` if using IAP. The
+deploy prints a device-code sign-in command for `oncall` and a local agent
+command to check its reply. Use this direct SSH tunnel for the Control UI.
+
+```bash
+gcloud compute ssh livex-openclaw-dev --project=ai-mvp-dv --zone=us-central1-a \
+  --ssh-flag=-4 -- -N -L 18789:127.0.0.1:18789
+```
+
+Use the staging Gateway token from `/opt/livex-openclaw-stage/runtime.env` in
+the Control UI. Use the dedicated test VM and its own Slack app to verify
+Slack replies and GCP tools through an authorized Slack turn.
 
 | File | Runs on | What it does |
 | --- | --- | --- |
@@ -62,7 +63,8 @@ checked-out HEAD and `livex-native/deploy` matches HEAD. The project is fixed to
 
 What a deploy does on the VM, in order: build `livex-openclaw-test:<sha>`; stop the
 gateway; snapshot the state directory; run `apply.mjs` and `openclaw config
-validate` in the new image; start the new gateway; wait up to 120 s for
+validate` in the new image; start the new gateway; wait up to 120 s (300 s for
+DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
 `http://127.0.0.1:18789/readyz`. Only then are `current` and `previous` written.
 `/readyz` includes the channel check, so a broken Slack config fails the deploy
 (compose still uses `/healthz` for container liveness). A failure before the stop
@@ -79,7 +81,8 @@ validate` in the new image; start the new gateway; wait up to 120 s for
   exactly one load path, `/opt/livex-native/plugins/livex-gcp-readonly`.
 - Copies each agent's `AGENTS.md` and `skills/` into `state/workspace-<id>/`.
 - Ensures plugins (below).
-- If `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are in `runtime.env`, sets
+- In DEV staging, replaces the Slack config with an explicitly disabled channel.
+- On the dedicated VM, if both Slack tokens are in `runtime.env`, sets
   `channels.slack` to socket mode with env SecretRefs
   (`docs/channels/slack/setup.md`). Tokens are never copied into the config.
 - Keeps the previous config as `openclaw.json.pre-<sha>`.
@@ -340,10 +343,11 @@ read-only volume in `compose.yaml`, and add
 `plugins.entries.livex-gcp-readonly.config.repositories` in the fragment
 (or in `openclaw.json`; a non-empty list on the VM is kept). Then redeploy.
 
-## Not verified yet
+## Verification
 
-Nothing here has run against a real VM or Docker. The rehearsal used fake
-`gcloud`, `docker`, `curl` and `hostname`. First-deploy risks:
+The earlier DEV cutover timed out during the official image's startup Doctor
+run. Run `python3 -B livex-native/deploy/test_deploy.py` from the repository root
+for local success and rollback tests with Docker stubbed. The isolated staging flow still needs a live signed-in smoke test.
 
 - The plugin's TypeScript entry and its `*-operation-api.ts` module loading from
   `/opt/livex-native` in the production image.

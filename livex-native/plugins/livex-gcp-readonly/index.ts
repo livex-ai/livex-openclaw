@@ -13,19 +13,23 @@ export default definePluginEntry({
   description: manifest.description,
   configSchema: buildJsonPluginConfigSchema(manifest.configSchema),
   register(api) {
-    api.registerCommand(
-      createRecoveryCommand(
-        api.pluginConfig,
-        (
-          options: Parameters<typeof api.runtime.state.openKeyedStoreV2>[0],
-          authority: Parameters<typeof api.runtime.state.openKeyedStoreV2>[1],
-        ) => api.runtime.state.openKeyedStoreV2(options, authority),
-        // Optional host hook (not on stock OpenClaw main yet); without it,
-        // recovery refuses the `child` form and keeps same-thread recovery.
-        (api.runtime.agent.session as { withDescendantSessionRead?: unknown })
-          .withDescendantSessionRead,
-      ),
-    );
+    // Stock 2026.10.5 can read logs without the V2 store that paging and recovery require.
+    const supportsPaging = typeof api.runtime.state.openKeyedStoreV2 === "function";
+    if (supportsPaging) {
+      api.registerCommand(
+        createRecoveryCommand(
+          api.pluginConfig,
+          (
+            options: Parameters<typeof api.runtime.state.openKeyedStoreV2>[0],
+            authority: Parameters<typeof api.runtime.state.openKeyedStoreV2>[1],
+          ) => api.runtime.state.openKeyedStoreV2(options, authority),
+          // Optional host hook (not on stock OpenClaw main yet); without it,
+          // recovery refuses the `child` form and keeps same-thread recovery.
+          (api.runtime.agent.session as { withDescendantSessionRead?: unknown })
+            .withDescendantSessionRead,
+        ),
+      );
+    }
     api.registerTool(
       {
         contextVersion: 2,
@@ -35,6 +39,7 @@ export default definePluginEntry({
           const paging = config?.paging;
           if (
             !legacy ||
+            !supportsPaging ||
             typeof paging !== "object" ||
             paging === null ||
             !("enabled" in paging) ||

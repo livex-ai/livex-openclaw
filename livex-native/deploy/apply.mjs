@@ -21,6 +21,7 @@ const nativeDir = process.env.LIVEX_NATIVE_DIR ?? "/opt/livex-native";
 const stateDir = process.env.OPENCLAW_STATE_DIR ?? "/home/node/.openclaw";
 const configPath = process.env.OPENCLAW_CONFIG_PATH ?? path.join(stateDir, "openclaw.json");
 const releaseSha = process.env.LIVEX_RELEASE_SHA ?? "unversioned";
+const stageOnly = process.env.LIVEX_STAGE_ONLY === "1";
 const slackSpec = process.env.SLACK_PLUGIN_SPEC ?? "";
 const slackTarball = process.env.LIVEX_SLACK_TARBALL ?? "/opt/livex-plugins/slack.tgz";
 const openclawCmd = (process.env.LIVEX_OPENCLAW_CMD ?? "node /app/openclaw.mjs").split(" ");
@@ -182,8 +183,10 @@ function applyConfig(fragment, ids) {
   next.plugins ??= {};
   next.plugins.load = { ...next.plugins.load, paths };
 
-  const slackReady = Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN);
-  if (slackReady) {
+  if (stageOnly) {
+    // Drop inherited Slack accounts and credentials from staging config.
+    next.channels.slack = { enabled: false };
+  } else if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     // Documented SecretRef form (docs/channels/slack/setup.md): tokens stay in the env file.
     next.channels.slack = merge(next.channels.slack ?? {}, {
       enabled: true,
