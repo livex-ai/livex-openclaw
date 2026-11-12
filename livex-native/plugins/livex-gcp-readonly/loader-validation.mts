@@ -48,9 +48,9 @@ const assertCurrent = () => {
   }
 };
 const context = {
-  agentId: "oncall",
+  agentId: "debugger",
   agentAccountId: "default",
-  sessionKey: "agent:oncall:slack:channel:c123:thread:1792710014.413639",
+  sessionKey: "agent:debugger:slack:channel:c123:thread:1792710014.413639",
   sessionId: "generation-one",
   messageChannel: "slack",
   nativeChannelId: "C123",

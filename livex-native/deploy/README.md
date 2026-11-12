@@ -26,7 +26,7 @@ LIVEX_ON_DEV_VM=1 LIVEX_TEST_IAP=0 LIVEX_HEALTH_TIMEOUT=300 \
 ```
 
 Run from the reviewed PR checkout. Drop `LIVEX_TEST_IAP=0` if using IAP. The
-deploy prints a device-code sign-in command for `oncall` and a local agent
+deploy prints a device-code sign-in command for `debugger` and a local agent
 command to check its reply. Use this direct SSH tunnel for the Control UI.
 
 ```bash
@@ -77,7 +77,7 @@ DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
 - Sets `gateway` to `mode local`, `bind lan` (needed inside the container for the
   published port), port 18789, token auth from `${OPENCLAW_GATEWAY_TOKEN}`, and the
   Control UI origins for the tunnel.
-- Writes `agents.entries.<id>.workspace` for `oncall` and `debugger`, and keeps
+- Writes `agents.entries.<id>.workspace` for the shipped agent and keeps
   exactly one load path, `/opt/livex-native/plugins/livex-gcp-readonly`.
 - Copies each agent's `AGENTS.md` and `skills/` into `state/workspace-<id>/`.
 - Ensures plugins (below).
@@ -93,15 +93,15 @@ DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
 - **Union arrays** (existing entries stay, fragment entries are added once):
   `plugins.allow`, `plugins.load.paths` (stale copies of this plugin's path are
   dropped, other paths stay).
-- **Bindings**: existing bindings whose `agentId` is defined in the fragment's
-  `agents.entries` (`oncall`, `debugger`) are replaced by the fragment's bindings;
-  bindings for other agents stay. So a debugger channel binding must live in the
-  fragment, or the next deploy removes it.
+- **Bindings**: the fragment defines the default Debugger Slack route. The
+  installer retires the verified OnCall wildcard from the earlier native demo
+  and keeps operator-managed channel routes. See the
+  [upgrade instructions](../README.md#upgrade-the-earlier-two-agent-demo).
 - **Kept if set**: a non-empty `plugins.entries.livex-gcp-readonly.config.repositories`
   on the VM is not overwritten by the fragment's empty list.
 - **All other arrays** (`skills`, `tools.allow`, `users`, `allowFrom`, ...) are
   replaced by the fragment's value.
-- **Keys removed from the fragment persist.** The merge only adds and overwrites.
+- **Other keys removed from the fragment persist.** The managed routing migration is the exception.
   To delete a key, edit `openclaw.json` on the VM, or restore from a snapshot.
 - Workspaces: `AGENTS.md` and each shipped `skills/<name>/` are overwritten each
   release. `skills/.livex-shipped` lists the skills a release shipped; a skill that
@@ -158,7 +158,7 @@ The VM keeps the current and previous images and the newest three releases, runs
 Agents are written straight into config, not created with `openclaw agents add`.
 On a fresh state that command also creates a `main` agent and pins
 `agents.defaults.systemAgent` to it (seen in the smoke test), while the fragment
-already pins `oncall`. Writing the entries is the same config `agents add`
+already pins `debugger`. Writing the entries is the same config `agents add`
 produces for a basic non-interactive add (`docs/cli/agents.md`), and the
 idempotent merge keeps one code path for first deploy and upgrades.
 
@@ -290,7 +290,7 @@ lx() { sudo docker compose --project-name livex-openclaw-test \
    state directory and the separate `cli` container has no network path to it:
 
    ```bash
-   lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent oncall
+   lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent debugger
    ```
 
    Then `/status` in a chat with the bot should say `Runtime: OpenAI Codex`.

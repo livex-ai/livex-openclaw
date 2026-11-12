@@ -107,9 +107,9 @@ if [[ $dry == 1 ]]; then echo "Dry run: nothing was uploaded or changed."; exit 
 
 lx="sudo docker compose --project-name $compose_project -f $root/current-release/livex-native/deploy/compose.yaml --env-file $root/compose.env"
 echo
-echo "Next, once: sign Codex in for the oncall agent (approve the code at https://auth.openai.com/codex/device):"
-printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q -- -t\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent oncall"
+echo "Next, once: sign Codex in for the debugger agent (approve the code at https://auth.openai.com/codex/device):"
+printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q -- -t\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent debugger"
 if ((on_dev)); then
-  echo "After sign-in, check the staged oncall agent (shared Slack stays on the current DEV Gateway):"
-  printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q\n" "$lx exec -T gateway node /app/openclaw.mjs agent --agent oncall --session-key stage-smoke --message 'Reply with READY only.' --json"
+  echo "After sign-in, check the staged debugger agent (shared Slack stays on the current DEV Gateway):"
+  printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q\n" "$lx exec -T gateway node /app/openclaw.mjs agent --agent debugger --session-key stage-smoke --message 'Reply with READY only.' --json"
 fi

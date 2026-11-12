@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 const nativeDir = process.env.LIVEX_NATIVE_DIR ?? "/opt/livex-native";
 const stateDir = process.env.OPENCLAW_STATE_DIR ?? "/home/node/.openclaw";
@@ -30,8 +31,12 @@ const json5 = createRequire(process.env.LIVEX_JSON5_FROM ?? "/app/package.json")
 const GCP_PLUGIN = "livex-gcp-readonly";
 const pluginDir = path.join(nativeDir, "plugins", GCP_PLUGIN);
 const GATEWAY_PORT = 18789;
+const priorOncallWildcard = {
+  agentId: "oncall",
+  match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "*" } },
+};
 // Arrays that accumulate (existing entries stay, fragment entries are added once).
-// `bindings` is handled separately: see replaceFragmentBindings.
+// `bindings` is handled separately: see mergeFragmentBindings.
 const UNION_ARRAYS = new Set(["plugins.allow", "plugins.load.paths"]);
 // Arrays an operator may fill in on the VM; a non-empty existing value is kept.
 const KEEP_IF_SET = new Set([`plugins.entries.${GCP_PLUGIN}.config.repositories`]);
@@ -62,12 +67,14 @@ function merge(base, patch, at = "") {
   return patch;
 }
 
-// Bindings of agents the fragment defines are replaced by the fragment's; bindings
-// for other agents are kept.
-function replaceFragmentBindings(current, fragment) {
-  const owned = new Set(Object.keys(fragment.agents?.entries ?? {}));
-  const kept = (Array.isArray(current) ? current : []).filter((b) => !owned.has(b?.agentId));
-  return [...kept, ...clone(fragment.bindings ?? [])];
+// Keep operator bindings in source order. Exact peers beat wildcards in routing;
+// for equally specific routes the earlier operator binding keeps precedence.
+function mergeFragmentBindings(current, fragment) {
+  const shipped = fragment.bindings ?? [];
+  const kept = current.filter(
+    (binding) => !shipped.some((route) => isDeepStrictEqual(binding, route)),
+  );
+  return [...kept, ...clone(shipped)];
 }
 
 function readJson5(file) {
@@ -155,11 +162,72 @@ function workspaceFor(id) {
   return path.join(stateDir, `workspace-${id}`);
 }
 
-function applyConfig(fragment, ids) {
+function hasPriorOncallWorkspace(entry) {
+  if (
+    entry?.workspace !== workspaceFor("oncall") ||
+    entry.name !== "LiveX Debugger" ||
+    entry.identity?.name !== "LiveX Reporting · Debugger"
+  ) {
+    return false;
+  }
+  const marker = path.join(entry.workspace, "skills", ".livex-shipped");
+  return (
+    fs.existsSync(marker) &&
+    fs.readFileSync(marker, "utf8").split("\n").includes("investigate-alerts")
+  );
+}
+
+function shadowsDebugger(binding) {
+  const { channel, accountId, peer } = binding?.match ?? {};
+  const account = accountId?.trim().toLowerCase() ?? "";
+  // Routing can canonicalize nonstandard IDs to "default". Only exclude accounts
+  // that are already canonical and cannot fall back to it.
+  const otherAccount =
+    /^[a-z0-9][a-z0-9_-]{0,63}$/.test(account) &&
+    !["default", "constructor", "prototype"].includes(account);
+  return (
+    binding?.agentId !== "debugger" &&
+    binding?.type !== "acp" &&
+    channel?.trim().toLowerCase() === "slack" &&
+    !otherAccount &&
+    ["channel", "group"].includes(peer?.kind?.trim().toLowerCase()) &&
+    peer?.id?.trim() === "*"
+  );
+}
+
+function prepareConfig(fragment) {
   const current = fs.existsSync(configPath) ? readJson5(configPath) : {};
+  let existing = Array.isArray(current.bindings) ? current.bindings : [];
+  const debuggerWildcard = { ...priorOncallWildcard, agentId: "debugger" };
+  const hasDebuggerDefault = fragment.bindings?.some((binding) =>
+    isDeepStrictEqual(binding, debuggerWildcard),
+  );
+  const retiredOncallWildcard =
+    hasDebuggerDefault &&
+    !Object.hasOwn(fragment.agents?.entries ?? {}, "oncall") &&
+    existing.some((binding) => isDeepStrictEqual(binding, priorOncallWildcard)) &&
+    hasPriorOncallWorkspace(current.agents?.entries?.oncall);
+  if (retiredOncallWildcard) {
+    // Explicit heartbeat, Talk, cron, and other consumers can still use the installed agent.
+    existing = existing.filter((binding) => !isDeepStrictEqual(binding, priorOncallWildcard));
+  }
+
+  const bindings = mergeFragmentBindings(existing, fragment);
+  if (hasDebuggerDefault && bindings.some(shadowsDebugger)) {
+    throw new Error(
+      "An existing Slack wildcard can shadow the LiveX Debugger default. Review the Slack wildcard bindings for the default account in openclaw.json before retrying.",
+    );
+  }
+  return { current, bindings, retiredOncallWildcard };
+}
+
+function applyConfig(fragment, ids) {
+  const { current, bindings, retiredOncallWildcard } = prepareConfig(fragment);
+  if (retiredOncallWildcard) {
+    console.log("config: retired the previous managed OnCall Slack wildcard");
+  }
   const { bindings: _bindings, ...fragmentRest } = fragment;
   const next = merge(current, fragmentRest);
-  const bindings = replaceFragmentBindings(current.bindings, fragment);
   if (bindings.length > 0) next.bindings = bindings;
 
   next.gateway = merge(next.gateway ?? {}, {
@@ -243,6 +311,8 @@ function copyWorkspaces(ids) {
 fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 const fragment = readJson5(path.join(nativeDir, "config", "openclaw.fragment.json5"));
 const ids = agentIds(fragment);
+// Installing the Slack plugin may write config. Reject existing conflicts before that step.
+prepareConfig(fragment);
 backupConfig();
 ensurePlugins();
 applyConfig(fragment, ids);

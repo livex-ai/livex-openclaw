@@ -4,6 +4,10 @@ Use these rules for action tracking, each follow-up check, and case closure.
 The existing authorized coordinator owns permitted follow-up coordination. The action owner owns the required
 result. These instructions do not create a background process or grant new access.
 
+In the native Debugger, apply these rules to thread evidence, native history and
+recommended follow-up. Row checks and saves require a bound tracking tool.
+Debugger has no such binding.
+
 ## Check current decisions first
 
 Before each check or save, read the latest thread decisions and current row state.

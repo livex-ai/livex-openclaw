@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the LiveX oncall and debugger agents on a stock OpenClaw install.
+# Set up LiveX Debugger on a stock OpenClaw install.
 #
 # Default is a dry run that only prints the commands. Pass --apply to run them.
 # This script never restarts a Gateway and never runs interactive sign-in.
@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLUGIN_DIR="$ROOT/plugins/livex-gcp-readonly"
 AGENTS_DIR="$ROOT/agents"
-AGENT_IDS=(oncall debugger)
+AGENT_IDS=(debugger)
 FRAGMENT="$ROOT/config/openclaw.fragment.json5"
 MODEL="openai/gpt-6-astra"
 
@@ -69,7 +69,7 @@ fi
 echo
 
 echo "# 2. Sign in to OpenAI for Codex. Interactive; run it yourself:"
-echo "#      openclaw models auth login --provider openai"
+echo "#      openclaw models auth login --provider openai --agent debugger"
 echo
 
 echo "# 3. Install the LiveX evidence plugin from this folder."
@@ -94,25 +94,17 @@ cat <<EOF
 #      $FRAGMENT
 #    Set the GCLOUD_*, CLOUDSDK_CONFIG, GCP_PROJECT,
 #    SLACK_SENDER_ID and PYTHON_PATH variables for the Gateway process.
-#    Config changes apply on the next hot reload; this script restarts nothing.
+#    If upgrading the earlier two-agent demo, see the routing migration in
+#    $ROOT/README.md before merging. Config changes apply on hot reload.
 #
 # 6. In the Control UI:
 #    - Plugins: confirm codex and livex-gcp-readonly are enabled; fill any
 #      missing livex-gcp-readonly config fields.
-#    - Agents: open "oncall" (LiveX Debugger) for triage and "debugger"
-#      (LiveX Deep Debugger) for deep diagnosis
-#      (or use New agent and point it at $AGENTS_DIR/<id>). Neither hands work
-#      to the other automatically. Both LiveX tools answer only Slack turns
-#      from SLACK_SENDER_ID, so a Control UI chat gets no LiveX evidence.
-#    - Automations: add a schedule for non-GCP tasks. Scheduled runs have no
-#      Slack requester, so the GCP tools are not offered to them.
+#    - Agents: open "debugger" (LiveX Debugger) for triage and diagnosis.
+#      Both LiveX tools answer only Slack turns from SLACK_SENDER_ID.
+#      A Control UI chat has no LiveX evidence tools.
 #    - In a chat with the agent, run /status and check "Runtime: OpenAI Codex".
 #
-# 7. Slack routing is in the fragment: every Slack channel goes to oncall
-#    (shown in Slack as "LiveX Debugger") through a peer binding, and oncall
-#    becomes agents.defaults.systemAgent. No agents bind command is needed.
-#    Set the Slack bot and app tokens as you do for any Slack app. For a
-#    dedicated "LiveX Deep Debugger" channel, uncomment the example peer binding
-#    in the fragment and fill in that channel's id. Do not bind debugger to all
-#    of slack; that would route every alert to it.
+# 7. The Slack channel wildcard and agents.defaults.systemAgent both point
+#    to debugger. Set the Slack bot and app tokens as for any Slack app.
 EOF

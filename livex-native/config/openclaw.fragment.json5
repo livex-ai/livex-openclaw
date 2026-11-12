@@ -81,11 +81,11 @@
     defaults: {
       timeoutSeconds: 1200,
       maxConcurrent: 5,
-      // oncall is the default agent, as in PR #1. When `agents add` grows a
+      // debugger is the default agent. When `agents add` grows a
       // one-agent roster it pins the previous sole agent (often `main`) here
       // (src/commands/agents.config.ts:161-186); merging this fragment REPLACES
-      // that value, so unbound traffic and ambient system work go to oncall.
-      systemAgent: { agentId: "oncall" },
+      // that value, so unbound traffic and ambient system work go to debugger.
+      systemAgent: { agentId: "debugger" },
       // authInheritance is deliberately not set (PR #1 set it to "main"). It is
       // an upgrade-only owner for a legacy credential store; it already falls
       // back to the legacy data owner, else "main"
@@ -95,11 +95,10 @@
       // overwrite that pin on an upgraded install and is a no-op on a fresh one.
     },
     entries: {
-      oncall: {
-        // PR #1 parity: its oncall agent is shown as "LiveX Debugger" in Slack.
+      debugger: {
         name: "LiveX Debugger",
         identity: { name: "LiveX Reporting · Debugger" },
-        description: "Mention-triggered production investigations with reviewed local execution and evidence-backed next actions.",
+        description: "Slack alert triage and deeper production diagnosis from admitted read-only evidence.",
         model: "openai/gpt-6-astra",
         skills: [
           "investigate-alerts",
@@ -134,26 +133,6 @@
           fs: { workspaceOnly: true },
         },
       },
-      // Diagnosis role. PR #1's example set exec mode "deny" and
-      // permissionModeDefault "read-only". Neither works here: "deny" fails
-      // Codex preflight, and permissionModeDefault is not in main's schema.
-      debugger: {
-        // Distinct from oncall's Slack name above; the agent id stays "debugger".
-        name: "LiveX Deep Debugger",
-        description: "Read-only diagnosis from admitted evidence and verified repository revisions.",
-        model: "openai/gpt-6-astra",
-        skills: ["debug", "systematic-debugging", "verification-before-completion"],
-        tools: {
-          profile: "full", // same reason as oncall: global profile is "minimal"
-          // OpenClaw-managed tools only; no Slack message tool for this role.
-          allow: ["read", "skills_read", "livex_gcp_logs_read", "livex_repository_read"],
-          // Same reason as oncall: "ask" keeps the read-only Codex sandbox and
-          // sends any escalation request to a human.
-          exec: { mode: "ask" },
-          elevated: { enabled: false },
-          fs: { workspaceOnly: true },
-        },
-      },
     },
   },
 
@@ -165,7 +144,7 @@
     // every agent that sets no exec mode of its own, including the `main` agent
     // that `agents add` creates (extensions/codex/src/app-server/config-options.ts:148-152,
     // config-exec-policy.ts:93-103). An agent's own mode replaces the global one
-    // (extensions/codex/src/app-server/config-exec-approvals.ts:33-41), so oncall and debugger work either way;
+    // (extensions/codex/src/app-server/config-exec-approvals.ts:33-41), so debugger works either way;
     // "ask" keeps all other agents runnable and sends escalation to a human.
     exec: { mode: "ask" },
     elevated: { enabled: false },
@@ -215,27 +194,18 @@
     },
   },
 
-  // Every Slack channel message goes to oncall. A peer binding with id "*"
+  // The default Slack channel route goes to debugger. A peer binding with id "*"
   // matches any channel-kind peer on the default Slack account; DMs are
   // direct-kind and do not match (src/routing/route-binding-index.ts:241-250,
   // peer-kind-match.ts:5-13), and DMs are disabled above anyway.
   // accountId: use the Slack account id you added the app under ("default"
   // unless you passed --account), or "*" for every Slack account. A mismatch
-  // makes the binding (and the debugger example below) silently not match.
+  // makes the binding silently not match.
   bindings: [
     {
-      agentId: "oncall",
+      agentId: "debugger",
       match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "*" } },
     },
-    // Optional: give debugger one dedicated channel. Channel ids are per
-    // install, so this stays commented out. An exact peer beats the wildcard
-    // above (src/routing/resolve-route.ts:335-336 before :343), so only that
-    // channel (and its threads) goes to debugger:
-    //
-    // {
-    //   agentId: "debugger",
-    //   match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "C0DEBUGGER" } },
-    // },
   ],
 
   messages: {

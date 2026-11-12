@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Use when investigating production errors, timeouts, readiness failures, or suspected regressions from Slack alerts, log evidence, conversation IDs, jobs, rooms, or traces in the oncall agent.
+description: Use when investigating production errors, timeouts, readiness failures, or suspected regressions from Slack alerts, log evidence, conversation IDs, jobs, rooms, or traces in the Debugger agent.
 ---
 
 # Production Debug

@@ -24,9 +24,10 @@ The complete upstream tree (107 entries, not truncated) contained no NOTICE file
 
 **Modification notice:** these are selective rewrites for the existing LiveX
 skill, not an installation or wholesale copy of the kit. Adapted files are
-[SKILL.md](../SKILL.md), [evidence-record.md](evidence-record.md) and
-[replay-template.md](../../../tests/replay-template.md). Synthetic fixtures and
-their outcomes were newly authored and contain no upstream/private incidents.
+[SKILL.md](../SKILL.md), [evidence-record.md](evidence-record.md) and the
+authoring workflow's `replay-template.md`. The template is outside this native
+workspace. Synthetic fixtures and their outcomes were newly authored and
+contain no upstream/private incidents.
 
 We retain the local debug dependency, bounded read-only investigation, existing
 emoji/authorization rules and labeled 60–100-word summary. We do not import
@@ -35,3 +36,6 @@ alert-rule creation, remediation, policy-edit gates or numerical promotion
 thresholds. Recovery requires our existing observed-success standard; empty
 completed queries alone are insufficient. Existing scheduler → OpenClaw → Codex
 integration is unchanged. License attribution does not grant operational access.
+
+The native Debugger uses review dispositions in normal Slack replies, with
+reaction read-back only and no external runbook writes.

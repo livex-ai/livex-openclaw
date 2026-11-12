@@ -1,6 +1,6 @@
 ---
 name: investigate-alerts
-description: Use when asked to triage or investigate Slack production alerts from selected channels or an explicit channel-name pattern, including latest N alerts or all alerts in a bounded window, or to check their permitted follow-up manually or from an existing trigger.
+description: Use when asked to triage or investigate a Slack production alert, including urgency checks, deeper diagnosis, and follow-ups in its thread.
 ---
 
 # Investigate alerts
@@ -12,29 +12,21 @@ OpenClaw adaptation: configured tools, bot identity and normal reply delivery. -
 
 Triage selected alerts before choosing deeper work. Read the full thread and
 current customer context. Use `debug` when more evidence is needed or the user
-requests deeper investigation. Mark reviewed alerts, save the permitted runbook
-record, and report the decision, impact and next action.
-
-Review markers and runbook updates follow the user's standing instructions.
-Diagnosis remains read-only. Slack messages, production changes, fixes, PRs,
-deployments, paging, credentials and security changes need separate authorization.
-The existing authorized coordinator owns permitted follow-up. This skill creates
-no scheduler or webhook, and the oncall agent does not claim a future wake-up.
+requests deeper investigation. Report the disposition, impact and next action
+through the current conversation's normal reply. Keep the evidence record in
+native history. Slack reactions are read-back only. The role has no Notion
+binding, separate Slack posting tool or scheduler.
 
 ## Scope and access
 
-Use the current Slack thread and its established scope by default; resolve
-boundaries from the request and verified thread before asking. Accept `$ARGUMENTS`: explicit channel names/IDs or channel-name pattern; `lastNalerts` or `window=START/END` with timezone; invocation context (manual, or existing trigger/run ID and as-of time); and optional `reactions=off`. Default context is manual, as-of now, with reactions and runbook updates on. An explicit read-only or no-external-writes instruction disables both for that invocation. `reactions=off` or no-Slack-writes disables Slack reactions only; an explicit no-Notion-writes instruction disables runbook updates. Record resolved boundaries. Clarify missing source/bounds and ambiguous multi-channel N semantics; never interpret “all” as unbounded workspace history.
-
-For an explicitly requested name pattern, paginate authorized channel discovery, verify actual channel names/IDs, and list resolved matches before fetching alerts. `channel_suffix=alerting-prd last2alerts-per-channel` means accessible channels whose names end **exactly** in `alerting-prd`, two actual alerts per matched channel. Similar names or message-text matches do not qualify. Report incomplete discovery, known inaccessible matches, and channels with fewer available alerts; never silently claim full coverage or make this broad scope a default.
-
-Example:
-
-```text
-$investigate-alerts channel=#scheduler-alerting-prd channel_id=C0A2LE3SRNW last2alerts context=manual
-```
-
-This selects two actual alert events, not two root digests or arbitrary messages. The example channel is not a default.
+Use the current Slack thread and its established scope by default. Resolve the
+alert source, time window and selected events from the request and verified
+thread. Use exact channel and message timestamps as strings. Use `message`
+with `action=read` and the root timestamp as `messageId` to read the root, then
+read relevant replies with the root timestamp as `threadId`. Include
+alert-bearing recurrence replies within the requested window. Work from known,
+authorized threads. If source discovery or coverage is unavailable, state the
+gap and ask for a thread link or other exact source identifier when needed.
 
 **Required for deeper investigation:** load the configured agent's `debug`
 skill through `skills_read` with name `debug`. Load
@@ -67,10 +59,9 @@ Inventory every material category before interpreting trends; use ordinary threa
 text for informational requests. An aggregate alert's “what is happening?” needs
 that overview. If investigation was also requested, continue the required checks
 for distinct findings; do not replace investigation with a count summary. Explicit
-case reports and amendments retain their configured reporting workflow. Reactions,
-tracking writes and case creation are not authorized merely by a summary request.
-For overview-only requests, the error-summary inventory and coverage criteria
-replace the per-category case-disposition, runbook and emoji-marker steps below.
+case reports and amendments retain their configured reporting workflow. For
+overview-only requests, the error-summary inventory and coverage criteria replace
+the per-category disposition steps below.
 Do not require accepted tracking or a new action for each category just to finish
 an informational overview. This exception does not reduce explicitly requested
 investigation depth or bypass an existing human hold.
@@ -78,14 +69,18 @@ investigation depth or bypass an existing human hold.
 ## Collect and triage
 
 Read [Action ownership and case lifecycle](references/triage-lifecycle.md) before
-tracking actions, making checks or closing cases. Start with its current-state
-guard. Apply the guard again before every check or save. A queued check cannot
-override a newer hold, stop or removal.
+tracking actions or making checks. Apply its current-state guard to the latest
+thread decisions and any available linked tracking evidence before every check.
+A queued check cannot override a newer hold, stop or removal.
 
-1. Use bounded, paginated channel search/history that includes **alert-bearing thread replies**, including replies under roots outside the window. Root history alone misses unbroadcast recurrences. Verify candidate thread context and paginate relevant replies through as-of. For latest N, expand bounded lookback as needed and establish coverage of newer events before stopping; if tools cannot establish thread coverage, disclose incomplete latest-event selection. Sort by each event's own occurrence time when provided, otherwise its own message timestamp, never the root timestamp. Preserve both times, IDs, permalinks, summary windows, scan horizon, and limits. Filter join notices/chatter; distinguish newest alert events from newest root digests.
+1. Read the selected thread through the cutoff using bounded history and
+   relevant reply pages. Root history alone misses unbroadcast recurrences.
+   Sort selected events by their occurrence time when available, otherwise their
+   own message timestamp. Preserve both times, IDs, permalinks, summary windows
+   and limits. Distinguish alert events from root digests and ordinary replies.
 2. Inventory **every** materially distinct category within each selected event/summary. Deduplicate root/reply copies of the same event and repeated deliveries by stable source/event identity, and overlapping logs by event ID. A distinct recurrence counts separately even with identical error text. Group recurring patterns for readability, preserving separate incidents by service, resource/customer, trace/run, timing, and recovery boundaries. Retain all source links; disclose omitted categories.
 3. Read the full selected thread through the cutoff before choosing deeper work.
-   Check the latest human decisions and the existing runbook row. Identify the
+   Check the latest human decisions and available tracking evidence. Identify the
    service, environment, agent ID and readable name, customer and failed operation.
    Record support, setup and maintenance context. Separate the technical action
    owner from the person who owns customer communication. Keep unknowns explicit.
@@ -145,15 +140,13 @@ create another tracking system or widen the invocation's access or write scope.
    uncovered work, missed commitment or required follow-up gap. Preserve health,
    case state and formal incident state separately. Low urgency does not clear
    an action. A new recurrence does not prove the same cause.
-4. **Complete authorized updates.** Save the permitted investigation record and
-   reconcile this workflow's verified own outcome markers; read back results.
-   Use the existing identity, provenance, hold, deduplication and uncertain-write
-   rules. Additional Slack summaries or message edits still need their own
-   authorization; normal final-reply delivery follows the existing rule below.
-   Do not remove human overrides, invent an owner, or claim an unverified write.
+4. **Record disposition in native history.** Preserve current ownership,
+   commitments, holds and known markers. Include the disposition in the normal
+   reply. Keep any applicable runbook status as `blocked` with the missing
+   Notion binding. Do not change an external record or marker.
 5. **Continue the same case on delivered follow-ups.** Read new human context,
    tracking links and evidence under the current-state guard. Refresh affected
-   conclusions and markers without repeating unchanged work. Check related
+   conclusions without repeating unchanged work. Check related
    findings before recommending duplicate follow-up; verify that existing work
    actually covers each distinct finding. Reopen only under the lifecycle rules.
    This instruction neither admits unmentioned messages nor arms future checks.
@@ -185,16 +178,13 @@ investigation. Complete the requested depth unless a newer hold or stop applies.
 
 Report the supported triage decision after the checks it needs. For a requested
 or needed deeper investigation, complete that work or report its exact limits.
-Brevity does not reduce the evidence needed for cause or recovery claims. Before
-the final requester report, make the permitted Notion update below. Retain its
-verified link and updated/skipped/blocked/uncertain outcome in the full evidence
-record. Completed triage or diagnosis does not prove that a save or future check
-succeeded.
+Brevity does not reduce the evidence needed for cause or recovery claims.
+Keep evidence and coverage in native history. Return the result through the
+current conversation's normal reply.
 
 ### Default summary
 
-Use this layout for a requester reply about one alert and a separately authorized
-summary in its original Slack thread. Aim for 60–100 words; preserve material uncertainty even when
+Use this layout for a requester reply about one alert. Aim for 60–100 words; preserve material uncertainty even when
 it needs more space. Keep each labeled field, including **Owner**, on its own line:
 
 ```text
@@ -205,8 +195,7 @@ Owner: {accepted owner; clearly labeled proposal; Unassigned; or Not required fo
 Evidence: {verified GCP log/query/trace link} · {checked window and timezone; fresh or saved}
 ```
 
-Use bold labels in rendered messages. Choose the outcome under **Emoji review
-markers** below: action required, reviewed—no new action, or unclassified. Put a
+Use bold labels in rendered messages. Choose the outcome under **Review dispositions** below: action required, reviewed—no new action, or unclassified. Put a
 no-new-action reason (expected, recovered, duplicate, tracked issue, or authorized
 human decision) in Finding. Preserve accepted commitments, missed deadlines and
 unarmed follow-up when relevant. A tag or acknowledgment does not prove accepted
@@ -224,21 +213,14 @@ and regression uncertainty visible. Log counts are not failed-request counts.
 Retain inventories, chronology, detailed rationale and secondary hypotheses in the
 full evidence record. Explicit detail/table requests still take precedence.
 
-The investigator owns routine Notion matching, deduplication, save verification
-and audit records. Use verified source identity and prior save receipts; preserve
-ambiguous records and existing write/hold boundaries. Keep routine Notion chores,
-record-choice questions and save links out of requester summaries. Retain unresolved
-bookkeeping blockers in the evidence record. Surface a Notion blocker only when
-it requires user-only input or prevents the requested outcome; explain that need
-and the specific action. If the user asks about Notion or save status, report the
-verified outcome or precise uncertainty. This presentation rule grants no merge,
-deletion, Slack posting or infrastructure permission.
+Keep routine bookkeeping out of requester summaries. Surface the missing Notion
+binding if it prevents the requested outcome or the user asks about saving.
+
 If an access failure limits the conclusion, the short summary must still name
 the blocked action, target, reason and denied/pending/uncertain status; summarize
 independent work completed. Critical uncertainty takes priority over word count.
 Never imply confirmed cause, recovery, regression or complete coverage to save
-words. Report marker outcomes in a compact separate line; retain the complete
-actor/count/reason breakdown in the full report.
+words.
 
 For multiple alerts, rank issues needing attention first and use one concise
 line per distinct issue; expand only where needed to preserve critical evidence
@@ -259,8 +241,7 @@ first:
 For each incident/category, Findings preserves current versus historical status,
 supported service/customer and impact, confirmed cause versus hypothesis/unknown,
 latest error time (recovery time separately), bounded counts and decisive evidence.
-Include log/code evidence and revision confidence when checked. Use verified direct alert links or read-back
-verified posted-summary thread links, never a guessed thread or channel-only URL.
+Include log/code evidence and revision confidence when checked. Use verified direct alert links and exact thread timestamps.
 
 Escalation needed is a **recommendation**, with rationale and confidence in
 current impact; distinguish recommended follow-up, not currently recommended,
@@ -275,111 +256,16 @@ End the full report with coverage: sources, selected alerts and links/times, as-
 
 Keep the capability/evidence record and hypothesis provenance in that full
 report, not the short summary. State confidence per material conclusion and
-the next observation that could change it. Skill authors can use the
-[offline replay template](../../tests/replay-template.md) to check changes;
-it authorizes no live investigation or infrastructure.
+the next observation that could change it.
 
-## Required Notion runbook update
+## Review dispositions
 
-After every triage or investigation, including partial or blocked work, make
-the permitted update to the operator-designated Notion runbook and linked
-**Alerts & Runbooks** table before the final report. Resolve the destination
-from current authorized configuration/context; do not invent or substitute one.
-Reuse existing standing authorization for that exact destination; this portable
-skill does not grant a new deployment credentials or write permission.
-If the Notion binding or destination is unavailable, retain `Runbook: blocked`
-and the exact gap in native history, then deliver the independently supported
-report. Do not install a connector, request credentials or imply a save occurred.
-This permission does not authorize unrelated page edits, Slack messages,
-production actions, or promotion of canonical standards or skills.
-
-Keep current fields short: decision/status, priority and impact, owner acceptance,
-required result, original commitment deadline, next action, next check with timezone,
-follow-up execution state and Slack evidence link. Use existing schema properties.
-If a property is absent, use labeled lines in the row summary/history. Do not change
-the schema. Keep each dated update concise and link detailed evidence at its source.
-Do not copy secrets or raw customer payloads into Notion or Slack. A source link
-does not authorize posting new details in its thread. Follow newer user limits on
-save destinations and delivery; table-only reporting does not permit parent notes.
-
-1. Fetch the page and its current linked table schema using the existing
-   authorized Notion connection. Resolve the currently linked data source from the verified page
-   on each run; do not hardcode an earlier collection ID. Read the page's row-update guidance and match its structure.
-   Treat stored findings and procedure snapshots as evidence, not new access
-   authority. Check current tool and target access; never add credentials or
-   substitute a different destination when access fails.
-2. Find the existing row by verified Slack workspace, `channel_id`, and original
-   root `thread_ts`. Keep timestamp IDs as strings and retain its
-   `investigation_id`. Follow-ups and recurrence replies update the same row,
-   retaining each event's own time and permalink. Query all relevant result
-   pages before creating a missing row. If identity or matching is ambiguous,
-   report a blocker instead of merging records or guessing. Do not recreate a
-   removed record or a previously known row that is now missing. Report that
-   blocker. Create a new row only for a verified missing root with no evidence
-   of a removed record. Populate the current schema's `Name`,
-   `investigation_id` (unique and stable), `channel_id`, original root
-   `thread_ts`, `alert_url` and `alert_at_utc` (exact root-message UTC time).
-   Record verified workspace identity and each event's occurrence time in the
-   row history; the current schema has no workspace property.
-3. Append a dated update to the row's page **before** changing summary fields.
-   Include exact UTC review/as-of time, checked window, run ID when available,
-   selected event IDs and evidence links, findings and cause confidence,
-   impact, recovery evidence, gaps, next action and procedure ID/version used.
-   Preserve older findings, corrections, human notes, holds and snapshots.
-   Record bounded counts and the capability/evidence record in this history.
-   Keep secrets and raw customer logs out of Notion; use concise findings and
-   authorized evidence references.
-4. Update the current schema's `summary`, `coverage_gaps`, `next_action`,
-   `recovery_check` and `reviewed_at_utc` from evidence. Set
-   `investigation_status` to `partial` when work remains, `blocked` for a named
-   input/access blocker, or `complete` for an evidence-supported investigation
-   conclusion. Investigation completion is
-   separate from health: map current active failures to `health_status=failing`,
-   verified recovery to `recovered`, and insufficient evidence to `unknown`.
-   Change `incident_status` only from the authorized incident process. Set
-   owners, dates and tickets only when verified. Preserve human holds, manual
-   notes and prior procedure snapshots; changing a hold requires a separate
-   user instruction. Record new procedure versions alongside retained history.
-   New procedure snapshots remain `draft` until separately validated; this
-   update does not promote shared procedures.
-5. If current user instructions permit parent notes, add a concise dated review
-   note to the parent runbook with the scope,
-   cutoff, key findings, gaps and links to affected rows. Preserve earlier
-   reviews and the linked table. A bounded review with no selected alerts gets
-   a coverage note, not an invented alert row or a health claim from silence.
-6. Before each write, recheck current thread decisions and row state under the
-   lifecycle rules. Respect holds, stops and removals. Then check for the same
-   run/event/window update to avoid duplicate history or rows. Preserve distinct
-   recurrences. Wait for any
-   asynchronous update to finish, then fetch affected rows and any permitted review note
-   to verify content and links. After an uncertain write, inspect the exact
-   target before retrying. If read-back is blocked, stop retries and report
-   uncertainty; retain a draft of the unsaved update in the investigation
-   record. Retain `Runbook: updated / skipped / blocked / uncertain`, with
-   verified links or the exact action, target and reason, in the full evidence
-   record. Apply the requester-summary rule above when surfacing save outcomes.
-   A run-level opt-out
-   permits no Notion writes. Missing Notion access must not prevent the
-   independently accessible investigation or its requester report.
-
-## Emoji review markers (default)
-
-For every selected alert message actually reviewed, apply the following markers
-without asking again for reaction permission. This standing authorization covers
-emoji only; it does not authorize Slack messages, paging, or production changes.
-It does not itself request a new scan or retroactive marking of earlier reviews.
-
-Use only the current conversation's configured Slack bot account after verifying
-its identity and reaction capability in the target channel; record that actor.
-If another identity is requested, report the unsupported identity instead of
-borrowing a Desktop user connection or switching accounts. If that actor or target
-capability cannot be verified, report the precise blocker and continue the
-independent investigation; never silently switch identities or add credentials.
+Use these markers as labels in the normal reply. Read back existing reactions
+only when they matter to interpreting the thread. Preserve existing markers.
+The available actions are `read` and `reactions` (read-back).
 
 | Marker                  | Meaning and evidence gate                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `eyes` (👀)             | The selected alert message was read. This is review acknowledgment, not a final disposition.                                                                                                                                                                                                                                                                                              |
-| `mag` (🔍)              | Investigation is actually running and this actor's temporary marker can later be removed.                                                                                                                                                                                                                                                                                                 |
 | `warning` (⚠️)          | **Action required:** evidence supports a concrete new human action for this selected alert on an identified resource/operation. Record the action and accepted/proposed/unassigned owner. Priority may remain unknown.                                                                                                                                                                    |
 | `white_check_mark` (✅) | **Reviewed—no new action:** adequate relevant evidence supports expected behavior, original-operation recovery, a verified duplicate with accepted follow-up, an already tracked issue with accepted ownership and no new impact/action, or an authorized human disposition. State the reason and tracking/acceptance evidence. This does not itself mean recovered or formally resolved. |
 | `question` (❓)         | **Unclassified:** the evidence cannot yet support action required or no new action. State the exact missing check/access and next permitted step.                                                                                                                                                                                                                                         |
@@ -401,55 +287,3 @@ service severity. Complete required investigation work or name its limits; these
 markers do not authorize premature closure or replace the missing evidence.
 Unrelated discoveries get separate findings/tracking; they do not justify warning
 on this alert without verified source/operation association.
-
-Apply markers to the exact selected message, including a selected recurrence
-reply. Keep eyes; use at most one current outcome from this actor among warning,
-white_check_mark and question. Preserve every other person's reactions and all
-unrelated markers and human overrides/holds. Reconcile only outcomes verified as
-this workflow's prior writes during an authorized selected-alert review. A shared
-user ID alone does not prove that a reaction was written by the investigator;
-use a prior write receipt or equivalent verified provenance. If ownership is
-unclear or the marker is a human override, preserve it and withhold a conflicting
-addition. This instruction requests no retroactive scan.
-
-Read current reactions before changing them. If the desired outcome already
-exists alone, skip its duplicate. Before adding a different outcome, remove this
-actor's verified workflow-owned conflicting outcomes and verify each removal, then add and read back
-the desired one. If removal is unavailable, fails, or cannot be verified, preserve
-the remaining markers and withhold a conflicting addition. Record intended versus
-observed state and the precise blocked/uncertain action; continue independent
-investigation. Never claim a clean transition while old markers remain.
-
-Remove own temporary mag when work ends. Skip mag when removal is unavailable.
-After any uncertain reaction write, inspect that exact message/actor before any
-retry or dependent write; blocked read-back stops retries. Verify final reactions
-before claiming success. Retain actor, exact targets, applied/skipped/blocked/
-uncertain results and transition reasons in the evidence record; surface a marker
-failure when it changes the visible interpretation or needs user intervention.
-Invocation-level opt-out means no reaction mutations, including cleanup.
-
-## Optional Slack thread summaries
-
-Return the requested answer through this conversation's normal final-reply
-delivery after native Codex decides the requested triage/investigation is done,
-blocked, cancelled or stopped by an actual runtime budget. Normal delivery needs
-no separate posting tool or extra approval. This grants no separate message send
-or broadcast. Additional thread summaries follow the separate authorization
-rules below; the current oncall tool surface has no send action.
-
-Posting still requires explicit authorization for the selected review and
-verification of the intended actor/target capability. Reaction permission does
-not authorize posting; a one-time posting or actor approval is not a permanent
-posting or identity default. Adding Dot to a channel does not configure a trigger
-or grant standalone credentials.
-
-When explicitly asked to post per-alert summaries, resolve each selected alert's
-**original root thread ID** from verified context; retain exact IDs as strings,
-not the selected reply's ID. Read/paginate that exact thread before posting to
-deduplicate matching actor/run/event/content summaries, including uncertain prior
-attempts. Reply only to the authorized original root, with broadcasts disabled;
-never fall back to channel-level delivery. Preserve other people's content.
-Read back the exact root to verify actor, body and attachment before claiming
-delivery or using the posted-summary permalink. If a write is uncertain, check
-the thread before any retry; if read-back is blocked, report the unresolved
-outcome and withhold retries rather than duplicate posts or invent a link.
