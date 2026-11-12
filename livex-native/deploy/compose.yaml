@@ -1,0 +1,58 @@
+# Test-VM runtime. remote.sh exports OPENCLAW_IMAGE, RUNTIME_ENV_FILE, STATE_DIR
+# and SDK_STATE_DIR; operators use /opt/livex-openclaw-test/compose.env (README).
+x-runtime: &runtime
+  image: ${OPENCLAW_IMAGE:?immutable runtime image required}
+  user: "1000:1000"
+  env_file: ["${RUNTIME_ENV_FILE:?private runtime env file required}"]
+  environment:
+    HOME: /home/node
+    OPENCLAW_HOME: /home/node
+    OPENCLAW_STATE_DIR: /home/node/.openclaw
+    OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+    OPENCLAW_GATEWAY_PORT: "18789"
+    OPENCLAW_SKIP_CHANNELS: "${LIVEX_STAGE_ONLY:-0}"
+    OPENCLAW_GATEWAY_STARTUP_TRACE: "${LIVEX_STAGE_ONLY:-0}"
+    CLOUDSDK_CONFIG: /home/node/.config/gcloud
+    BROWSER: echo
+  volumes:
+    - "${STATE_DIR:?private state directory required}:/home/node/.openclaw"
+    - "${SDK_STATE_DIR:?SDK state directory required}:/home/node/.config/gcloud"
+    # Repositories are empty by default. To let livex_repository_read inspect
+    # pinned checkouts, add reviewed read-only snapshots and a mount here, then
+    # list them under plugins.entries.livex-gcp-readonly.config.repositories
+    # (apply.mjs keeps a non-empty list). See README.md, "Add repositories".
+    # - "/opt/livex-openclaw-test/repos:/repos:ro"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  init: true
+services:
+  gateway:
+    <<: *runtime
+    # Image entrypoint (tini + docker-entrypoint.mjs) runs doctor on upgrade.
+    # `lan` is required inside the container so the published port is reachable;
+    # the host side publishes loopback only.
+    command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
+    ports: ["127.0.0.1:18789:18789"]
+    restart: unless-stopped
+    # Container liveness uses /healthz; remote.sh gates a deploy on /readyz, which
+    # also checks channel accounts.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+  cli:
+    <<: *runtime
+    profiles: [tools]
+    entrypoint: ["node", "/app/openclaw.mjs"]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      disable: true

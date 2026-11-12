@@ -1,0 +1,236 @@
+# LiveX on stock OpenClaw
+
+This folder runs **LiveX Debugger** on unmodified OpenClaw.
+
+| Part | Path | What it is |
+| --- | --- | --- |
+| Evidence plugin | `plugins/livex-gcp-readonly/` | Bounded Cloud Logging reads and source reads at approved commits |
+| Slack summary plugin | `plugins/livex-slack-summary/` | Validates Debugger summary JSON and renders the threaded Slack card |
+| Debugger workspace | `agents/debugger/` | Agent instructions and workspace skills |
+| Config fragment | `config/openclaw.fragment.json5` | Codex runtime, Debugger, Slack policy and the default channel route |
+| Deployment | `deploy/` | Isolated DEV staging and test VM deployment with readiness and rollback |
+
+## Setup
+
+Use the OpenClaw CLI on Node 24.16+ and a running Gateway. Configure `gcloud`
+with read access to the intended project.
+
+1. Run `livex-native/scripts/setup.sh` to inspect the commands. Add `--apply`
+   to install Codex, link the two LiveX plugins, and add `debugger` with its
+   workspace. Sign in for that agent with
+   `openclaw models auth login --provider openai --agent debugger`.
+2. Merge `config/openclaw.fragment.json5` into `~/.openclaw/openclaw.json`.
+   Set the Slack bot and app tokens plus `GCLOUD_*`, `CLOUDSDK_CONFIG`,
+   `GCP_PROJECT`, `SLACK_SENDER_ID` and `PYTHON_PATH` for the Gateway.
+3. The fragment sets `debugger` as `agents.defaults.systemAgent` and the
+   default Slack channel route. It requires a mention from `SLACK_SENDER_ID`.
+   Channel-specific bindings can override the wildcard. In the Control UI,
+   check the Codex and evidence plugins, then open **LiveX Debugger**. In an
+   agent chat, `/status` shows the Codex runtime.
+
+### Upgrade the earlier two-agent demo
+
+The DEV/test installer replaces the earlier managed OnCall default with the
+Debugger default. It preserves operator-managed routes and persisted agent data.
+For a manual config merge, review the old `oncall` entry and remove its
+previously shipped Slack wildcard (`default` account, channel peer `*`) before
+activating the new Debugger wildcard. Keep existing OnCall registrations and
+agent data so explicit jobs, channels, and sessions can still use them. A
+fresh install creates only Debugger. Sign in and verify a Debugger turn before
+switching live Slack traffic.
+
+## Debugger flow
+
+An authorized Slack mention loads `investigate-alerts` and reads the alert root
+and relevant thread replies. Debugger scopes the workload, UTC window and
+correlation IDs, then reads Cloud Logging or approved source as needed. If the
+alert count disagrees with the logs, Debugger checks request outcomes across
+severity levels before assigning priority. A single-alert reply in Slack uses
+a short Block Kit card with priority, impact, next action, owner and checked
+evidence. The plugin validates the final JSON and uses the stock threaded
+reply route. Mention the bot in the same thread and ask for full evidence to
+read the retained report. Deeper investigations use `debug` and `systematic-debugging`.
+
+The stock Slack adapter suppresses pre-delivery previews when a reply modifier
+is registered. The shipped config already has Slack streaming off.
+
+The Slack `message` tool can read messages and reactions. The evidence tools
+are available only to a Slack turn from the configured sender in an allowed
+channel. For a Control UI chat, use evidence supplied by the user. The skill
+reports unavailable evidence and external case updates explicitly.
+
+## Stage on DEV or deploy to a test VM
+
+`deploy/deploy.sh FULL_SHA` runs the official OpenClaw image with a readiness gate
+and rollback. With `LIVEX_ON_DEV_VM=1`, it stages a separate Gateway on port
+18789 with Slack disabled. The existing DEV bot keeps serving. Use a dedicated
+test VM and its own app for Slack verification. See [deploy instructions](deploy/README.md).
+
+The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging
+and recovery are available on hosts that expose the V2 state API.
+
+## Execution boundary
+
+`agents.entries.<id>.tools.allow` governs OpenClaw-managed tools only.
+Session permission modes and tool rules describe OpenClaw tools, and native
+harnesses keep their own tool surface (`docs/gateway/permission-modes.md:19`).
+Codex's native shell therefore still exists. With `tools.exec.mode: "ask"`, the
+effective Codex policy is `sandbox: "read-only"`, `approvalPolicy: "on-request"`
+and `approvalsReviewer: "user"`. Writes are blocked, and any request to step
+outside the sandbox goes to a human
+(`extensions/codex/src/app-server/config.test.ts:141-153`). `"deny"` and
+`"allowlist"` fail Codex preflight, and `"auto"` hands approvals to model review.
+
+The read-only sandbox blocks writes and network access but does not confine
+reads to the workspace, and read-only shell commands need no approval. The
+"don't read credentials" rule in `AGENTS.md` is therefore advisory, and log text
+the agent reads can carry injected instructions. Two things limit what a shell
+command can reach:
+
+- **Environment:** the fragment sets `appServer.clearEnv` so the Codex process
+  does not inherit `OPENCLAW_GATEWAY_TOKEN` or the Slack tokens and signing
+  secret. Keep those secrets in the environment (SecretRefs), never
+  as literals in `openclaw.json`, and add any new secret variable to `clearEnv`
+  (`deploy/test_apply.mjs` checks the deploy's variables).
+- **Still readable (accepted risk):** the agent's own Codex login under
+  `agents/<id>/agent/codex-home/`, the state databases (`state/openclaw.sqlite`,
+  `agents/<id>/agent/openclaw-agent.sqlite`, which hold sessions and auth
+  profiles), `openclaw.json` (references only) and `CLOUDSDK_CONFIG`. Shell
+  output and replies are not redacted; only the evidence tools redact.
+- **Not verified:** the Gateway runs as the same user in the same container and
+  still holds those secrets, so `/proc/<gateway pid>/environ` may expose them
+  unless Codex's sandbox hides the parent's `/proc`. `clearEnv` therefore
+  narrows the exposure; it does not prove the tokens are unreachable. Check on
+  staging by asking the agent to run
+  `tr '\0' '\n' </proc/1/environ | grep -c _TOKEN`; a count above 0 means they
+  are readable, and closing that needs a separate user or PID namespace for
+  Codex.
+- **Side effect:** Codex hook commands inherit the cleared environment. Their
+  normal path needs no Gateway token; only the fallback after a hook-bridge
+  failure does, and it now fails ("native hook relay unavailable" in the logs).
+
+Point `CLOUDSDK_CONFIG` at a directory that holds only a
+narrowly scoped, read-only credential. A host exec-approvals file with a `deny`
+or `allowlist` floor also makes Codex refuse turns
+(`extensions/codex/src/app-server/config.test.ts:854-935`); check it with
+`openclaw approvals get --gateway`.
+
+## Install mode
+
+The script uses a linked install because OpenClaw loads a plugin's TypeScript
+entry (`index.ts`) only from source checkouts and linked or local paths. An
+`npm-pack:` install needs compiled JavaScript (`dist/index.js`). Add a build step
+before you package the plugin that way.
+
+## Where data lives
+
+The paths below are under `~/.openclaw`, the default state directory.
+
+| Path | Contents |
+| --- | --- |
+| `openclaw.json` | Config: plugins, models, agents, channels |
+| `state/openclaw.sqlite` | Shared state: plugin state (including this plugin's log-page cache), shared auth store, pairing |
+| `agents/<id>/agent/openclaw-agent.sqlite` | The agent's sessions, transcripts and agent-local credentials |
+| `agents/<id>/sessions/` | Legacy JSONL sessions only; `openclaw doctor --fix` imports them into SQLite |
+| `agents/<id>/agent/codex-home/` | The Codex app-server home for that agent (`homeScope: "agent"`) |
+| workspace dirs | Default `workspace/` for `main`. `debugger` uses `livex-native/agents/debugger`. OpenClaw writes per-install files there (`SOUL.md` on `agents add`, later `IDENTITY.md`, `memory/` ...); `agents/debugger/.gitignore` keeps them out of git |
+| `skills/` | Shared skills for all agents. Per-agent skills live in `<workspace>/skills/` |
+| `credentials/` | Channel credential files, such as WhatsApp auth. Many older files here are migrated into SQLite by `openclaw doctor --fix` |
+
+## Add the next plugin or agent
+
+- **Plugin:** copy `plugins/livex-gcp-readonly/` and give it a new
+  `openclaw.plugin.json` `id`, a new `contracts.tools` list and a new
+  `configSchema`. Then change `index.ts` to register your tools, and update the
+  `files` list in `package.json`. Link it with
+  `openclaw plugins install -l <dir> --force`, add the id to `plugins.allow`, and
+  add the tool names to the agent's `tools.allow`.
+- **Agent:** use `agents/debugger/` as a workspace example. Add the new agent
+  entry and list only the skills and tools its role needs. Use an exact Slack
+  channel binding for a role that should receive a specific channel.
+
+## Compared with PR #1
+
+PR #1 added `livex-agents/` and `agent-skills/`, and patched OpenClaw core in
+121 files (about 8.1k lines) under `src/`, `extensions/` and `packages/`.
+
+**Kept here:** the read-only GCP log and repository plugin with its tests, the
+alert triage and diagnosis instructions, the four Debugger skills, and Codex as
+the runtime. The plugin's `delegated-context.test.mjs` is intentionally omitted because it imports
+OpenClaw core `src/`.
+
+**Policy changes from PR head:**
+
+| Setting | PR head | Here |
+| --- | --- | --- |
+| Codex `appServer.sandbox` | `workspace-write` | `read-only` |
+| Codex `appServer.approvalPolicy` | `on-request` | `on-request` (same) |
+| Effective Codex approvals reviewer | `auto_review` | `user`, a human, set by exec mode `ask` |
+| Slack `message` actions | `read`, `react`, `reactions` | `read`, `reactions` |
+| Slack agent `tools.profile` | `full` | `full` (same) |
+| Slack agent `tools.exec.mode` | `auto` | `ask` |
+| Global `tools.exec.mode` | `deny` | `ask`. `deny` fails Codex preflight for any agent without its own exec mode, such as `main` (`extensions/codex/src/app-server/config-options.ts:148-152`); an agent's own mode replaces the global one (`config-exec-approvals.ts:33-41`) |
+| `agents.defaults.authInheritance` | `main` | not set. It is an upgrade-only credential-store owner that falls back to the legacy data owner, else `main` (`src/agents/legacy-inherited-auth-dir.ts:9-14`) |
+| Heartbeats | default (every `30m`, to `systemAgent`) | same. With `systemAgent: debugger`, Debugger receives the configured heartbeat. Set `agents.defaults.heartbeat.every: "0m"` to turn them off |
+| Shared skills (`skills.load.extraDirs`) | `${SHARED_SKILLS_ROOT}` | not set; skills live in each agent's workspace |
+| `debugger` `tools.exec.mode` | `deny` (PR example) | `ask`; `deny` fails Codex preflight |
+| `debugger` `permissionModeDefault` | `read-only` | dropped; not in main's config schema |
+| `debugger` `tools.profile` | `full` | `full` (same) |
+
+### Parity with PR #1
+
+The deployed non-core config is ported, so the Slack bot behaves like PR #1's
+"LiveX Debugger" except where it needs core code.
+
+| PR #1 behavior | Here |
+| --- | --- |
+| Slack config: mention required, one allowed user, DMs off, no ack or typing reactions, thread replies, task-card progress | ✓ `channels.slack`, `messages` |
+| Default Slack route and system agent | Both use `debugger` |
+| Agent names and identity ("LiveX Debugger", "LiveX Reporting · Debugger") | ✓ |
+| Global tool floor: minimal profile, elevated off | ✓ |
+| Codex as runtime, same `appServer` home scope | ✓, but sandbox `read-only` and exec `ask` (PR #1: `workspace-write` and `auto`) |
+| `react` message action | ✗ dropped on purpose; only `read` and `reactions` |
+| Shared-skills directory | ✗ replaced by per-agent workspace skills |
+| Compact alert cards | Validated single-alert card with the stock Slack adapter |
+| Legacy priority colors and Resolved badge | ✗ PR #1 report renderer |
+| In-place report edits, amendments, linked sync | ✗ needs core |
+| Investigation memory and trends | ✗ needs core (`slack_investigation_record`) |
+| Read-only default for reply sessions (`permissionModeDefault`) | ✗ not in main's schema |
+| Slack usage footer | Off by default |
+| Queued-turn channel identity | ✗ needs core |
+| Delegated requester context for sub-agents | ✗ needs core (`delegated-context`) |
+
+**Dropped:**
+
+| Dropped | How it could come back |
+| --- | --- |
+| In-place report edits (the `livex-oncall-reports` plugin and Slack edit patches) | An upstream edit-own-reply hook in the Slack plugin |
+| Investigation memory and catalog (`livex-investigations`, `slack_investigation_record`, `investigations.md`) | A tool plugin that stores records in plugin state (`openKeyedStoreV2`) and exposes lookup and record tools. Pre-turn history injection needs an upstream context hook |
+| VM deploy pipeline (`deploy/gcp-vm/`) | Replaced by the much smaller `deploy/` here (test VM, official image, no source build). A production pipeline can live in an ops repo |
+| About 8k lines of core patches (memory-core, Slack dispatch, agent tool context, Codex usage projection, session lineage) | Upstream PRs, one generic hook per need. One example is `runtime.agent.session.withDescendantSessionRead`, which the plugin's `child` recovery uses when the host provides it |
+
+Without that hook, `/livex-gcp-recover child ...` is refused with a clear
+message. Recovery in the same thread still works.
+
+## Checks
+
+From `plugins/livex-gcp-readonly/`, on Node 24 or later (Node 20 cannot load the
+`.ts` operation module):
+
+```sh
+node --test *.test.mjs
+python3 -B -m unittest -v test_logging_page.py
+```
+
+The Gateway itself needs Node 24.16+ or 26.1+; older Node 24 builds are
+refused at startup (`node:sqlite` TEXT truncation, nodejs/node#61954).
+
+### Verify on a throwaway Gateway
+
+Run the setup and deployment checks on an isolated state directory and port.
+Use `openclaw config validate`, `openclaw agents bindings`, and
+`openclaw skills check --agent debugger` to confirm the default route and four
+skills. Verify model sign-in for `debugger` before attempting a Slack smoke.
+An authorized Slack test should show a scoped GCP read and a threaded reply
+from Debugger. Verify the tool trace for an all-severity request-outcome check
+when an alert count disagrees with the logs.
