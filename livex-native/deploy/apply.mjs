@@ -100,11 +100,14 @@ function listedPlugins() {
   return new Map((parsed.plugins ?? []).map((plugin) => [plugin.id, plugin]));
 }
 
-// codex is bundled in the official image; apply never installs it. Slack ships
-// outside the image: the build baked a sha512-verified tarball of the pinned
-// version, and this installs that local file whenever Slack is absent or its
-// installed version differs from the pin. OpenClaw's managed npm project still
-// resolves the package's own dependencies, which may need the network (README).
+function inspectSlack() {
+  const inspected = runCli(["plugins", "inspect", "slack", "--json"]);
+  if (inspected.status !== 0) throw new Error("`plugins inspect slack --json` failed");
+  return JSON.parse(inspected.stdout.slice(inspected.stdout.indexOf("{")));
+}
+
+// A stock install can have the pinned version without the PR #34 backport.
+// Compare the local archive's integrity to the managed npm install record.
 function ensurePlugins() {
   const pinned = /^@openclaw\/slack@(\d{4}\.\d+\.\d+)$/.exec(slackSpec)?.[1];
   if (!pinned) throw new Error("SLACK_PLUGIN_SPEC must be @openclaw/slack@<exact version>");
@@ -113,28 +116,24 @@ function ensurePlugins() {
     throw new Error("codex plugin is missing from the image; refusing to install it from the network");
   }
   console.log("plugin codex: present");
-  const have = records.get("slack")?.version;
-  if (have === pinned) {
-    console.log(`plugin slack: present at ${pinned}`);
-    return;
-  }
   if (!fs.existsSync(slackTarball)) throw new Error(`Slack plugin tarball missing: ${slackTarball}`);
-  console.log(`plugin slack: ${have ?? "absent"} -> ${pinned} (local tarball)`);
-  // A local tarball is an unverified source to OpenClaw, so it asks for capability
-  // consent even for the official package. The tarball is the sha512-pinned
-  // @openclaw/slack build, so consent is given here and the accepted surface is
-  // checked below: anything beyond the Slack channel and its skills fails the deploy.
-  const result = runCli(["plugins", "install", `npm-pack:${slackTarball}`, "--force", "--accept-capabilities"]);
-  if (result.status !== 0) {
-    // CLI output carries no secrets; show it so the cause is visible in the deploy log.
-    process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
-    throw new Error(`slack plugin install failed (exit ${result.status})`);
+  const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(slackTarball)).digest("base64")}`;
+  const have = records.get("slack")?.version;
+  let info = have === pinned ? inspectSlack() : undefined;
+  if (info?.install?.integrity !== integrity) {
+    console.log(`plugin slack: installing ${pinned} from the release tarball`);
+    // OpenClaw asks for capability consent for local archives. Verify the
+    // installed identity and accepted surface before using the package.
+    const result = runCli(["plugins", "install", `npm-pack:${slackTarball}`, "--force", "--accept-capabilities"]);
+    if (result.status !== 0) {
+      process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+      throw new Error(`slack plugin install failed (exit ${result.status})`);
+    }
+    info = inspectSlack();
   }
-  const after = listedPlugins().get("slack")?.version;
-  if (after !== pinned) throw new Error(`slack plugin is ${after ?? "absent"} after install, expected ${pinned}`);
-  const inspected = runCli(["plugins", "inspect", "slack", "--json"]);
-  if (inspected.status !== 0) throw new Error("`plugins inspect slack --json` failed");
-  const info = JSON.parse(inspected.stdout.slice(inspected.stdout.indexOf("{")));
+  if (info.plugin?.version !== pinned || info.install?.integrity !== integrity) {
+    throw new Error(`Slack plugin must match release tarball for ${pinned}`);
+  }
   const capabilities = JSON.stringify(info.capabilities ?? []);
   const surface = info.install?.acceptedSurface ?? {};
   const extra = ["providers", "tools", "contracts", "hooks", "mcpServers", "cliCommands", "cliBackends", "dangerousConfigFlags"]
@@ -142,7 +141,7 @@ function ensurePlugins() {
   if (capabilities !== '[{"kind":"channel","ids":["slack"]}]' || extra.length > 0) {
     throw new Error(`slack plugin declares more than the Slack channel (capabilities ${capabilities}; extra ${extra.join(",") || "none"}); refusing`);
   }
-  console.log("plugin slack: installed, capabilities = Slack channel only");
+  console.log("plugin slack: release tarball verified, capabilities = Slack channel only");
 }
 
 function backupConfig() {

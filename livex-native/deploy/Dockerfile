@@ -19,14 +19,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 git \
 COPY --from=sdk /usr/lib/google-cloud-sdk /opt/google-cloud-sdk
 COPY livex-native /opt/livex-native
 # Bake the Slack plugin at build time. npm pack downloads the exact version; the
-# build fails unless its sha512 equals the pinned dist.integrity. apply.mjs then
-# installs this local tarball (npm-pack:), never a floating registry version.
+# build verifies the pinned dist.integrity before backporting PR #34. Apply
+# installs the resulting local tarball (npm-pack:).
 RUN set -eu; test -n "$SLACK_PLUGIN_SPEC" && test -n "$SLACK_PLUGIN_INTEGRITY"; \
     mkdir -p /opt/livex-plugins && cd /opt/livex-plugins \
     && npm pack "$SLACK_PLUGIN_SPEC" --silent --pack-destination /opt/livex-plugins >/dev/null \
     && test "$(ls /opt/livex-plugins | wc -l)" = 1 \
     && mv /opt/livex-plugins/*.tgz /opt/livex-plugins/slack.tgz \
     && node /opt/livex-native/deploy/verify-tarball.mjs /opt/livex-plugins/slack.tgz "$SLACK_PLUGIN_INTEGRITY" \
+    && work=$(mktemp -d) \
+    && tar -xzf slack.tgz -C "$work" \
+    && node /opt/livex-native/deploy/patch-slack-navigation.mjs "$work/package" \
+    && node --check "$work/package/dist/.setup/monitor-CNECe8FK.mjs" \
+    && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf slack.tgz -C "$work" package \
+    && rm -rf "$work" \
     && chmod -R a+rX /opt/livex-plugins
 # apply.mjs parses the JSON5 fragment with json5, a runtime dependency of
 # openclaw itself (it parses openclaw.json with it); fail the build, not the

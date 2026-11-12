@@ -113,23 +113,21 @@ DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
 
 OpenClaw treats a local tarball as an unverified source and asks for capability
 consent, even for the official Slack package. `apply.mjs` passes
-`--accept-capabilities` for the sha512-pinned tarball, then checks the accepted
+`--accept-capabilities` for the release tarball, then checks the accepted
 surface: anything beyond the Slack channel and its skills fails the deploy.
 
 - **codex** is bundled in the official image (`docs/install/docker.md`). Apply
   never installs it and fails if `plugins list` does not show it.
-- **Slack** is a separate package (`bundledDist: false`). The image build runs
-  `npm pack` for the exact version in `versions.env`, fails unless the file's
-  sha512 equals the pinned registry `dist.integrity`, and keeps it as
-  `/opt/livex-plugins/slack.tgz`. Apply installs it with
-  `openclaw plugins install npm-pack:/opt/livex-plugins/slack.tgz --force`
-  (`docs/cli/plugins/install.md`) when Slack is absent or its installed version
-  (from `plugins list --json`) differs from the pin, then re-checks the version.
-- Not network-free: the root package is pinned and verified, but OpenClaw's managed
-  npm project resolves the package's own dependencies (exact versions such as
-  `@slack/bolt 5.1.0`, transitive ones not locked), which can contact the npm
-  registry on the first apply and on a version change. Later deploys with the same
-  version do not install anything.
+- **Slack** ships as a separate package (`bundledDist: false`). The build verifies
+  the pinned npm archive against its registry SHA512 in `versions.env`, then
+  backports PR #34's passive URL-button guard to the exact monitor bundle.
+  Apply compares the release archive's SHA512 with the managed install record
+  and installs the local archive when they differ, including stock installations
+  at the same version. Apply verifies the installed version, integrity, and
+  Slack-only capability surface.
+- OpenClaw's managed npm project resolves the package's dependencies and may
+  contact the registry during installation. Deploys with the same installed
+  release archive skip installation.
 - The state snapshot (below) covers installed plugins.
 
 ### Rollback scope

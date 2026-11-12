@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -49,18 +50,40 @@ function priorOncall(workspace) {
   };
 }
 
-function fixture(t, { includeOncall = false } = {}) {
+function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "livex-apply-"));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const configPath = path.join(state, "openclaw.json");
   const oncallWorkspace = path.join(state, "workspace-oncall");
   const cli = path.join(state, "fake-openclaw");
   const pinnedSlack = slackSpec.split("@").at(-1);
+  const tarball = path.join(state, "slack.tgz");
+  const installRecord = path.join(state, "slack-integrity");
+  const releaseBytes = "fixture Slack release archive";
+  const integrity = `sha512-${createHash("sha512").update(releaseBytes).digest("base64")}`;
+  fs.writeFileSync(tarball, releaseBytes);
+  fs.writeFileSync(installRecord, stockSlack ? "stock archive integrity" : integrity);
   fs.writeFileSync(
     cli,
     `#!/usr/bin/env node
-    if (process.argv.slice(2).join(" ") !== "plugins list --json") process.exit(75);
-    console.log(JSON.stringify({ plugins: [{ id: "codex" }, { id: "slack", version: ${JSON.stringify(pinnedSlack)} }] }));
+    const fs = require("node:fs");
+    const args = process.argv.slice(2).join(" ");
+    const version = ${JSON.stringify(pinnedSlack)};
+    const installRecord = ${JSON.stringify(installRecord)};
+    if (args === "plugins list --json") {
+      console.log(JSON.stringify({ plugins: [{ id: "codex" }, { id: "slack", version }] }));
+    } else if (args === "plugins inspect slack --json") {
+      console.log(JSON.stringify({
+        plugin: { version },
+        install: { integrity: fs.readFileSync(installRecord, "utf8") },
+        capabilities: [{ kind: "channel", ids: ["slack"] }],
+      }));
+    } else if (args === ${JSON.stringify(`plugins install npm-pack:${tarball} --force --accept-capabilities`)}) {
+      if (fs.readFileSync(installRecord, "utf8") === ${JSON.stringify(integrity)}) process.exit(76);
+      fs.writeFileSync(installRecord, ${JSON.stringify(integrity)});
+    } else {
+      process.exit(75);
+    }
   `,
     { mode: 0o700 },
   );
@@ -90,6 +113,7 @@ function fixture(t, { includeOncall = false } = {}) {
     LIVEX_OPENCLAW_CMD: "fake-openclaw",
     PATH: [state, path.dirname(process.execPath), process.env.PATH ?? ""].join(path.delimiter),
     SLACK_PLUGIN_SPEC: slackSpec,
+    LIVEX_SLACK_TARBALL: tarball,
   };
   const run = () => spawnSync(process.execPath, [applyPath], { env, encoding: "utf8" });
   const read = () => fs.readFileSync(configPath, "utf8");
@@ -105,6 +129,16 @@ function fixture(t, { includeOncall = false } = {}) {
   };
   return { state, configPath, oncallWorkspace, run, read, seed, applyTwice };
 }
+
+test("replaces same-version stock Slack with the release archive once", (t) => {
+  const { run } = fixture(t, { stockSlack: true });
+  const first = run();
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /plugin slack: installing .* from the release tarball/);
+  const second = run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.doesNotMatch(second.stdout, /plugin slack: installing/);
+});
 
 function markPriorWorkspace(workspace) {
   const skills = path.join(workspace, "skills");
