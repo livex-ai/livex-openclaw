@@ -133,6 +133,32 @@
           fs: { workspaceOnly: true },
         },
       },
+      oncall: {
+        name: "LiveX OnCall",
+        identity: { name: "LiveX OnCall" },
+        description: "Opt-in Slack alert triage and investigation from admitted read-only evidence.",
+        model: "openai/gpt-6-astra",
+        skills: [
+          "investigate-alerts",
+          "debug",
+          "systematic-debugging",
+          "verification-before-completion",
+        ],
+        tools: {
+          profile: "full",
+          allow: [
+            "read",
+            "skills_read",
+            "message",
+            "livex_gcp_logs_read",
+            "livex_repository_read",
+          ],
+          message: { actions: { allow: ["read", "reactions"] } },
+          exec: { mode: "ask" },
+          elevated: { enabled: false },
+          fs: { workspaceOnly: true },
+        },
+      },
     },
   },
 
@@ -206,6 +232,12 @@
       agentId: "debugger",
       match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "*" } },
     },
+    // Opt in by uncommenting this binding and replacing the channel ID.
+    // The exact channel matches before the Debugger wildcard.
+    // {
+    //   agentId: "oncall",
+    //   match: { channel: "slack", accountId: "default", peer: { kind: "channel", id: "C0ONCALL" } },
+    // },
   ],
 
   messages: {
