@@ -93,10 +93,28 @@ override a newer hold, stop or removal.
    original need. Separate failed operations from log entries and alert deliveries.
    Keep facts, human reports, hypotheses and unknowns distinct. Maintenance or
    removal from end users does not prove that the original operation recovered.
-5. Use the verified team severity policy. If none is available, give a provisional
+5. If the alert count cannot be reconciled with the log read, check request
+   outcomes before assigning priority:
+   - Record the exact workload selectors, metric filter and UTC evaluation
+     bounds when available. Label a window inferred from the notification as
+     approximate and record any filter difference.
+   - Reuse a context read that already checked request outcomes for the same
+     workload and window with adequate coverage. Otherwise use a bounded
+     `livex_gcp_logs_read` with `mode: "context"` to look across severities for
+     completed requests, terminal failures, cancellations and retry outcomes.
+     Use observed correlation IDs when available. Follow returned cursors.
+     If a capped read has no cursor, subdivide the window within scope.
+     Disclose any remaining coverage gap.
+   - Use verified request outcomes and affected scope to assess impact even if
+     the count discrepancy remains open. If the evidence is still insufficient,
+     keep priority unknown. Name the missing check and the evidence needed to
+     perform it, such as the exact Monitoring evaluation window and metric
+     filter or a scoped request-outcome export. Apply the disposition rules below
+     when operator follow-up is required.
+6. Use the verified team severity policy. If none is available, give a provisional
    priority or state unknown. Base it on impact, urgency, scope and workarounds.
    Volume alone does not set priority. Unknown priority is not low priority.
-6. Choose technical investigation, integration support, customer follow-up or
+7. Choose technical investigation, integration support, customer follow-up or
    monitoring. Stop at triage when the evidence supports that decision. State
    remaining uncertainty. Make the needed bounded checks if evidence is weak;
    report partial or blocked work when those checks cannot be made. Preserve an
