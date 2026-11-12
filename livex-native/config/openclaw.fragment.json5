@@ -239,9 +239,7 @@
   ],
 
   messages: {
-    // Usage footer on Slack only. The footer itself is config. PR #1's cost
-    // estimate inside it came from a core patch and is not part of this port.
-    responseUsage: { default: "off", slack: "full" },
+    responseUsage: { default: "off", slack: "off" },
     groupChat: { visibleReplies: "automatic" },
   },
 }

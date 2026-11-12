@@ -192,7 +192,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 
 | PR #1 behavior | Here |
 | --- | --- |
-| Slack config: mention required, one allowed user, DMs off, no ack or typing reactions, thread replies, task-card progress, usage footer | ✓ `channels.slack`, `messages` |
+| Slack config: mention required, one allowed user, DMs off, no ack or typing reactions, thread replies, task-card progress | ✓ `channels.slack`, `messages` |
 | Every Slack channel goes to `oncall`; `oncall` is the default agent | ✓ peer-wildcard binding, `systemAgent` |
 | Agent names and identity ("LiveX Debugger", "LiveX Reporting · Debugger") | ✓ |
 | Global tool floor: minimal profile, elevated off | ✓ |
@@ -203,7 +203,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 | In-place report edits, amendments, linked sync | ✗ needs core |
 | Investigation memory and trends | ✗ needs core (`slack_investigation_record`) |
 | Read-only default for reply sessions (`permissionModeDefault`) | ✗ not in main's schema |
-| Cost estimate in the usage footer | ✗ needs core (the footer itself is config) |
+| Slack usage footer | Off by default |
 | Queued-turn channel identity | ✗ needs core |
 | Delegated requester context for sub-agents | ✗ needs core (`delegated-context`) |
 
