@@ -12,6 +12,8 @@
 #   2. HEAD is contained in an origin/* branch (checked after `git fetch --prune`),
 #      so the deployed commit is reviewable by others.
 #   3. git, tar and shasum exist; gcloud exists unless --dry-run.
+#   LIVEX_UNMANAGED_AGENTS (comma-separated ids; make defaults it to oncall) is passed on
+#      to deploy.sh and remote.sh: those agents are never written by the deploy.
 #   4. A real (not --dry-run) deploy restarts the live Slack Gateway, so it needs
 #      CONFIRM=livex-openclaw-dev in the environment (make deploy_dev CONFIRM=...).
 # deploy.sh needs no Node; Node is only needed to run the apply/patch tests.
@@ -55,6 +57,7 @@ fi
 echo "deploy_dev: HEAD $sha ($(git log -1 --format=%s "$sha"))"
 echo "deploy_dev: on origin branch(es): $(printf '%s' "$branches" | tr '\n' ' ')"
 echo "deploy_dev: target = LIVE Gateway on livex-openclaw-dev (/opt/livex-openclaw-native-dev, Slack on, port 18790)"
+echo "deploy_dev: unmanaged agents left untouched (LIVEX_UNMANAGED_AGENTS): ${LIVEX_UNMANAGED_AGENTS:-none (strict)}"
 if ((!dry)) && [[ ${CONFIRM:-} != livex-openclaw-dev ]]; then
   echo "deploy_dev: refusing. This restarts the live Slack Gateway; confirm with: make deploy_dev CONFIRM=livex-openclaw-dev" >&2
   exit 1

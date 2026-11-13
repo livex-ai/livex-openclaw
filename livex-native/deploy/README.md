@@ -58,7 +58,7 @@ The Slack-serving native Gateway on `livex-openclaw-dev` runs from
 `/opt/livex-openclaw-native-dev` as Compose project `livex-openclaw-native-dev`,
 published on `127.0.0.1:18790`, with Slack on. This release ships the `debugger`
 agent only; the running install also serves `oncall` (the opt-in OnCall agent, a
-separate PR). A deploy refuses to drop it, see "Agent guard". From the repository
+separate PR), which `make` leaves untouched, see "Agent guard". From the repository
 root of a reviewed checkout:
 
 ```bash
@@ -94,9 +94,75 @@ the new image against the live `openclaw.json` (`LIVEX_LIVE_GUARD=1`,
 `LIVEX_CHECK_AGENTS_ONLY=1`). It refuses when the live config serves a LiveX agent
 (`oncall`, `debugger`, or any agent whose workspace has a `skills/.livex-shipped`
 manifest) that the release's fragment does not ship, because apply would leave it
-frozen and unmanaged. Deploy a commit that includes the agent (for example the PR
-that adds OnCall). Staging and the test VM are unchanged. The check runs again
-inside the real apply.
+frozen and unmanaged. Either deploy a commit that includes the agent (for example the
+PR that adds OnCall) or list it in `LIVEX_UNMANAGED_AGENTS`. Staging and the test VM
+are unchanged. The check runs again inside the real apply.
+
+**`LIVEX_UNMANAGED_AGENTS`** is a comma-separated allowlist of agent ids (1 to 5,
+`^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*$`) that a live deploy must leave alone.
+`make deploy_dev` and `make deploy_dev_dry` default it to `oncall`, because OnCall
+lives in a separate PR (#51) and is not in this branch. `deploy_dev.sh` prints it;
+`deploy.sh` validates it, shows it in the summary and in `--dry-run`, and forwards it;
+`remote.sh` validates it again and passes it to both the pre-stop check and the real
+apply. Outside `make` it defaults to empty, which is strict. It is refused without
+`LIVEX_DEV_LIVE=1` (`apply.mjs` also needs `LIVEX_LIVE_GUARD=1`), and `apply.mjs`
+refuses a list that names an agent the release ships, so a managed agent cannot be
+marked unmanaged by accident (if that comes from the Makefile default, run
+`make deploy_dev LIVEX_UNMANAGED_AGENTS= ...`). The guard prints
+`live guard: leaving unmanaged agent(s) untouched: oncall`.
+
+"Untouched" covers the agent's own state only: apply never writes its
+`agents.entries.<id>` entry, never copies into, prunes in or writes a manifest in its
+workspace, and neither adds, removes nor changes a binding for it (the retirement of
+a stock OnCall Slack wildcard is switched off for `oncall`; such a wildcard would
+instead stop apply as a shadowing wildcard). It does NOT freeze what the agent
+shares with this release: plugin code and config (`plugins.*`), the `channels.slack`
+policy, the global `tools` floor and the Codex appServer settings
+(`plugins.entries.codex.*`) are rewritten by apply, and the agent runs on them after
+the deploy. The merge also sets `agents.ownership: "explicit"`,
+`agents.defaults.systemAgent` (debugger, as the live config already has) and the
+other defaults, plus the debugger Slack route. Tests assert the agent-level
+guarantees against a config that mirrors the live one.
+
+**Preview before the stop.** The pre-stop check (`LIVEX_CHECK_AGENTS_ONLY=1`) runs the
+same config preparation and merge as the real apply, so its refusals (for example a
+shadowing wildcard) surface before anything is stopped, and then prints what apply
+would change in `openclaw.json`: one line per path, sorted, `+` added, `~` changed,
+`-` removed; arrays as `[n items #hash]`; values of paths matching
+`token|secret|password|key` and SecretRefs as `<changed>`; the first 80 lines and a
+count; then the changed paths that are shared settings (`plugins.*`,
+`channels.slack.*`, `tools.*`). It writes nothing (no backup, plugin install or
+workspace copy; a test compares a hash of the whole state tree). It is read before
+apply's plugin install, so config that the install itself writes is not shown. It
+appears in the deploy log under "check the live agents and preview the config
+change".
+
+To run the preview alone, copy only `deploy/apply.mjs` and
+`config/openclaw.fragment.json5` into a directory `$d` (as `$d/deploy/` and
+`$d/config/`) and run it inside the live Gateway container, which supplies `json5`
+(`/app`), the state path and the Slack env:
+
+```bash
+docker exec -i -e d=/tmp/preview <gateway container> sh -c 'LIVEX_NATIVE_DIR=$d \
+  LIVEX_PLUGIN_ROOT=/opt/livex-native LIVEX_HOST_PORT=18790 LIVEX_LIVE_GUARD=1 \
+  LIVEX_CHECK_AGENTS_ONLY=1 LIVEX_UNMANAGED_AGENTS=oncall node $d/deploy/apply.mjs'
+```
+
+No other release file is needed in this mode. `LIVEX_PLUGIN_ROOT` is where the plugins
+live in the image (default: `LIVEX_NATIVE_DIR`); without it a preview run from a temp
+dir would show `plugins.load.paths` as changed, which is an artifact of the temp dir.
+`LIVEX_HOST_PORT` is the host port of the install (`remote.sh` passes 18790 live,
+18789 for staging and the test VM, to both the check and the real apply).
+
+**Control UI origins.** apply sets `gateway.controlUi.allowedOrigins` to the
+`127.0.0.1` and `localhost` origins of the container port (18789) and the host port
+(`LIVEX_HOST_PORT`), added after any origins already in the config. Operator-added
+entries are kept, so a tunnel to `http://127.0.0.1:18790` keeps working on the live
+install. The other gateway keys apply writes (`mode`, `bind`, `port`, `auth`) are
+still overwritten, as before: they are fixed by the container setup, not per-operator
+settings. To go strict again run
+`make deploy_dev CONFIRM=livex-openclaw-dev LIVEX_UNMANAGED_AGENTS=` (or deploy a
+commit that ships the agent).
 
 ### One-time adoption of the hand-made install
 

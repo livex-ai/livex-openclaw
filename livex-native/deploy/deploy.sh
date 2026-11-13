@@ -39,6 +39,13 @@ on_dev=0
 [[ ${LIVEX_ON_DEV_VM:-0} == 1 ]] && on_dev=1
 live=0
 [[ ${LIVEX_DEV_LIVE:-0} == 1 ]] && live=1
+# Agents the live deploy must leave untouched (LIVE mode only; empty = strict).
+unmanaged=${LIVEX_UNMANAGED_AGENTS:-}
+if [[ -n $unmanaged ]]; then
+  ((live)) || { echo "LIVEX_UNMANAGED_AGENTS only applies with LIVEX_DEV_LIVE=1." >&2; exit 1; }
+  [[ $unmanaged =~ ^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*){0,4}$ ]] \
+    || { echo "LIVEX_UNMANAGED_AGENTS must be 1 to 5 comma-separated agent ids like oncall,other." >&2; exit 1; }
+fi
 project=ai-mvp-dv
 zone=${LIVEX_TEST_ZONE:-us-central1-a}
 if ((live)); then
@@ -112,7 +119,7 @@ hash=$(shasum -a 256 "$archive" | cut -d ' ' -f1)
 echo "Archive: livex-native @ $sha (sha256 $hash)"
 echo "Target: $vm ($project, $zone), project $compose_project, readiness timeout ${health_timeout}s"
 if ((on_dev)); then echo "DEV staging: the current DEV Gateway keeps serving Slack."; fi
-if ((live)); then echo "LIVE: this deploys the Slack-serving Gateway on $vm ($root, loopback port $host_port). It restarts briefly; a failed deploy rolls back."; fi
+if ((live)); then echo "LIVE: this deploys the Slack-serving Gateway on $vm ($root, loopback port $host_port). It restarts briefly; a failed deploy rolls back. Unmanaged agents left untouched: ${unmanaged:-none (strict)}."; fi
 
 upload="livex-deploy-$sha.tgz"
 if ((live)); then
@@ -134,7 +141,7 @@ run gcloud compute scp "${location[@]}" ${scp_extra[@]+"${scp_extra[@]}"} "$arch
 # 3. Verify, unpack, and run remote.sh under the deploy lock. sha and hash are
 #    validated hex, so they are safe to embed.
 inner='set -eu; test -f "$UP"; echo "$HASH  $UP" | sha256sum -c - >/dev/null; rel='"$root"'/releases/$SHA; if [ ! -d "$rel" ]; then tmp=$(mktemp -d '"$root"'/releases/.incoming.XXXXXX); trap '\''rm -rf "$tmp"'\'' EXIT; tar -xzf "$UP" -C "$tmp"; mv "$tmp" "$rel"; trap - EXIT; fi; rm -f "$UP"; exec bash "$rel/livex-native/deploy/remote.sh" "$SHA"'
-remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_DEV_LIVE=$live LIVEX_HEALTH_TIMEOUT=$health_timeout$min_free_arg bash -c $(printf %q "$inner")"
+remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_DEV_LIVE=$live LIVEX_UNMANAGED_AGENTS=$unmanaged LIVEX_HEALTH_TIMEOUT=$health_timeout$min_free_arg bash -c $(printf %q "$inner")"
 run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="$remote_cmd"
 if [[ $dry == 1 ]]; then echo "Dry run: nothing was uploaded or changed."; exit 0; fi
 

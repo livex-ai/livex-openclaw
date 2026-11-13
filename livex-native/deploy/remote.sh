@@ -21,6 +21,12 @@ on_dev=0
 [[ ${LIVEX_ON_DEV_VM:-0} == 1 ]] && on_dev=1
 live=0
 [[ ${LIVEX_DEV_LIVE:-0} == 1 ]] && live=1
+unmanaged=${LIVEX_UNMANAGED_AGENTS:-}
+if [[ -n $unmanaged ]]; then
+  ((live)) || { echo "Refusing: LIVEX_UNMANAGED_AGENTS only applies with LIVEX_DEV_LIVE=1." >&2; exit 1; }
+  [[ $unmanaged =~ ^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*){0,4}$ ]] \
+    || { echo "Refusing: LIVEX_UNMANAGED_AGENTS must be 1 to 5 comma-separated agent ids like oncall,other." >&2; exit 1; }
+fi
 if ((live && on_dev)); then
   echo "Refusing: LIVEX_DEV_LIVE=1 cannot be combined with LIVEX_ON_DEV_VM=1." >&2
   exit 1
@@ -458,9 +464,9 @@ docker build \
 if ((live)); then
   # Read-only guard, before anything is stopped: refuse a release that would drop
   # a LiveX agent the live config already serves (apply.mjs, refuseDroppedLivexAgents).
-  echo "== check the live agents against this release"
+  echo "== check the live agents and preview the config change (read-only)"
   state_mount=${legacy_state:-$state} dc "$new_image" run --rm --no-deps -T \
-    -e LIVEX_LIVE_GUARD=1 -e LIVEX_CHECK_AGENTS_ONLY=1 \
+    -e LIVEX_LIVE_GUARD=1 -e LIVEX_CHECK_AGENTS_ONLY=1 -e "LIVEX_UNMANAGED_AGENTS=$unmanaged" -e "LIVEX_HOST_PORT=$host_port" \
     --entrypoint node cli /opt/livex-native/deploy/apply.mjs \
     || { echo "Refusing: the live config serves an agent this release does not ship (see above). The Gateway was not touched." >&2; exit 1; }
 fi
@@ -481,7 +487,7 @@ chmod 0600 "$snapshot"
 tar -tzf "$snapshot" >/dev/null || { echo "State snapshot failed verification; state untouched." >&2; exit 1; }
 have_snapshot=1
 dc "$new_image" run --rm --no-deps -T \
-  -e "LIVEX_RELEASE_SHA=$sha" -e "SLACK_PLUGIN_SPEC=$slack_spec" -e "LIVEX_STAGE_ONLY=$on_dev" -e "LIVEX_LIVE_GUARD=$live" \
+  -e "LIVEX_RELEASE_SHA=$sha" -e "SLACK_PLUGIN_SPEC=$slack_spec" -e "LIVEX_STAGE_ONLY=$on_dev" -e "LIVEX_LIVE_GUARD=$live" -e "LIVEX_UNMANAGED_AGENTS=$unmanaged" -e "LIVEX_HOST_PORT=$host_port" \
   --entrypoint node cli /opt/livex-native/deploy/apply.mjs
 dc "$new_image" run --rm --no-deps -T cli config validate
 

@@ -99,6 +99,13 @@ case "$1" in
       run)
         if [[ " $* " == *" LIVEX_CHECK_AGENTS_ONLY=1 "* ]]; then
           echo "$STATE_DIR" >>"$TEST_GUARD_LOG"
+          echo "$*" >>"$TEST_GUARD_LOG.check"
+          # Models the real guard: every live agent must be shipped or listed as unmanaged.
+          listed=""
+          for a in "$@"; do case $a in LIVEX_UNMANAGED_AGENTS=*) listed=${a#*=} ;; esac; done
+          for id in ${TEST_LIVE_AGENTS:-}; do
+            if [[ ",$listed," != *",$id,"* ]]; then echo "live config serves $id; release does not ship it" >&2; exit 1; fi
+          done
           if [[ -n ${TEST_GUARD_FAIL:-} ]]; then echo "live config serves oncall; release does not ship it" >&2; exit 1; fi
         elif [[ " $* " == *" /opt/livex-native/deploy/apply.mjs "* ]]; then
           [[ " $* " == *" LIVEX_STAGE_ONLY=$TEST_STAGE "* ]]
@@ -229,6 +236,7 @@ esac
     assert (root / "previous").read_text().strip() == prior_image
     assert "LIVEX_STAGE_ONLY=1" in (root / "compose.env").read_text()
     assert "LIVEX_GATEWAY_MEM_LIMIT=0" in (root / "compose.env").read_text()
+    assert "LIVEX_HOST_PORT=18789" in (base / "guard.log.apply").read_text().splitlines()[-1], "stage forwards 18789"
     snapshot = root / "releases" / head_sha / "state.before.tgz"
     baseline = hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
@@ -446,6 +454,7 @@ esac
     assert f"-t {new_live_image}" in new_log and "image prune -f" in new_log
     assert "builder prune" not in new_log and "--filter" not in new_log.split("image prune")[1].split("\n")[0]
     assert "LIVEX_LIVE_GUARD=1" in (base / "guard.log.apply").read_text().splitlines()[-1]
+    assert "LIVEX_HOST_PORT=18790" in (base / "guard.log.apply").read_text().splitlines()[-1], "apply gets the live host port"
     assert "livex-openclaw-stage" not in new_log and "livex-openclaw-dev-gateway-1" not in new_log
     assert (live_root / "state" / "apply-result").read_text().strip() == new_live_image
     assert active.read_text().strip() == new_live_image
@@ -614,6 +623,34 @@ esac
     assert (r / "releases" / old_sha).exists() and not (r / "releases" / ("4" * 40)).exists()
     print("PASS housekeeping failure after activation leaves a successful deploy, records and pin intact")
 
+    # LIVEX_UNMANAGED_AGENTS: the live config serves oncall, which this release does not ship.
+    r = make_legacy("unmanaged-refused")
+    start_legacy(r)
+    before = snapshot_legacy(r)
+    log_len = len(log.read_text())
+    res = live(new_live, r, TEST_LIVE_AGENTS="oncall")
+    assert res.returncode == 1 and "serves an agent this release does not ship" in res.stdout, res.stdout
+    assert snapshot_legacy(r) == before and active.read_text().strip() == cur_image
+    assert not any(" stop " in c for c in log.read_text()[log_len:].splitlines())
+    r = make_legacy("unmanaged-ok")
+    start_legacy(r)
+    res = live(new_live, r, TEST_LIVE_AGENTS="oncall", LIVEX_UNMANAGED_AGENTS="oncall")
+    assert res.returncode == 0, res.stdout
+    assert "LIVEX_UNMANAGED_AGENTS=oncall" in (base / "guard.log.check").read_text().splitlines()[-1]
+    assert "LIVEX_HOST_PORT=18790" in (base / "guard.log.check").read_text().splitlines()[-1], "pre-stop check gets the live host port"
+    assert "LIVEX_UNMANAGED_AGENTS=oncall" in (base / "guard.log.apply").read_text().splitlines()[-1]
+    # An id other than the listed one is still refused.
+    r = make_legacy("unmanaged-other")
+    start_legacy(r)
+    res = live(new_live, r, TEST_LIVE_AGENTS="oncall extra", LIVEX_UNMANAGED_AGENTS="oncall")
+    assert res.returncode == 1 and "does not ship" in res.stdout
+    for bad in ("Oncall", "oncall,", "a,b,c,d,e,f", "on call"):
+        res = live(new_live, make_adopted("badlist-" + str(abs(hash(bad))), (new_live,)), LIVEX_UNMANAGED_AGENTS=bad)
+        assert res.returncode == 1 and "must be 1 to 5" in res.stdout, (bad, res.stdout)
+    res = run(head_sha, staging=False, root=make_root("nonlive-list", (head_sha,)), LIVEX_UNMANAGED_AGENTS="oncall")
+    assert res.returncode == 1 and "only applies with LIVEX_DEV_LIVE=1" in res.stdout, res.stdout
+    print("PASS LIVEX_UNMANAGED_AGENTS: forwarded to the pre-stop check and apply, refused without it, malformed or non-live rejected")
+
     # A re-run after a failed adoption adopts cleanly (idempotent).
     r = make_legacy("fail-then-ok")
     start_legacy(r)
@@ -667,6 +704,16 @@ esac
     assert "livex-openclaw-stage" not in d.stdout and not gcloud_log.exists(), d.stdout
     (tooling / "unrelated.txt").unlink()
     assert "origin/main" in d.stdout and "LIVE Gateway" in d.stdout
+    assert "(LIVEX_UNMANAGED_AGENTS): oncall" in d.stdout and "Unmanaged agents left untouched: oncall" in d.stdout, d.stdout
+    assert 'LIVEX_UNMANAGED_AGENTS="oncall"' in n.stdout
+    strict = sh(["make", "deploy_dev_dry", "LIVEX_UNMANAGED_AGENTS="], LIVEX_TEST_IAP="0")
+    assert strict.returncode == 0 and "none (strict)" in strict.stdout, strict.stdout
+    assert "LIVEX_UNMANAGED_AGENTS=oncall" in d.stdout.replace("\\", "") or "LIVEX_UNMANAGED_AGENTS=oncall" in d.stdout, d.stdout
+    for bad in ("Oncall", "a,b,c,d,e,f"):
+        r = sh(["bash", "livex-native/deploy/deploy.sh", head, "--dry-run"], LIVEX_DEV_LIVE="1", LIVEX_UNMANAGED_AGENTS=bad)
+        assert r.returncode == 1 and "must be 1 to 5" in r.stdout and not gcloud_log.exists(), r.stdout
+    r = sh(["bash", "livex-native/deploy/deploy.sh", head, "--dry-run"], LIVEX_UNMANAGED_AGENTS="oncall")
+    assert r.returncode == 1 and "only applies with LIVEX_DEV_LIVE=1" in r.stdout and not gcloud_log.exists()
     for extras in ({"LIVEX_ON_DEV_VM": "1"}, {"LIVEX_TEST_VM": "livex-openclaw-test"}):
         bad = sh(["bash", "livex-native/deploy/deploy.sh", head, "--dry-run"], LIVEX_DEV_LIVE="1", **extras)
         assert bad.returncode == 1 and "cannot be combined" in bad.stdout and not gcloud_log.exists(), bad.stdout

@@ -74,7 +74,9 @@ test VM and its own app for Slack verification. See [deploy instructions](deploy
 
 From the repository root, `make deploy_dev` deploys the checked-out, pushed HEAD to the
 live Slack-serving Gateway on the DEV VM (`make deploy_dev CONFIRM=livex-openclaw-dev`;
-`make deploy_dev_dry` prints the commands only). The first run adopts the hand-made install. See
+`make deploy_dev_dry` prints the commands only). `make` leaves the separately
+shipped `oncall` agent untouched (`LIVEX_UNMANAGED_AGENTS=oncall`; set it empty for
+strict mode). The first run adopts the hand-made install. See
 [the deploy README](deploy/README.md#deploy-the-live-dev-gateway-make-deploy_dev).
 
 The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging

@@ -11,6 +11,9 @@ DEPLOY_DIR := livex-native/deploy
 DEV_VM := livex-openclaw-dev
 DEV_ROOT := /opt/livex-openclaw-native-dev
 DEV_PORT := 18790
+# The OnCall agent lives in a separate PR; the live Gateway serves it, and a deploy of
+# this branch must leave it untouched. Set LIVEX_UNMANAGED_AGENTS= (empty) for strict mode.
+LIVEX_UNMANAGED_AGENTS ?= oncall
 
 .PHONY: help deploy_dev deploy_dev_dry
 
@@ -21,8 +24,8 @@ help:
 
 deploy_dev:
 	@echo "LIVE deploy of HEAD to $(DEV_VM): $(DEV_ROOT), Slack on, port $(DEV_PORT)"
-	CONFIRM="$(CONFIRM)" LIVEX_DEV_LIVE=1 bash $(DEPLOY_DIR)/deploy_dev.sh
+	CONFIRM="$(CONFIRM)" LIVEX_UNMANAGED_AGENTS="$(LIVEX_UNMANAGED_AGENTS)" LIVEX_DEV_LIVE=1 bash $(DEPLOY_DIR)/deploy_dev.sh
 
 deploy_dev_dry:
 	@echo "DRY RUN for the LIVE target $(DEV_VM): $(DEV_ROOT), Slack on, port $(DEV_PORT)"
-	LIVEX_DEV_LIVE=1 bash $(DEPLOY_DIR)/deploy_dev.sh --dry-run
+	LIVEX_UNMANAGED_AGENTS="$(LIVEX_UNMANAGED_AGENTS)" LIVEX_DEV_LIVE=1 bash $(DEPLOY_DIR)/deploy_dev.sh --dry-run
