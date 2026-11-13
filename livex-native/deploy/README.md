@@ -2,7 +2,8 @@
 
 The default target is the dedicated `livex-openclaw-test` VM. It uses its own
 Slack app and the official OpenClaw image. `LIVEX_ON_DEV_VM=1` stages a candidate
-on the existing DEV VM for Gateway and Codex checks.
+on the existing DEV VM for Gateway and Codex checks. `make deploy_dev` (below)
+deploys the live, Slack-serving Gateway on that VM.
 
 **What is and is not modified.** This repo changes no OpenClaw core source. The
 image is the official one (digest-pinned) plus the Google Cloud CLI and
@@ -51,16 +52,121 @@ Staging builds the image `livex-openclaw-stage:<sha>` (the dedicated VM builds
 `livex-openclaw-test:<sha>`); the image name and Compose project are the same
 string.
 
-**Not covered by these scripts.** The live native DEV install runs from
-`/opt/livex-openclaw-native-dev` as Compose project `livex-openclaw-native-dev`
-on host port `18790`. Nothing in this repo creates, deploys or updates it, and
-`deploy.sh`, `remote.sh` and `dev-bootstrap.sh` only touch
-`/opt/livex-openclaw-stage`. How it was installed is not recorded here; do not
-assume the commands in this file apply to it.
+## Deploy the live DEV Gateway: `make deploy_dev`
+
+The Slack-serving native Gateway on `livex-openclaw-dev` runs from
+`/opt/livex-openclaw-native-dev` as Compose project `livex-openclaw-native-dev`,
+published on `127.0.0.1:18790`, with Slack on. This release ships the `debugger`
+agent only; the running install also serves `oncall` (the opt-in OnCall agent, a
+separate PR). A deploy refuses to drop it, see "Agent guard". From the repository
+root of a reviewed checkout:
+
+```bash
+make deploy_dev_dry                              # checks, prints every gcloud command, runs none
+make deploy_dev CONFIRM=livex-openclaw-dev       # deploys the checked-out HEAD
+LIVEX_TEST_IAP=0 make deploy_dev CONFIRM=livex-openclaw-dev   # direct SSH instead of IAP
+```
+
+`deploy_dev.sh` (called by the Makefile) refuses unless `livex-native/` has no
+modified, staged or untracked files and HEAD is contained in an `origin/*` branch
+(it runs `git fetch --prune origin` first and prints the sha and branches). A real
+deploy also needs `CONFIRM=livex-openclaw-dev`, because it restarts the live Slack
+Gateway; `deploy_dev_dry` does not. It needs `git`, `tar`, `shasum` and, outside
+`--dry-run`, `gcloud`; it needs no Node. It then runs `deploy.sh` with
+`LIVEX_DEV_LIVE=1` on that sha, which keeps its own refusals (committed tooling, sha
+equals HEAD). Only the `livex-native/` tree of HEAD is deployed.
+
+**How it differs from staging** (`LIVEX_ON_DEV_VM=1`): the VM, project, root and
+port are fixed (`livex-openclaw-dev`, `/opt/livex-openclaw-native-dev`, `18790`),
+Slack is on (`remote.sh` refuses if `runtime.env` has no `SLACK_BOT_TOKEN` and
+`SLACK_APP_TOKEN`; `apply.mjs` sets `channels.slack` from them), channel startup is
+not suppressed, and `/readyz` is polled on `18790`. `LIVEX_DEV_LIVE=1` refuses to combine with `LIVEX_ON_DEV_VM` or
+`LIVEX_TEST_VM`, and `remote.sh` refuses off `livex-openclaw-dev`. Nothing outside
+`/opt/livex-openclaw-native-dev` is written on the filesystem, and
+`/opt/livex-openclaw-stage` is never touched. A deploy restarts the Gateway briefly (Slack reconnects); a
+failure rolls back as described under "Rollback scope", including restarting the
+previous image only if it was running.
+
+### Agent guard
+
+Before it builds or stops anything, a live deploy runs `apply.mjs` read-only in
+the new image against the live `openclaw.json` (`LIVEX_LIVE_GUARD=1`,
+`LIVEX_CHECK_AGENTS_ONLY=1`). It refuses when the live config serves a LiveX agent
+(`oncall`, `debugger`, or any agent whose workspace has a `skills/.livex-shipped`
+manifest) that the release's fragment does not ship, because apply would leave it
+frozen and unmanaged. Deploy a commit that includes the agent (for example the PR
+that adds OnCall). Staging and the test VM are unchanged. The check runs again
+inside the real apply.
+
+### One-time adoption of the hand-made install
+
+The first `make deploy_dev` finds the layout that was set up by hand: no
+`current-release` link, `current`/`previous` records that are bare commit shas, a
+`compose.env` whose `STATE_DIR` is `release-<sha>.<rand>/state`. `remote.sh` plans
+the migration before it builds or stops anything, and refuses (changing nothing) if
+the layout is not recognized, `compose.yaml` or the running image is missing,
+`docker compose config` fails or lacks a `gateway` service, `gateway-1` is not
+running or was not created from `$root/compose.yaml`, it does not publish
+`127.0.0.1:18790` (`compose port`), or there is not room to copy the state. It
+also pins the running image as `livex-openclaw-native-dev:pre-adopt-<ts>`, so a
+rebuild of the same sha cannot move the rollback target. Then, with the Gateway
+stopped:
+
+1. `compose.env` and the records are copied to `adopt-backup.<ts>/`.
+2. An existing `$root/state` is renamed to `state.pre-adopt.<ts>` (never deleted;
+   an empty leftover is removed after a good deploy).
+3. The state directory named by the old `compose.env` is **copied** (`cp -a`:
+   owner and modes kept) to `$root/state`. The old `release-*/state` is never
+   written.
+4. The normal flow runs on the copy: snapshot, apply, `config validate`, start,
+   `/readyz` on 18790, then the records are written in our format
+   (`current-release`, `compose.env`, `previous`, `current` last). `previous` is
+   the pinned `pre-adopt-<ts>` tag of the old running image; the old `previous`
+   record is superseded, as in any deploy.
+
+If anything fails, the copy is removed, the moved-aside state is put back, and the
+original image (by its pre-adopt tag, which is also re-applied to the original
+sha tag) is restarted from the original `$root/compose.yaml` and `compose.env`
+(the old records are written back; if that restore itself failed, the backup copy
+is used). A failure at any point, including the backup step, takes this path.
+The failed deploy leaves no new directories besides `releases/<sha>`. A retry
+adopts again. After success the layout is the normal one, so later deploys do not
+adopt. The root `compose.yaml`, the `prepared` record and every `release-*` dir
+stay as they were.
+
+Codex sign-ins live in the state, so the copy keeps them; if an agent asks again,
+`deploy.sh` prints the device-code commands (one per agent) to run through
+`docker compose exec`.
+
+### Disk housekeeping and the legacy leftovers
+
+After a good live deploy: images of the project other than the current and
+previous are removed, `docker image prune -f` drops dangling images (this is
+Docker-wide, and never removes tagged images), the newest three `releases/<sha>`
+and two `state.failed.*` are kept (existing behavior). Live mode does not run
+`docker builder prune`: the VM's build cache is shared with staging and other
+builds. Free it by hand if disk is short. The legacy `release-*` directories (a full state copy each) and
+`state.pre-adopt.*` are **not** deleted by any deploy: the old state there is the
+only pre-adoption copy and holds sessions and Codex auth, so the deploy lists them
+with sizes and prints the exact `sudo rm -rf ...` line instead. Run it by hand
+after at least one later deploy has succeeded and you no longer need to roll back
+to the hand-made layout. No deploy deletes a path outside
+`/opt/livex-openclaw-native-dev`.
+
+### Rolling back a live deploy that succeeded
+
+On the VM, with `lx` defined as in "After the first deploy" but for project
+`livex-openclaw-native-dev` and root `/opt/livex-openclaw-native-dev`, follow
+"Rollback" (the pre-deploy snapshot is `releases/<sha>/state.before.tgz`). To go
+back to the hand-made layout after adoption, stop the gateway and start the old
+image from the old files:
+`sudo env OPENCLAW_IMAGE=<the previous record> docker compose --project-name livex-openclaw-native-dev -f /opt/livex-openclaw-native-dev/compose.yaml --env-file /opt/livex-openclaw-native-dev/adopt-backup.<ts>/compose.env up -d --pull never gateway`.
+That serves the pre-adoption state, so sessions since the adoption are not in it.
 
 | File | Runs on | What it does |
 | --- | --- | --- |
 | `deploy.sh` | operator Mac | Checks the script is committed and the sha is HEAD, `git archive`s it, uploads it over IAP, runs `remote.sh` under a lock. `--dry-run` prints the gcloud commands and runs none |
+| `deploy_dev.sh` | operator Mac | `make deploy_dev`: checks a clean `livex-native/` and a pushed HEAD, then runs `deploy.sh` with `LIVEX_DEV_LIVE=1` |
 | `remote.sh` | VM, as root | Builds the image, snapshots state, applies config in the new image, cuts over, gates on `/readyz`, rolls back on failure |
 | `Dockerfile` | VM build | Official OpenClaw image (digest-pinned) + Google Cloud CLI + `livex-native` + the Slack plugin tarball, patched by `patch-slack-navigation.mjs` |
 | `versions.env` | VM build | Pinned image digests, Slack plugin version and sha512 |
@@ -138,7 +244,7 @@ instead, which is deleted once the redeploy succeeds or its state is restored.
     `previous` and `current-release`. Never remove other projects' images (the
     shared DEV VM runs other Gateways), the state directory, or
     `state.failed.*` you still need. `docker builder prune -f` is safe on the
-    dedicated VM but not on the shared DEV VM, whose cache other builds use.
+    dedicated VM but not on the DEV VM, whose cache staging and the live install share.
 - **Memory.** No cap by default (`mem_limit: ${LIVEX_GATEWAY_MEM_LIMIT:-0}`;
   `0` means unlimited, and compose.yaml was only read, not run through
   `docker compose config`, here). The value is unmeasured, OpenClaw lowers the

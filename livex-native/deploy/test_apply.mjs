@@ -115,7 +115,8 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
     SLACK_PLUGIN_SPEC: slackSpec,
     LIVEX_SLACK_TARBALL: tarball,
   };
-  const run = () => spawnSync(process.execPath, [applyPath], { env, encoding: "utf8" });
+  const run = (extra = {}) =>
+    spawnSync(process.execPath, [applyPath], { env: { ...env, ...extra }, encoding: "utf8" });
   const read = () => fs.readFileSync(configPath, "utf8");
   const seed = (config) => fs.writeFileSync(configPath, JSON.stringify(config));
   const applyTwice = () => {
@@ -339,4 +340,33 @@ test("the fragment clears every deployed secret from the Codex process environme
     [],
     "add these to plugins.entries.codex.config.appServer.clearEnv",
   );
+});
+
+test("live guard refuses to drop a serving LiveX agent the release no longer ships", (t) => {
+  const { configPath, oncallWorkspace, run, read, seed } = fixture(t);
+  seed(priorConfig(priorOncall(oncallWorkspace), []));
+  const before = read();
+  const live = { LIVEX_LIVE_GUARD: "1" };
+  for (const extra of [live, { ...live, LIVEX_CHECK_AGENTS_ONLY: "1" }]) {
+    const result = run(extra);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /oncall.+does not ship/);
+    assert.equal(read(), before);
+    assert.equal(fs.existsSync(`${configPath}.pre-regression`), false);
+  }
+  // A custom id is protected when its workspace holds a shipped-skills manifest.
+  const custom = fixture(t);
+  fs.mkdirSync(path.join(custom.state, "workspace-extra", "skills"), { recursive: true });
+  fs.writeFileSync(path.join(custom.state, "workspace-extra", "skills", ".livex-shipped"), "x\n");
+  custom.seed({ agents: { entries: { extra: { workspace: path.join(custom.state, "workspace-extra") } } } });
+  assert.equal(custom.run(live).status, 1);
+  // Without the guard (staging, test VM) the same state is accepted as before.
+  assert.equal(custom.run().status, 0);
+  // A fresh state has nothing to drop, so the live check passes.
+  assert.equal(fixture(t).run(live).status, 0);
+  // A release that ships oncall passes the check against a state that serves it.
+  const optIn = fixture(t, { includeOncall: true });
+  optIn.seed(priorConfig(priorOncall(optIn.oncallWorkspace), []));
+  const checked = optIn.run({ ...live, LIVEX_CHECK_AGENTS_ONLY: "1" });
+  assert.equal(checked.status, 0, checked.stderr);
 });

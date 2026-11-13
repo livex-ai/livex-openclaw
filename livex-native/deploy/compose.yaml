@@ -32,7 +32,9 @@ services:
     # `lan` is required inside the container so the published port is reachable;
     # the host side publishes loopback only.
     command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
-    ports: ["127.0.0.1:18789:18789"]
+    # Host side is loopback only. The live DEV install sets LIVEX_HOST_PORT=18790
+    # (remote.sh writes it to compose.env); every other target keeps 18789.
+    ports: ["127.0.0.1:${LIVEX_HOST_PORT:-18789}:18789"]
     restart: unless-stopped
     # Opt-in memory cap for the whole container (Gateway plus the Codex child it
     # spawns). 0 means unlimited, the default; set LIVEX_GATEWAY_MEM_LIMIT in

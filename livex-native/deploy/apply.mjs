@@ -309,8 +309,39 @@ function copyWorkspaces(ids) {
   }
 }
 
-fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+// LIVE deploys only (remote.sh sets LIVEX_LIVE_GUARD=1): never drop a LiveX agent that
+// is already serving from the live config. apply keeps an agent the fragment no
+// longer ships frozen and unmanaged, so refuse instead. LIVEX_CHECK_AGENTS_ONLY=1
+// makes remote.sh run just this check, read-only, before it stops anything.
+const KNOWN_LIVEX_AGENTS = new Set(["oncall", "debugger"]);
+function refuseDroppedLivexAgents(fragment) {
+  if (process.env.LIVEX_LIVE_GUARD !== "1" || !fs.existsSync(configPath)) return;
+  const shipped = new Set(Object.keys(fragment.agents?.entries ?? {}));
+  const dropped = Object.entries(readJson5(configPath).agents?.entries ?? {})
+    .filter(
+      ([id, entry]) =>
+        !shipped.has(id) &&
+        (KNOWN_LIVEX_AGENTS.has(id) ||
+          fs.existsSync(
+            path.join(entry?.workspace ?? workspaceFor(id), "skills", ".livex-shipped"),
+          )),
+    )
+    .map(([id]) => id);
+  if (dropped.length > 0) {
+    throw new Error(
+      `The live config serves LiveX agent(s) ${dropped.join(", ")} that this release does not ship. ` +
+        "Deploy a commit that includes them (for example the PR that adds OnCall) instead of freezing them unmanaged.",
+    );
+  }
+}
+
 const fragment = readJson5(path.join(nativeDir, "config", "openclaw.fragment.json5"));
+refuseDroppedLivexAgents(fragment);
+if (process.env.LIVEX_CHECK_AGENTS_ONLY === "1") {
+  console.log("agents: live config matches this release's agents");
+  process.exit(0);
+}
+fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 const ids = agentIds(fragment);
 // Installing the Slack plugin may write config. Reject existing conflicts before that step.
 prepareConfig(fragment);

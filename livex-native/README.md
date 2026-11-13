@@ -72,6 +72,11 @@ and rollback. With `LIVEX_ON_DEV_VM=1`, it stages a separate Gateway on port
 18789 with Slack disabled. The existing DEV bot keeps serving. Use a dedicated
 test VM and its own app for Slack verification. See [deploy instructions](deploy/README.md).
 
+From the repository root, `make deploy_dev` deploys the checked-out, pushed HEAD to the
+live Slack-serving Gateway on the DEV VM (`make deploy_dev CONFIRM=livex-openclaw-dev`;
+`make deploy_dev_dry` prints the commands only). The first run adopts the hand-made install. See
+[the deploy README](deploy/README.md#deploy-the-live-dev-gateway-make-deploy_dev).
+
 The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging
 and recovery are available on hosts that expose the V2 state API.
 
