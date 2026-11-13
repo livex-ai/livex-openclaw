@@ -34,6 +34,10 @@ services:
     command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
     ports: ["127.0.0.1:18789:18789"]
     restart: unless-stopped
+    # Opt-in memory cap for the whole container (Gateway plus the Codex child it
+    # spawns). 0 means unlimited, the default; set LIVEX_GATEWAY_MEM_LIMIT in
+    # compose.env after measuring (README, "Memory and disk").
+    mem_limit: ${LIVEX_GATEWAY_MEM_LIMIT:-0}
     # Container liveness uses /healthz; remote.sh gates a deploy on /readyz, which
     # also checks channel accounts.
     healthcheck:

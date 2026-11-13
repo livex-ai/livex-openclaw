@@ -3,6 +3,15 @@
 #
 # Default is a dry run that only prints the commands. Pass --apply to run them.
 # This script never restarts a Gateway and never runs interactive sign-in.
+#
+# Run --apply from a terminal. OpenClaw asks for capability consent when it
+# installs a plugin (the linked LiveX plugins in step 3 always, the published
+# packages in steps 1 and 1b if the CLI flags them). With no TTY the prompt cannot
+# be answered and a non-interactive install fails. This script does not pass
+# --accept-capabilities: read each prompt and accept it yourself. (The
+# deploy/ pipeline passes it only for its pinned Slack tarball and then checks
+# the accepted surface; this script has no such check, so it leaves the choice
+# to you.)
 set -euo pipefail
 
 usage() {
@@ -68,6 +77,15 @@ else
 fi
 echo
 
+echo "# 1b. Install the Slack plugin. On stock OpenClaw it is a separate package"
+echo "#     (docs/channels/slack/setup.md); the fragment enables plugin id slack."
+if [ "$APPLY" -eq 1 ] && has_plugin slack; then
+  echo "slack plugin already present; skipping install."
+else
+  run openclaw plugins install @openclaw/slack
+fi
+echo
+
 echo "# 2. Sign in to OpenAI for Codex. Interactive; run it yourself:"
 echo "#      openclaw models auth login --provider openai --agent debugger"
 echo
@@ -75,7 +93,8 @@ echo
 echo "# 3. Install the LiveX evidence and Slack summary plugins."
 echo "#    Linked install: OpenClaw loads TypeScript entries only from source"
 echo "#    checkouts and linked/local paths. --force confirms the local source"
-echo "#    and makes a re-run safe."
+echo "#    and makes a re-run safe. Each install prompts for capability consent;"
+echo "#    answer it in this terminal (see the header; with no TTY the install fails)."
 for plugin_id in "${PLUGIN_IDS[@]}"; do
   run openclaw plugins install -l "$ROOT/plugins/$plugin_id" --force
 done
@@ -100,8 +119,8 @@ cat <<EOF
 #    $ROOT/README.md before merging. Config changes apply on hot reload.
 #
 # 6. In the Control UI:
-#    - Plugins: confirm codex, livex-gcp-readonly and livex-slack-summary
-#      are enabled; fill any missing livex-gcp-readonly config fields.
+#    - Plugins: confirm codex, slack, livex-gcp-readonly and
+#      livex-slack-summary are enabled; fill any missing livex-gcp-readonly config fields.
 #    - Agents: open "debugger" (LiveX Debugger) for triage and diagnosis.
 #      Both LiveX tools answer only Slack turns from SLACK_SENDER_ID.
 #      A Control UI chat has no LiveX evidence tools.

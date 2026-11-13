@@ -6,7 +6,8 @@
 # prints secrets: no `set -x`, and runtime.env is only handed to docker compose.
 #
 # Test knobs (defaults are the real values): LIVEX_ROOT, LIVEX_HEALTH_TIMEOUT,
-# LIVEX_HEALTH_INTERVAL.
+# LIVEX_HEALTH_INTERVAL, LIVEX_MIN_FREE_GIB (free-space floor before a build;
+# default 5, whole GiB, 0 turns the check off).
 set -euo pipefail
 umask 077
 
@@ -41,6 +42,9 @@ health_interval=${LIVEX_HEALTH_INTERVAL:-3}
 [[ $health_timeout =~ ^[1-9][0-9]{0,3}$ && $health_interval =~ ^[1-9][0-9]{0,3}$ ]] \
   && ((health_timeout <= 3600 && health_interval <= 3600)) \
   || { echo "Readiness timeout and interval must be whole seconds from 1 to 3600." >&2; exit 2; }
+min_free_gib=${LIVEX_MIN_FREE_GIB:-5}
+[[ $min_free_gib =~ ^[0-9]{1,4}$ ]] \
+  || { echo "LIVEX_MIN_FREE_GIB must be a whole number of GiB from 0 to 9999." >&2; exit 2; }
 new_image=$project:$sha
 snapshot=$release/state.before.tgz
 
@@ -63,11 +67,33 @@ digest_re='^[a-z0-9./-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'
   exit 1
 }
 
+# Gateway memory cap (compose.yaml mem_limit). OPT-IN: 0 means no cap. An
+# operator sets it in the existing compose.env, which this script parses (never
+# sources) and carries forward so it survives redeploys. README, "Memory and disk".
+gateway_mem_limit=0
+if [[ -r $root/compose.env ]]; then
+  override=$(sed -n 's/^LIVEX_GATEWAY_MEM_LIMIT=//p' "$root/compose.env" | head -n1)
+  if [[ -n $override ]]; then
+    [[ $override =~ ^(0|[1-9][0-9]{0,5}[mg])$ ]] \
+      || { echo "LIVEX_GATEWAY_MEM_LIMIT in $root/compose.env must be 0 (no cap) or look like 3g or 3072m." >&2; exit 2; }
+    # A cap that is too low also breaks rollback, because the previous image is
+    # restarted under the same cap. Refuse anything under 1 GiB.
+    if [[ $override != 0 ]]; then
+      mem_mib=$((10#${override%[mg]}))
+      [[ $override == *g ]] && mem_mib=$((mem_mib * 1024))
+      ((mem_mib >= 1024)) \
+        || { echo "LIVEX_GATEWAY_MEM_LIMIT in $root/compose.env must be at least 1g (or 0 for no cap)." >&2; exit 2; }
+    fi
+    gateway_mem_limit=$override
+  fi
+fi
+
 # Compose reads these from the environment; runtime.env only feeds the containers.
 dc() {
   local image=$1
   shift
   OPENCLAW_IMAGE=$image RUNTIME_ENV_FILE=$runtime_env STATE_DIR=$state SDK_STATE_DIR=$root/gcloud \
+    LIVEX_GATEWAY_MEM_LIMIT=$gateway_mem_limit \
     LIVEX_STAGE_ONLY=$on_dev docker compose --project-name "$project" -f "$deploy/compose.yaml" "$@"
 }
 
@@ -114,6 +140,37 @@ restore_state() {
   return 0
 }
 
+# Activation records. Staged as temporaries, then renamed with `current` last.
+activating=0
+saved_link=""
+saved_prev_present=0
+saved_prev=""
+clean_activation_tmp() {
+  rm -f "$root/previous.tmp.$$" "$root/current.tmp.$$" "$root/compose.env.tmp.$$" \
+    "$root/compose.env.saved.$$" "$root/current-release.tmp.$$" || true
+}
+# Re-point the activation records at what they named before the renames began.
+restore_records() {
+  local rc=0
+  if [[ -n $saved_link ]]; then
+    ln -sfn "$saved_link" "$root/current-release.tmp.$$" \
+      && mv -T "$root/current-release.tmp.$$" "$root/current-release" || rc=1
+  else
+    rm -f "$root/current-release" || rc=1
+  fi
+  if [[ -f $root/compose.env.saved.$$ ]]; then
+    mv "$root/compose.env.saved.$$" "$root/compose.env" || rc=1
+  else
+    rm -f "$root/compose.env" || rc=1
+  fi
+  if ((saved_prev_present)); then
+    printf '%s\n' "$saved_prev" >"$root/previous.tmp.$$" && mv "$root/previous.tmp.$$" "$root/previous" || rc=1
+  else
+    rm -f "$root/previous" || rc=1
+  fi
+  return "$rc"
+}
+
 previous=""
 [[ -s $root/current ]] && previous=$(<"$root/current")
 # A same-SHA deploy needs its own attempt snapshot and must preserve the
@@ -130,6 +187,10 @@ on_exit() {
   if ((rc == 0)); then exit 0; fi
   echo "DEPLOY FAILED (exit $rc) during phase: $phase" >&2
   if [[ $phase == stopped ]]; then
+    # Interrupted activation: put the records back first, so they stay mutually
+    # consistent with the image the rollback starts. Every step is status-checked.
+    if ((activating)); then restore_records >&2 || echo "WARNING: could not fully restore activation records; check $root/{current,previous,compose.env,current-release}." >&2; fi
+    clean_activation_tmp
     # Always stop the NEW gateway first, so nothing writes to state or recreates a
     # missing bind-mount source while it is swapped. `stop` leaves the
     # unless-stopped container down, so docker cannot restart it in the window.
@@ -171,6 +232,25 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# Free-space floor. Runs before the build and before anything is stopped, so a
+# refusal leaves the running Gateway untouched. Checks the filesystem holding the
+# deploy root and, when `docker info` answers, Docker's data root (where the
+# build and image layers land). An unreadable path or missing docker is skipped.
+free_kib() { df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
+if ((10#$min_free_gib > 0)); then
+  need_kib=$((10#$min_free_gib * 1024 * 1024))
+  docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  for path in "$root" "$docker_root"; do
+    [[ -n $path && -d $path ]] || continue
+    have_kib=$(free_kib "$path")
+    [[ $have_kib =~ ^[0-9]+$ ]] || continue
+    if ((have_kib < need_kib)); then
+      echo "Refusing to deploy: $path has $((have_kib / 1024 / 1024)) GiB free, below the ${min_free_gib} GiB floor (LIVEX_MIN_FREE_GIB). The running Gateway was not touched." >&2
+      exit 1
+    fi
+  done
+fi
+
 echo "== disk before build"
 df -h "$root" || true
 echo "== build $new_image"
@@ -203,26 +283,35 @@ echo "== start $new_image"
 dc "$new_image" up -d --pull never gateway
 wait_ready "$new_image" || { echo "$project-gateway-1 not ready at $health_url within ${health_timeout}s." >&2; exit 1; }
 
-# Activate: record previous/current only after a ready start.
-write_atomic() {
-  printf '%s\n' "$2" >"$1.tmp.$$" || return 1
-  mv "$1.tmp.$$" "$1" || return 1
-}
-if [[ -n $previous && $previous != "$new_image" ]]; then
-  write_atomic "$root/previous" "$previous" || exit 1
-fi
-write_atomic "$root/current" "$new_image" || exit 1
+# Activate only after a ready start. Phase stays `stopped` until the end, so a
+# failure rolls back. Stage ALL temporaries first (any failure here changes no
+# record), save the old records, then rename with `current` last, the commit
+# point. If a rename fails, on_exit restores the saved records. Each step checks
+# its own status: errexit does not reliably fire in this flow.
+stage() { printf '%s\n' "$2" >"$1.tmp.$$" || exit 1; }
+[[ -z $previous || $previous == "$new_image" ]] || stage "$root/previous" "$previous"
+stage "$root/current" "$new_image"
 # Stable path for operator compose commands (README); the env file carries the
 # interpolation values compose.yaml needs.
-ln -sfn "$release" "$root/current-release"
-cat >"$root/compose.env.tmp.$$" <<EOF
+ln -sfn "$release" "$root/current-release.tmp.$$" || exit 1
+cat >"$root/compose.env.tmp.$$" <<EOF || exit 1
 OPENCLAW_IMAGE=$new_image
 RUNTIME_ENV_FILE=$runtime_env
 STATE_DIR=$state
 SDK_STATE_DIR=$root/gcloud
 LIVEX_STAGE_ONLY=$on_dev
+LIVEX_GATEWAY_MEM_LIMIT=$gateway_mem_limit
 EOF
-mv "$root/compose.env.tmp.$$" "$root/compose.env"
+saved_link=$(readlink "$root/current-release" 2>/dev/null || true)
+if [[ -f $root/compose.env ]]; then cp -p "$root/compose.env" "$root/compose.env.saved.$$" || exit 1; fi
+if [[ -s $root/previous ]]; then saved_prev_present=1; saved_prev=$(<"$root/previous"); fi
+activating=1
+mv -T "$root/current-release.tmp.$$" "$root/current-release" || exit 1
+mv "$root/compose.env.tmp.$$" "$root/compose.env" || exit 1
+if [[ -f $root/previous.tmp.$$ ]]; then mv "$root/previous.tmp.$$" "$root/previous" || exit 1; fi
+mv "$root/current.tmp.$$" "$root/current" || exit 1
+activating=0
+clean_activation_tmp
 phase=done
 if [[ $previous == "$new_image" ]]; then
   rm -f "$snapshot" || true

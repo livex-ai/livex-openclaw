@@ -4,6 +4,15 @@ The default target is the dedicated `livex-openclaw-test` VM. It uses its own
 Slack app and the official OpenClaw image. `LIVEX_ON_DEV_VM=1` stages a candidate
 on the existing DEV VM for Gateway and Codex checks.
 
+**What is and is not modified.** This repo changes no OpenClaw core source. The
+image is the official one (digest-pinned) plus the Google Cloud CLI and
+`livex-native`. There is one build-time patch to a plugin package:
+`patch-slack-navigation.mjs` edits the official `@openclaw/slack` monitor bundle
+so passive URL buttons are not enqueued as block actions (PR #34's guard). It
+refuses to run unless the bundle's sha256 matches the verified
+`@openclaw/slack@2026.10.5` file, so a version bump breaks the build until the
+patch is re-verified against the new bundle (or removed if upstream has the fix).
+
 ## Stage on the existing DEV VM
 
 The candidate uses `/opt/livex-openclaw-stage`, the `livex-openclaw-stage`
@@ -38,11 +47,22 @@ Use the staging Gateway token from `/opt/livex-openclaw-stage/runtime.env` in
 the Control UI. Use the dedicated test VM and its own Slack app to verify
 Slack replies and GCP tools through an authorized Slack turn.
 
+Staging builds the image `livex-openclaw-stage:<sha>` (the dedicated VM builds
+`livex-openclaw-test:<sha>`); the image name and Compose project are the same
+string.
+
+**Not covered by these scripts.** The live native DEV install runs from
+`/opt/livex-openclaw-native-dev` as Compose project `livex-openclaw-native-dev`
+on host port `18790`. Nothing in this repo creates, deploys or updates it, and
+`deploy.sh`, `remote.sh` and `dev-bootstrap.sh` only touch
+`/opt/livex-openclaw-stage`. How it was installed is not recorded here; do not
+assume the commands in this file apply to it.
+
 | File | Runs on | What it does |
 | --- | --- | --- |
 | `deploy.sh` | operator Mac | Checks the script is committed and the sha is HEAD, `git archive`s it, uploads it over IAP, runs `remote.sh` under a lock. `--dry-run` prints the gcloud commands and runs none |
 | `remote.sh` | VM, as root | Builds the image, snapshots state, applies config in the new image, cuts over, gates on `/readyz`, rolls back on failure |
-| `Dockerfile` | VM build | Official OpenClaw image (digest-pinned) + Google Cloud CLI + `livex-native` + the Slack plugin tarball |
+| `Dockerfile` | VM build | Official OpenClaw image (digest-pinned) + Google Cloud CLI + `livex-native` + the Slack plugin tarball, patched by `patch-slack-navigation.mjs` |
 | `versions.env` | VM build | Pinned image digests, Slack plugin version and sha512 |
 | `verify-tarball.mjs` | VM build | Fails the build if the Slack tarball's sha512 differs from the pin |
 | `compose.yaml` | VM | `gateway` (loopback-only port) and `cli` (profile `tools`) |
@@ -81,14 +101,57 @@ checked-out HEAD and `livex-native/deploy` matches HEAD. The project is fixed to
 `us-central1-a` (`LIVEX_TEST_ZONE`). ssh and scp go through IAP; set
 `LIVEX_TEST_IAP=0` only if you have another allowed path to port 22.
 
-What a deploy does on the VM, in order: build `livex-openclaw-test:<sha>`; stop the
+What a deploy does on the VM, in order: check free disk (below); build
+`livex-openclaw-test:<sha>` (`livex-openclaw-stage:<sha>` when staging); stop the
 gateway; snapshot the state directory; run `apply.mjs` and `openclaw config
 validate` in the new image; start the new gateway; wait up to 120 s (300 s for
 DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
-`http://127.0.0.1:18789/readyz`. Only then are `current` and `previous` written.
-`/readyz` includes the channel check, so a broken Slack config fails the deploy
-(compose still uses `/healthz` for container liveness). A failure before the stop
-(build, bad `versions.env`) leaves the running gateway untouched.
+`http://127.0.0.1:18789/readyz`. Only then are the activation records changed:
+all four are first staged as temporaries (a failure there changes nothing), then
+renamed in the order `current-release`, `compose.env`, `previous`, `current`
+(the commit point). If a rename fails, the deploy rolls back and restores the
+four records to their earlier values, so they stay consistent with the image that
+is running. `/readyz` includes the channel check, so a broken Slack
+config fails the deploy (compose still uses `/healthz` for container liveness).
+A failure before the stop (free-space check, build, bad `versions.env`) leaves
+the running gateway untouched.
+
+Deploying the same sha again is supported. The previous distinct release and its
+`state.before.tgz` are kept; the attempt snapshots to `state.retry.<pid>.tgz`
+instead, which is deleted once the redeploy succeeds or its state is restored.
+
+### Memory and disk
+
+- **Free space.** Before the build, `remote.sh` refuses unless the filesystem
+  holding the deploy root, and Docker's data root when `docker info` answers,
+  each have at least 5 GiB free. This runs before anything is stopped, so the
+  running gateway is untouched. Override the floor with
+  `LIVEX_MIN_FREE_GIB=<whole GiB, 0-9999>` in the environment of `deploy.sh`
+  (`0` turns it off); `deploy.sh` validates it and forwards it, and `--dry-run`
+  shows it. The 5 GiB is a starting value, not a measured need: a build adds a
+  second full image next to the running one.
+  - **If it refuses**, free space by hand on the VM (as root). Safe to remove:
+    images of this project other than the `current` and `previous` recorded in
+    `/opt/<project>/` (`docker image ls livex-openclaw-test` or
+    `livex-openclaw-stage`, then `docker image rm <repo:tag>`), and old
+    `releases/<sha>` directories other than the ones named by `current`,
+    `previous` and `current-release`. Never remove other projects' images (the
+    shared DEV VM runs other Gateways), the state directory, or
+    `state.failed.*` you still need. `docker builder prune -f` is safe on the
+    dedicated VM but not on the shared DEV VM, whose cache other builds use.
+- **Memory.** No cap by default (`mem_limit: ${LIVEX_GATEWAY_MEM_LIMIT:-0}`;
+  `0` means unlimited, and compose.yaml was only read, not run through
+  `docker compose config`, here). The value is unmeasured, OpenClaw lowers the
+  `oom_score_adj` of the children it starts (`src/process/`), so a cgroup cap
+  would make the kernel kill the Codex child or a `gcloud` helper mid-turn
+  rather than the Gateway, and GCE images have no swap. To set a cap, first
+  measure: run `sudo docker stats --no-stream` repeatedly during a real
+  multi-page Codex turn on that VM (the Gateway and the Codex child share one
+  container). Then add `LIVEX_GATEWAY_MEM_LIMIT=<n>g` (or `<n>m`) with margin
+  above the peak to `/opt/<project>/compose.env`; `remote.sh` validates it
+  (`0`, or at least `1g`: a cap that is too low also breaks rollback, which restarts the previous image under it) and carries it across deploys. VM sizes for reference:
+  `e2-medium` 4 GB; the shared DEV VM `e2-standard-2` 8 GB also hosts other
+  Gateways.
 
 ### What apply does (all idempotent)
 
@@ -132,15 +195,19 @@ DEV staging, or set `LIVEX_HEALTH_TIMEOUT`) for
 ### Plugins
 
 OpenClaw treats a local tarball as an unverified source and asks for capability
-consent, even for the official Slack package. `apply.mjs` passes
-`--accept-capabilities` for the release tarball, then checks the accepted
-surface: anything beyond the Slack channel and its skills fails the deploy.
+consent, even for the official Slack package. `apply.mjs` runs
+`openclaw plugins install npm-pack:<tarball> --force --accept-capabilities` for
+the release tarball, then checks the accepted surface: anything beyond the Slack
+channel and its skills fails the deploy.
 
 - **codex** is bundled in the official image (`docs/install/docker.md`). Apply
   never installs it and fails if `plugins list` does not show it.
 - **Slack** ships as a separate package (`bundledDist: false`). The build verifies
   the pinned npm archive against its registry SHA512 in `versions.env`, then
-  backports PR #34's passive URL-button guard to the exact monitor bundle.
+  backports PR #34's passive URL-button guard to the exact monitor bundle
+  (`patch-slack-navigation.mjs`; this is the one patch to a plugin package).
+  Re-verify it on every Slack plugin version bump: it fails the build unless the
+  bundle's sha256 matches the verified file name and digest.
   Apply compares the release archive's SHA512 with the managed install record
   and installs the local archive when they differ, including stock installations
   at the same version. Apply verifies the installed version, integrity, and
@@ -155,7 +222,8 @@ surface: anything beyond the Slack channel and its skills fails the deploy.
 Before apply, with the gateway stopped (so SQLite files are quiescent), `remote.sh`
 snapshots the whole state directory to `releases/<sha>/state.before.tgz` (mode 0600).
 The snapshot is verified with `tar -tzf` before apply runs; a bad snapshot aborts the
-deploy with state untouched and the previous gateway restarted. If anything fails
+deploy with state untouched; the previous gateway is restarted only if it was
+running before the deploy, otherwise it is left stopped. If anything fails
 after the stop, `remote.sh` first stops the new gateway (so nothing writes to state
 or makes docker recreate a missing bind-mount source during the swap), then restores
 the snapshot by rename, then starts the previous image and waits for `/readyz`.
@@ -170,8 +238,8 @@ deploy with no previous image it restores the snapshot and leaves the gateway
 stopped. The gcloud directory is not snapshotted: it holds only gcloud's own caches
 (the attached service account stores no credentials there) and apply never writes it.
 The VM keeps the current and previous images and the newest three releases, runs
-`docker builder prune` for cache older than a week after a good deploy, and prints
-`df -h` before the build and after the deploy.
+`docker builder prune` for cache older than a week after a good deploy (not on the
+shared DEV VM), and prints `df -h` before the build and after the deploy.
 
 Agents are written straight into config, not created with `openclaw agents add`.
 On a fresh state that command also creates a `main` agent and pins
@@ -369,7 +437,8 @@ read-only volume in `compose.yaml`, and add
 
 The earlier DEV cutover timed out during the official image's startup Doctor
 run. Run `python3 -B livex-native/deploy/test_deploy.py` from the repository root
-for local success and rollback tests with Docker stubbed. The isolated staging flow still needs a live signed-in smoke test.
+for local success and rollback tests with Docker stubbed. `node --test deploy/test_apply.mjs deploy/test_patch_identifiers.mjs`
+covers apply and the Slack patch's identifier check. The isolated staging flow still needs a live signed-in smoke test.
 
 - The plugin's TypeScript entry and its `*-operation-api.ts` module loading from
   `/opt/livex-native` in the production image.

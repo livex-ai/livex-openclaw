@@ -31,7 +31,7 @@ const summary = {
   nextAction: "Confirm whether later requests needed retries.",
   owner: "Unassigned",
   checkedWindow: "2026-01-21 12:20–12:25 UTC",
-  evidenceUrl: "https://console.example.test/logs?window=short&level=error",
+  evidenceUrl: "https://console.cloud.google.com/logs/query?window=short&level=error",
 };
 const evidence = "The complete report includes private correlation IDs and diagnostics.";
 const mark = "LIVEX_ALERT_SUMMARY_V1";
@@ -49,7 +49,7 @@ test("registered hook emits only a compact card and preserves the original evide
     ...route,
     text,
     fallbackText: { text: evidence },
-    mediaUrl: "https://console.example.test/full-evidence",
+    mediaUrl: "https://console.cloud.google.com/full-evidence",
     channelData: { slack: { blocks: [{ type: "section", text: evidence }] } },
   });
   const result = render({ ...event, payload });
@@ -79,7 +79,7 @@ test("registered hook emits only a compact card and preserves the original evide
             elements: [
               {
                 type: "mrkdwn",
-                text: "<https://console.example.test/logs?window=short&amp;level=error|View evidence>",
+                text: "<https://console.cloud.google.com/logs/query?window=short&amp;level=error|View evidence>",
                 verbatim: true,
               },
               { type: "plain_text", text: "Mention this bot in the thread for full evidence." },
@@ -131,9 +131,9 @@ test("malformed marked output cannot pass through JSON, diagnostics, or unsafe U
     envelope({ ...summary, provisional: "yes" }),
     envelope({ ...summary, evidenceUrl: "http://console.example.test/logs" }),
     envelope({ ...summary, evidenceUrl: "https://user:password@console.example.test/logs" }),
-    envelope({ ...summary, evidenceUrl: "https://console.example.test/logs|unsafe>" }),
-    envelope({ ...summary, evidenceUrl: `https://console.example.test/${"x".repeat(1600)}` }),
-    envelope({ ...summary, evidenceUrl: `https://console.example.test/?x${"&x".repeat(400)}` }),
+    envelope({ ...summary, evidenceUrl: "https://console.cloud.google.com/logs|unsafe>" }),
+    envelope({ ...summary, evidenceUrl: `https://console.cloud.google.com/${"x".repeat(1600)}` }),
+    envelope({ ...summary, evidenceUrl: `https://console.cloud.google.com/?x${"&x".repeat(400)}` }),
   ];
   for (const text of cases) {
     assert.deepEqual(render({ ...event, payload: { ...route, text, spokenText: evidence } }), {
@@ -142,6 +142,47 @@ test("malformed marked output cannot pass through JSON, diagnostics, or unsafe U
         text: "Could not format the investigation summary. Mention this bot in the thread for full evidence.",
       },
     });
+  }
+});
+
+test("drops evidence links outside the Logs Explorer host but still posts the card", () => {
+  const dropped = [
+    "https://console.cloud.google.com.evil.example/logs",
+    "https://evil.example/console.cloud.google.com",
+    "https://console.example.test/logs",
+    "https://console.cloud.google.com:8443/logs",
+    "https://sub.console.cloud.google.com/logs",
+  ];
+  for (const evidenceUrl of dropped) {
+    const { blocks } = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl }) } })
+      .payload.channelData.slack;
+    assert.equal(blocks.length, 5);
+    assert.deepEqual(blocks[4].elements, [
+      { type: "plain_text", text: "Mention this bot in the thread for full evidence." },
+    ]);
+  }
+  const allowed = render({
+    ...event,
+    payload: { ...route, text: envelope({ ...summary, evidenceUrl: "https://console.cloud.google.com:443/logs/query" }) },
+  }).payload.channelData.slack.blocks[4].elements[0];
+  assert.match(allowed.text, /^<https:\/\/console\.cloud\.google\.com\/logs\/query\|View evidence>$/u);
+});
+
+test("renders the card for team-qualified Slack thread sessions", () => {
+  const sessions = [
+    "agent:debugger:slack:channel:team:t0123abc:channel:c123:thread:1768996800.000001",
+    "agent:debugger:slack:channel:c123:thread:1768996800.000001",
+  ];
+  for (const sessionKey of sessions) {
+    const result = render({ ...event, sessionKey, payload: { ...route, text: envelope(summary) } });
+    assert.equal(result.payload.channelData.slack.blocks[0].type, "header", sessionKey);
+  }
+  for (const sessionKey of [
+    "agent:oncall:slack:channel:team:t0123abc:channel:c123:thread:1768996800.000001",
+    "agent:debugger:slack:channel:team:t0123abc:channel:c123",
+    "agent:debugger:slack:channel:team:t0123abc:user:u123:thread:1768996800.000001",
+  ]) {
+    assert.equal(render({ ...event, sessionKey, payload: { text: envelope(summary) } }), undefined, sessionKey);
   }
 });
 

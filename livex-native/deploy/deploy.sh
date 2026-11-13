@@ -69,6 +69,13 @@ root=/opt/$compose_project
 health_timeout=${LIVEX_HEALTH_TIMEOUT:-$default_timeout}
 [[ $health_timeout =~ ^[1-9][0-9]{0,3}$ ]] && ((health_timeout <= 3600)) \
   || { echo "LIVEX_HEALTH_TIMEOUT must be a whole number of seconds from 1 to 3600." >&2; exit 2; }
+# Optional free-space floor (GiB) for remote.sh; forwarded only when set.
+min_free_arg=""
+if [[ -n ${LIVEX_MIN_FREE_GIB:-} ]]; then
+  [[ $LIVEX_MIN_FREE_GIB =~ ^[0-9]{1,4}$ ]] \
+    || { echo "LIVEX_MIN_FREE_GIB must be a whole number of GiB from 0 to 9999." >&2; exit 2; }
+  min_free_arg=" LIVEX_MIN_FREE_GIB=$LIVEX_MIN_FREE_GIB"
+fi
 
 run() {
   printf '+'
@@ -101,7 +108,7 @@ run gcloud compute scp "${location[@]}" ${scp_extra[@]+"${scp_extra[@]}"} "$arch
 # 3. Verify, unpack, and run remote.sh under the deploy lock. sha and hash are
 #    validated hex, so they are safe to embed.
 inner='set -eu; test -f "$UP"; echo "$HASH  $UP" | sha256sum -c - >/dev/null; rel='"$root"'/releases/$SHA; if [ ! -d "$rel" ]; then tmp=$(mktemp -d '"$root"'/releases/.incoming.XXXXXX); trap '\''rm -rf "$tmp"'\'' EXIT; tar -xzf "$UP" -C "$tmp"; mv "$tmp" "$rel"; trap - EXIT; fi; rm -f "$UP"; exec bash "$rel/livex-native/deploy/remote.sh" "$SHA"'
-remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_HEALTH_TIMEOUT=$health_timeout bash -c $(printf %q "$inner")"
+remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_HEALTH_TIMEOUT=$health_timeout$min_free_arg bash -c $(printf %q "$inner")"
 run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="$remote_cmd"
 if [[ $dry == 1 ]]; then echo "Dry run: nothing was uploaded or changed."; exit 0; fi
 

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { assertIdentifiersBound } from "./assert-bound-identifiers.mjs";
 
 const [packageDir] = process.argv.slice(2);
 const bundle = path.join(packageDir, "dist/.setup/monitor-CNECe8FK.mjs");
@@ -11,6 +12,7 @@ const stockDigest = "ef2452d5219c75b3f14a940b62022d1e97bf473bd27bed6c5c7a292236f
 if (createHash("sha256").update(source).digest("hex") !== stockDigest) {
   throw new Error("Unexpected Slack monitor bundle for PR #34 backport");
 }
+assertIdentifiersBound(source);
 
 const helper = `function isSlackNavigationButton(parsed) {
   if (parsed.actionSummary.actionType !== "button") return false;

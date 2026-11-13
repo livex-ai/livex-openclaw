@@ -33,9 +33,11 @@ question concerns current status. Record unqueried windows/IDs and why they
 matter, rather than silently implying complete coverage.
 
 Identical initial queries reuse saved evidence by default. If delayed ingestion
-or freshness requires rereading the same filter/window, set `refresh:true` on a
-new initial query. Never combine refresh with cursor continuation; continue that
-read with its cursor alone. Reused evidence retains its original `retrievedAt`.
+or freshness requires rereading the same filter/window and the tool advertises
+`refresh`, set `refresh:true` on a new initial query. Never combine refresh with
+cursor continuation; continue that read with its cursor alone. A tool that does
+not advertise it rejects the key, so omit it. Reused evidence retains its
+original `retrievedAt`.
 
 ## 2. Discover resources, then correlate outcomes
 
@@ -82,8 +84,9 @@ query. Supply only the mode, required selectors, `start`, `end`, and optional
 - Read the correlated Chat Engine turn separately. A returned `toolOffer`
   lists offered names and any explicit operation enums for that request. An
   absent summary is unknown. An empty list means no tools were offered on
-  that request. If reused evidence predates this projection, use one fresh
-  initial query with `refresh: true` and continue with its cursor alone. A
+  that request. If reused evidence predates this projection and `refresh` is
+  advertised, use one fresh initial query with `refresh: true` and continue with
+  its cursor alone. A
   tool offer does not prove invocation or completion.
 
 Report renderer, token, and Chat Engine coverage separately. Distinguish a
@@ -105,8 +108,9 @@ it, such as a service spanning two revisions.
 ## 3. Finish each relevant read without overstating coverage
 
 Each page returns at most 50 entries (default 20); each query window is at most
-one hour. Follow `nextCursor` with `{ "cursor": "<returned nextCursor>" }` alone,
-even after an empty page. Do not alter filters or round/increment timestamps to
+one hour. When a read returns `nextCursor`, follow it with
+`{ "cursor": "<returned nextCursor>" }` alone, even after an empty page; a
+reader that returns none does not accept a `cursor`. Do not alter filters or round/increment timestamps to
 paginate. Inspect `windowExhausted`, filter-specific coverage, and
 `truncationReasons`. An exhausted window for one filter is not coverage of other
 IDs, services, hours, or the case. Keep relevant continuations and remaining work
