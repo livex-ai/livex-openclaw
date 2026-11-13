@@ -17,11 +17,12 @@ x-runtime: &runtime
   volumes:
     - "${STATE_DIR:?private state directory required}:/home/node/.openclaw"
     - "${SDK_STATE_DIR:?SDK state directory required}:/home/node/.config/gcloud"
-    # Repositories are empty by default. To let livex_repository_read inspect
-    # pinned checkouts, add reviewed read-only snapshots and a mount here, then
-    # list them under plugins.entries.livex-gcp-readonly.config.repositories
-    # (apply.mjs keeps a non-empty list). See README.md, "Add repositories".
-    # - "/opt/livex-openclaw-test/repos:/repos:ro"
+    # Pinned, reviewed source snapshots for livex_repository_read, read-only.
+    # remote.sh always sets LIVEX_REPOS_DIR: on the live install it is the `repos`
+    # symlink that `make repos_dev` repoints; elsewhere an empty directory. Docker
+    # resolves the symlink when the container is CREATED, so a new snapshot is only
+    # seen after a deploy (or `docker compose up -d --force-recreate`).
+    - "${LIVEX_REPOS_DIR:?repos directory required}:/repos:ro"
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   init: true

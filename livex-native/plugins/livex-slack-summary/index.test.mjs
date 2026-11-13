@@ -58,7 +58,7 @@ test("registered hook emits only a compact card and preserves the original evide
     channelData: {
       slack: {
         blocks: [
-          { type: "header", text: { type: "plain_text", text: "Priority: Medium (provisional)" } },
+          { type: "header", text: { type: "plain_text", text: "\u{1F7E1} Priority: Medium (provisional)" } },
           {
             type: "section",
             text: { type: "plain_text", text: `Impact: ${summary.impact}` },
@@ -104,7 +104,7 @@ test("renders model fields as literal text and supports unknown priority without
     "\r\n",
   );
   const { blocks } = render({ ...event, payload: { text } }).payload.channelData.slack;
-  assert.equal(blocks[0].text.text, "Priority: Unknown");
+  assert.equal(blocks[0].text.text, "\u26AA Priority: Unknown");
   assert.deepEqual(blocks[1].text, { type: "plain_text", text: `Impact: ${impact}` });
   assert.deepEqual(blocks[4].elements, [
     { type: "plain_text", text: "Mention this bot in the thread for full evidence." },
@@ -129,6 +129,9 @@ test("malformed marked output cannot pass through JSON, diagnostics, or unsafe U
     envelope({ ...summary, owner: " " }),
     envelope({ ...summary, priority: "urgent" }),
     envelope({ ...summary, provisional: "yes" }),
+    envelope({ ...summary, resolved: "true" }),
+    envelope({ ...summary, resolved: 1 }),
+    envelope({ ...summary, resolved: null }),
     envelope({ ...summary, evidenceUrl: "http://console.example.test/logs" }),
     envelope({ ...summary, evidenceUrl: "https://user:password@console.example.test/logs" }),
     envelope({ ...summary, evidenceUrl: "https://console.cloud.google.com/logs|unsafe>" }),
@@ -201,5 +204,45 @@ test("leaves other channels, agents, unmarked replies, and progress alone", () =
   ];
   for (const unrelated of unrelatedEvents) {
     assert.equal(render({ ...event, ...unrelated }), undefined);
+  }
+});
+
+const headerOf = (fields) =>
+  render({ ...event, payload: { ...route, text: envelope(fields) } }).payload.channelData.slack
+    .blocks[0];
+
+test("priority marker and written word render for every priority", () => {
+  const expected = {
+    critical: "\u{1F534} Priority: Critical",
+    high: "\u{1F534} Priority: High",
+    medium: "\u{1F7E1} Priority: Medium",
+    low: "\u26AA Priority: Low",
+    unknown: "\u26AA Priority: Unknown",
+  };
+  for (const [priority, text] of Object.entries(expected)) {
+    assert.deepEqual(headerOf({ ...summary, priority, provisional: false }), {
+      type: "header",
+      text: { type: "plain_text", text },
+    });
+  }
+  assert.equal(
+    headerOf({ ...summary, priority: "high", provisional: true }).text.text,
+    "\u{1F534} Priority: High (provisional)",
+  );
+});
+
+test("resolved badge overrides the marker, keeps the written priority, and is opt-in", () => {
+  assert.equal(
+    headerOf({ ...summary, priority: "high", provisional: false, resolved: true }).text.text,
+    "\u{1F7E2} Resolved \u00B7 was High",
+  );
+  assert.equal(
+    headerOf({ ...summary, priority: "medium", resolved: true }).text.text,
+    "\u{1F7E2} Resolved \u00B7 was Medium (provisional)",
+  );
+  for (const resolved of [false, undefined]) {
+    const text = headerOf({ ...summary, priority: "high", provisional: false, resolved }).text.text;
+    assert.equal(text, "\u{1F534} Priority: High");
+    assert.doesNotMatch(text, /Resolved/u);
   }
 });

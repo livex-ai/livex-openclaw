@@ -1,0 +1,21 @@
+{
+  "name": "@livex/local-investigations-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-signature investigation memory for the LiveX debugger agent, published after confirmed Slack delivery.",
+  "type": "module",
+  "files": ["index.ts", "core.mjs", "openclaw.plugin.json", "README.md", "WIRING.md"],
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.10.5"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.10.5",
+      "minGatewayVersion": "2026.10.5"
+    }
+  }
+}

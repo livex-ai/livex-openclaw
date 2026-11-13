@@ -1,0 +1,6 @@
+{
+  "base": "/Users/tanmesh/dev",
+  "overrides": {
+    "livex-grafana": "/Volumes/SSK SSD/livex-grafana"
+  }
+}

@@ -157,6 +157,20 @@ create another tracking system or widen the invocation's access or write scope.
    exists, stop that attempt's retries and report the tooling blocker. Do not
    evade the guard by changing arguments, add tools, or infer service severity.
 
+7. **Investigation memory.** After the decision and before the final reply, call
+   `investigation_record` once per distinct issue with:
+   - `signature`: `service | operation | error class` in plain words, no ids,
+     numbers, timestamps or request ids (for example
+     `checkout-api | create order | upstream timeout`). Reuse the signature shown
+     in a prior-case block or lookup when it is the same failure.
+   - `priority`: the priority you assigned (`critical|high|medium|low|unknown`).
+   - `resolved`: true only when recovery is evidenced for this occurrence.
+   - `finding`: one factual sentence, no customer names or personal data.
+   - `trend` (optional): how this compares with the prior occurrences you saw.
+   Call `investigation_lookup` early when no prior-case block was provided but the
+   alert looks like a repeat. A lookup hit is a lead only; treat priority,
+   ownership and resolution in it as stale until current evidence confirms them.
+
 Before finishing, record for each material category: selected source/operation,
 observed mechanism and confidence, original-operation outcome, disposition and
 its evidence, existing accepted tracking or one specific new action, and any
@@ -186,12 +200,12 @@ current conversation's normal reply.
 
 For one alert in a Slack channel thread handled by the `debugger` agent, return
 this envelope as the entire final answer. Line 1 is the exact marker. Line 2 is one JSON object with the
-seven fields below. Then a blank line and the full evidence report. Do not add
+seven required fields below plus the optional `resolved`. Then a blank line and the full evidence report. Do not add
 code fences, attachments, reply directives, or any text before the marker.
 
 ```text
 LIVEX_ALERT_SUMMARY_V1
-{"priority":"unknown","provisional":false,"impact":"Observed outcome and the uncertainty that matters.","nextAction":"One concrete next check.","owner":"Unassigned","checkedWindow":"YYYY-MM-DD HH:MM–HH:MM UTC (fresh)","evidenceUrl":null}
+{"priority":"unknown","provisional":false,"impact":"Observed outcome and the uncertainty that matters.","nextAction":"One concrete next check.","owner":"Unassigned","checkedWindow":"YYYY-MM-DD HH:MM–HH:MM UTC (fresh)","evidenceUrl":null,"resolved":false}
 
 Full evidence report goes here.
 ```
@@ -199,6 +213,15 @@ Full evidence report goes here.
 - Use `critical`, `high`, `medium`, `low`, or `unknown` only. Keep priority
   unknown if the evidence or severity mapping is missing. Set `provisional` for
   a tentative assigned priority.
+- `resolved` is an optional boolean (default false; omit or use false when
+  unsure). Set `true` only when evidence shows the same failing operation
+  recovered after the failure window (a later successful outcome for that
+  operation, not just a quiet log or a retry in flight). The card then shows a
+  green "Resolved" badge in place of the priority colour marker and keeps the
+  priority in text ("Resolved · was High"). Keep `priority` as the severity of
+  the original failure. Non-boolean values invalidate the card. The card marks
+  priority with a leading emoji: red for critical/high, yellow for medium, white
+  for low/unknown.
 - Use single-line plain strings. Maximum lengths in characters are 240 for
   `impact`, 120 for `nextAction`, 50 for `owner`, and 64 for `checkedWindow`.
   Include UTC bounds and whether the evidence is fresh or saved. Use

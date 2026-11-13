@@ -79,6 +79,10 @@ shipped `oncall` agent untouched (`LIVEX_UNMANAGED_AGENTS=oncall`; set it empty 
 strict mode). The first run adopts the hand-made install. See
 [the deploy README](deploy/README.md#deploy-the-live-dev-gateway-make-deploy_dev).
 
+`livex_repository_read` reads pinned source snapshots: `make repos_pin`, commit the
+manifest, `make repos_dev CONFIRM=livex-openclaw-dev`, then `make deploy_dev`. See
+[repos/README.md](repos/README.md).
+
 The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging
 and recovery are available on hosts that expose the V2 state API.
 

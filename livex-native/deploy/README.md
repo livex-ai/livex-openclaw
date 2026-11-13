@@ -352,8 +352,11 @@ instead, which is deleted once the redeploy succeeds or its state is restored.
   installer retires the verified OnCall wildcard from the earlier native demo
   and keeps operator-managed channel routes. See the
   [upgrade instructions](../README.md#upgrade-the-earlier-two-agent-demo).
-- **Kept if set**: a non-empty `plugins.entries.livex-gcp-readonly.config.repositories`
-  on the VM is not overwritten by the fragment's empty list.
+- **Repositories**: when `repos/manifest.json` pins at least one commit,
+  `plugins.entries.livex-gcp-readonly.config.repositories` is MANAGED: it is replaced by
+  `{ id, path: "/repos/<id>", commit }` for every pinned entry (a stale VM list is dropped).
+  With no pins, a non-empty list on the VM is kept (the fragment's empty list does not
+  overwrite it). The change preview lists the rendered repositories.
 - **All other arrays** (`skills`, `tools.allow`, `users`, `allowFrom`, ...) are
   replaced by the fragment's value.
 - **Other keys removed from the fragment persist.** The managed routing migration is the exception.
@@ -597,20 +600,30 @@ migrated state on startup, so an older image can refuse it; if so, redeploy forw
 
 ## Add repositories
 
-`livex_repository_read` shows nothing until reviewed snapshots exist.
-`repositories` is empty and there is no `/repos` mount by default. To add one,
-put a checkout at `/opt/livex-openclaw-test/repos/<id>`, uncomment the `/repos`
-read-only volume in `compose.yaml`, and add
-`{ id, path: "/repos/<id>", commit: "<40-hex>" }` to
-`plugins.entries.livex-gcp-readonly.config.repositories` in the fragment
-(or in `openclaw.json`; a non-empty list on the VM is kept). Then redeploy.
+`livex_repository_read` reads pinned, read-only source snapshots mounted at `/repos`.
+The pins live in [`repos/manifest.json`](../repos/manifest.json); the operator flow
+(`make repos_pin`, commit, `make repos_dev`, `make deploy_dev`) is in
+[`repos/README.md`](../repos/README.md). What the deploy does with them:
+
+- `compose.yaml` always mounts `${LIVEX_REPOS_DIR}:/repos:ro`. `remote.sh` writes
+  `LIVEX_REPOS_DIR` to `compose.env`: live mode uses `$root/repos`, a symlink that
+  `repos.sh install` repoints (an empty `$root/repos-empty` stands in until the first
+  install); stage and test modes mount an empty `$root/repos-empty`.
+- Docker resolves the symlink when the container is created, so a new snapshot is only
+  seen after a deploy (or `docker compose up -d --force-recreate gateway`).
+- Before anything is stopped (live mode), `remote.sh` runs a throwaway container from
+  the new image as uid 1000 and checks that every pinned entry has `$root/repos/<id>`
+  owned by that user with `git cat-file -e <commit>^{commit}` succeeding. A missing
+  snapshot refuses the deploy ("run make repos_dev first") and leaves the Gateway alone.
+- `apply.mjs` renders the repositories list from the manifest shipped in the image.
 
 ## Verification
 
 The earlier DEV cutover timed out during the official image's startup Doctor
 run. Run `python3 -B livex-native/deploy/test_deploy.py` from the repository root
 for local success and rollback tests with Docker stubbed. `node --test deploy/test_apply.mjs deploy/test_patch_identifiers.mjs`
-covers apply and the Slack patch's identifier check. The isolated staging flow still needs a live signed-in smoke test.
+covers apply and the Slack patch's identifier check. `python3 -B livex-native/repos/test_repos.py`
+covers the source-snapshot tooling (pin, build, install, verify, rollback, make targets). The isolated staging flow still needs a live signed-in smoke test.
 
 - The plugin's TypeScript entry and its `*-operation-api.ts` module loading from
   `/opt/livex-native` in the production image.

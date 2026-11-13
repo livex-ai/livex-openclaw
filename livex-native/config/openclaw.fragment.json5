@@ -11,7 +11,7 @@
 {
   plugins: {
     // Keep any ids you already allow (for example your channels) in this list.
-    allow: ["openai", "codex", "slack", "livex-gcp-readonly", "livex-slack-summary"],
+    allow: ["openai", "codex", "slack", "livex-gcp-readonly", "livex-slack-summary", "livex-investigations-lite"],
     entries: {
       openai: { enabled: true },
       // Codex is the agent's brain: OpenAI model turns run in the Codex app-server.
@@ -47,6 +47,15 @@
       },
       slack: { enabled: true },
       "livex-slack-summary": { enabled: true },
+      "livex-investigations-lite": {
+        enabled: true,
+        hooks: { allowConversationAccess: true, allowPromptInjection: true },
+        config: {
+          agents: ["debugger"],
+          allowedChannelId: "*",
+          allowedSenderId: "${SLACK_SENDER_ID}",
+        },
+      },
       "livex-gcp-readonly": {
         enabled: true,
         config: {
@@ -61,6 +70,8 @@
             pythonPath: "${PYTHON_PATH}",
             sdkRoot: "${GCLOUD_SDK_ROOT}",
           },
+          // Managed from repos/manifest.json by apply.mjs (`make repos_pin`): with at least
+          // one pinned commit the list is replaced; with none, a list set on the VM is kept.
           repositories: [],
         },
       },
@@ -127,14 +138,17 @@
           // minimal lists only a few core tools, tool-catalog.ts:347-349).
           profile: "full",
           // OpenClaw tool allowlist: governs OpenClaw-managed tools only (the two
-          // LiveX evidence tools plus read-only helpers). Codex's native shell is
-          // bounded by the read-only appServer sandbox above, not by this list.
+          // LiveX evidence tools, the two investigation memory tools, plus
+          // read-only helpers). Codex's native shell is bounded by the read-only
+          // appServer sandbox above, not by this list.
           allow: [
             "read",
             "skills_read",
             "message",
             "livex_gcp_logs_read",
             "livex_repository_read",
+            "investigation_record",
+            "investigation_lookup",
           ],
           message: { actions: { allow: ["read", "reactions"] } },
           // "deny"/"allowlist" fail Codex preflight

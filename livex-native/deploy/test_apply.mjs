@@ -110,6 +110,8 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
     OPENCLAW_CONFIG_PATH: configPath,
     LIVEX_JSON5_FROM: json5From,
     LIVEX_RELEASE_SHA: "regression",
+    // The shipped manifest pins real repositories; keep unrelated tests independent of it.
+    LIVEX_REPOS_MANIFEST: path.join(state, "no-repos-manifest.json"),
     LIVEX_OPENCLAW_CMD: "fake-openclaw",
     PATH: [state, path.dirname(process.execPath), process.env.PATH ?? ""].join(path.delimiter),
     SLACK_PLUGIN_SPEC: slackSpec,
@@ -170,9 +172,15 @@ test("fresh install registers the Debugger route and enables its Slack summary",
   assert.deepEqual(config.bindings, [slackRoute("debugger")]);
   assert.ok(config.plugins.allow.includes("livex-slack-summary"));
   assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
+  assert.ok(config.plugins.allow.includes("livex-investigations-lite"));
+  const lite = config.plugins.entries["livex-investigations-lite"];
+  assert.equal(lite.enabled, true);
+  assert.equal(lite.hooks.allowConversationAccess, true);
+  assert.equal(lite.hooks.allowPromptInjection, true);
   assert.deepEqual(config.plugins.load.paths, [
     path.join(nativeDir, "plugins", "livex-gcp-readonly"),
     path.join(nativeDir, "plugins", "livex-slack-summary"),
+    path.join(nativeDir, "plugins", "livex-investigations-lite"),
   ]);
 });
 
@@ -235,6 +243,7 @@ test("upgrade retires the stock wildcard while preserving OnCall references, ope
     operatorPlugin,
     path.join(nativeDir, "plugins", "livex-gcp-readonly"),
     path.join(nativeDir, "plugins", "livex-slack-summary"),
+    path.join(nativeDir, "plugins", "livex-investigations-lite"),
   ]);
   assert.deepEqual(next.agents.entries.oncall, config.agents.entries.oncall);
   assert.deepEqual(next.agents.entries.other, config.agents.entries.other);
@@ -600,7 +609,7 @@ test("a malformed LIVEX_HOST_PORT is rejected", (t) => {
 test("LIVEX_PLUGIN_ROOT sets the plugin load paths for a standalone preview", (t) => {
   const { run, read, seed } = liveLike(t);
   const config = JSON.parse(read());
-  config.plugins = { load: { paths: ["/opt/livex-native/plugins/livex-gcp-readonly", "/opt/livex-native/plugins/livex-slack-summary"] } };
+  config.plugins = { load: { paths: ["/opt/livex-native/plugins/livex-gcp-readonly", "/opt/livex-native/plugins/livex-slack-summary", "/opt/livex-native/plugins/livex-investigations-lite"] } };
   seed(config);
   const preview = run({
     LIVEX_LIVE_GUARD: "1",
@@ -625,5 +634,92 @@ test("preview masks credentials by value and never prints object contents", (t) 
   assert.equal(result.status, 0, result.stderr);
   for (const leak of ["LEAKME1", "LEAKME2", "LEAKME3", "LEAKME4"]) {
     assert.ok(!result.stdout.includes(leak) && !result.stderr.includes(leak), `preview leaked ${leak}`);
+  }
+});
+
+const GCP_PLUGIN_ID = "livex-gcp-readonly";
+const repositoriesOf = (config) => config.plugins.entries[GCP_PLUGIN_ID].config.repositories;
+const pin = (n) => String(n).repeat(40);
+
+function writeManifest(dir, rows) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "manifest.json");
+  const body = rows.map(([id, commit]) => `  {"id": "${id}", "branch": "main", "commit": "${commit}"}`).join(",\n");
+  fs.writeFileSync(file, `[\n${body}\n]\n`);
+  return file;
+}
+
+test("pinned manifest entries replace the VM's stale repositories list, unpinned ones are skipped", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", pin(1)], ["beta", ""], ["gamma_2", pin(2)]]);
+  seed({
+    plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: [{ id: "stale", path: "/repos/stale", commit: pin(9) }] } } } },
+  });
+  const first = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(first.status, 0, first.stderr);
+  const config = JSON.parse(read());
+  assert.deepEqual(repositoriesOf(config), [
+    { id: "alpha", path: "/repos/alpha", commit: pin(1) },
+    { id: "gamma_2", path: "/repos/gamma_2", commit: pin(2) },
+  ]);
+  const second = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), repositoriesOf(config));
+});
+
+test("a manifest without pins keeps the VM's repositories list", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", ""], ["beta", ""]]);
+  const mine = [{ id: "hand", path: "/repos/hand", commit: pin(7) }];
+  seed({ plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: mine } } } } });
+  const result = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), mine);
+  // No manifest at all behaves the same.
+  const none = run({ LIVEX_REPOS_MANIFEST: path.join(state, "absent.json") });
+  assert.equal(none.status, 0, none.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), mine);
+});
+
+test("the manifest shipped in the release dir is the default source", (t) => {
+  const { state, run, read } = fixture(t);
+  const release = path.join(state, "release-dir");
+  fs.mkdirSync(path.join(release, "config"), { recursive: true });
+  fs.symlinkSync(path.join(nativeDir, "agents"), path.join(release, "agents"));
+  fs.copyFileSync(
+    path.join(nativeDir, "config", "openclaw.fragment.json5"),
+    path.join(release, "config", "openclaw.fragment.json5"),
+  );
+  writeManifest(path.join(release, "repos"), [["alpha", pin(3)]]);
+  const result = run({ LIVEX_NATIVE_DIR: release, LIVEX_PLUGIN_ROOT: nativeDir, LIVEX_REPOS_MANIFEST: undefined });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), [{ id: "alpha", path: "/repos/alpha", commit: pin(3) }]);
+});
+
+test("the change preview shows the managed repositories list and writes nothing", (t) => {
+  const { state, run, read, seed, configPath } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", pin(1)], ["beta", pin(2)]]);
+  seed({ plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: [{ id: "old", path: "/repos/old", commit: pin(9) }] } } } } });
+  const before = read();
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /preview: repositories: 2 pinned from the manifest \(replaces the 1 the live config lists\)/);
+  assert.match(result.stdout, /^  alpha @ 111111111111$/m);
+  assert.match(result.stdout, /~ plugins\.entries\.livex-gcp-readonly\.config\.repositories: \[1 items #[0-9a-f]{8}\] -> \[2 items #[0-9a-f]{8}\]/);
+  assert.equal(fs.readFileSync(configPath, "utf8"), before);
+});
+
+test("a malformed manifest stops apply before anything is written", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  seed({ agents: {} });
+  const before = read();
+  for (const rows of [[["alpha", "abc"]], [["alpha", pin(1)], ["alpha", pin(2)]], [["bad id", pin(1)]]]) {
+    const manifest = writeManifest(state, rows);
+    const check = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_REPOS_MANIFEST: manifest });
+    assert.notEqual(check.status, 0, "pre-stop check refuses");
+    const apply = run({ LIVEX_REPOS_MANIFEST: manifest });
+    assert.notEqual(apply.status, 0);
+    assert.match(apply.stderr, /manifest\.json/);
+    assert.equal(read(), before);
   }
 });

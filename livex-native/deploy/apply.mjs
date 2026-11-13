@@ -10,7 +10,8 @@
 //
 // Test overrides (defaults are the container paths):
 //   LIVEX_NATIVE_DIR, OPENCLAW_STATE_DIR, OPENCLAW_CONFIG_PATH, LIVEX_JSON5_FROM,
-//   LIVEX_OPENCLAW_CMD (the openclaw CLI as "cmd arg ..."), LIVEX_SLACK_TARBALL.
+//   LIVEX_OPENCLAW_CMD (the openclaw CLI as "cmd arg ..."), LIVEX_SLACK_TARBALL,
+//   LIVEX_REPOS_MANIFEST (default: $LIVEX_NATIVE_DIR/repos/manifest.json).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -46,7 +47,7 @@ if (process.env.LIVEX_UNMANAGED_AGENTS && process.env.LIVEX_LIVE_GUARD !== "1") 
 const unmanagedAgents = parseUnmanagedAgents(process.env.LIVEX_UNMANAGED_AGENTS);
 
 const GCP_PLUGIN = "livex-gcp-readonly";
-const managedPluginIds = [GCP_PLUGIN, "livex-slack-summary"];
+const managedPluginIds = [GCP_PLUGIN, "livex-slack-summary", "livex-investigations-lite"];
 const GATEWAY_PORT = 18789;
 // Host-side port the Control UI tunnel uses (remote.sh passes it; 18790 on the live
 // install). Defaults to the container port.
@@ -66,7 +67,8 @@ const priorOncallWildcard = {
 // `bindings` is handled separately: see mergeFragmentBindings.
 const UNION_ARRAYS = new Set(["plugins.allow", "plugins.load.paths"]);
 // Arrays an operator may fill in on the VM; a non-empty existing value is kept.
-const KEEP_IF_SET = new Set([`plugins.entries.${GCP_PLUGIN}.config.repositories`]);
+const REPOSITORIES_KEY = `plugins.entries.${GCP_PLUGIN}.config.repositories`;
+const KEEP_IF_SET = new Set([REPOSITORIES_KEY]);
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -103,6 +105,33 @@ function mergeFragmentBindings(current, fragment) {
   );
   return [...kept, ...clone(shipped)];
 }
+
+// Source snapshots (repos/manifest.json, written by `make repos_pin`). Entries with a
+// 40-hex commit become `{ id, path: "/repos/<id>", commit }`. With at least one pin the
+// list is MANAGED: it replaces whatever the VM has. With none, the VM's list is kept.
+function pinnedRepositories() {
+  const file = process.env.LIVEX_REPOS_MANIFEST ?? path.join(nativeDir, "repos", "manifest.json");
+  if (!fs.existsSync(file)) return [];
+  const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!Array.isArray(entries) || entries.length > 64) {
+    throw new Error(`${file} must be a JSON array of at most 64 entries.`);
+  }
+  const seen = new Set();
+  const pinned = [];
+  for (const entry of entries) {
+    const ok =
+      isObject(entry) &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(entry.id ?? "") &&
+      typeof entry.branch === "string" &&
+      /^([0-9a-f]{40})?$/.test(entry.commit ?? "x");
+    if (!ok) throw new Error(`${file}: every entry needs a valid id, a branch and a commit that is empty or 40 hex.`);
+    if (seen.has(entry.id)) throw new Error(`${file}: duplicate id ${entry.id}.`);
+    seen.add(entry.id);
+    if (entry.commit) pinned.push({ id: entry.id, path: `/repos/${entry.id}`, commit: entry.commit });
+  }
+  return pinned;
+}
+let renderedRepositories = { pinned: [], replaced: undefined };
 
 function readJson5(file) {
   return json5.parse(fs.readFileSync(file, "utf8"));
@@ -279,6 +308,17 @@ function buildNextConfig(fragment, ids) {
 
   for (const id of ids) next.agents.entries[id].workspace = workspaceFor(id);
 
+  const pinnedRepos = pinnedRepositories();
+  if (pinnedRepos.length > 0) {
+    const had = current.plugins?.entries?.[GCP_PLUGIN]?.config?.repositories;
+    next.plugins ??= {};
+    next.plugins.entries ??= {};
+    next.plugins.entries[GCP_PLUGIN] ??= {};
+    next.plugins.entries[GCP_PLUGIN].config ??= {};
+    next.plugins.entries[GCP_PLUGIN].config.repositories = pinnedRepos;
+    renderedRepositories = { pinned: pinnedRepos, replaced: Array.isArray(had) ? had.length : 0 };
+  }
+
   // Keep one load path per managed plugin from this release.
   const paths = (next.plugins?.load?.paths ?? []).filter(
     (p) => !managedPluginIds.some((id) => p.endsWith(`/plugins/${id}`)),
@@ -447,6 +487,13 @@ function printPreview(live, next) {
   );
   for (const p of shared.slice(0, PREVIEW_CAP)) console.log(`  ${p}`);
   if (shared.length > PREVIEW_CAP) console.log(`  ... and ${shared.length - PREVIEW_CAP} more`);
+  if (renderedRepositories.pinned.length > 0) {
+    const { pinned, replaced } = renderedRepositories;
+    console.log(
+      `preview: repositories: ${pinned.length} pinned from the manifest (replaces the ${replaced} the live config lists)`,
+    );
+    for (const repo of pinned.slice(0, PREVIEW_CAP)) console.log(`  ${repo.id} @ ${repo.commit.slice(0, 12)}`);
+  }
   console.log("preview: end (read-only; nothing was written; plugin installs that apply runs first are not reflected)");
 }
 

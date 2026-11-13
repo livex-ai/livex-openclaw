@@ -12,7 +12,7 @@ ARG SLACK_PLUGIN_INTEGRITY
 LABEL org.opencontainers.image.revision=${SOURCE_SHA}
 USER root
 # python3 runs the plugin's log-paging helper. git is for livex_repository_read
-# once repositories are configured (see deploy/README.md); unused while empty.
+# once repositories are pinned (repos/README.md); unused while the list is empty.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 git \
     && rm -rf /var/lib/apt/lists/*
 # Google Cloud CLI Debian images install the full SDK at this documented path.

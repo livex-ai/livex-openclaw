@@ -20,6 +20,26 @@ const PRIORITY_LABELS = new Map([
   ["low", "Low"],
   ["unknown", "Unknown"],
 ]);
+// Stock Slack outbound cannot send legacy attachment colour bars, so priority
+// colour is a leading emoji. Low and Unknown share the neutral marker.
+const PRIORITY_MARKERS = new Map([
+  ["critical", "\u{1F534}"],
+  ["high", "\u{1F534}"],
+  ["medium", "\u{1F7E1}"],
+  ["low", "\u26AA"],
+  ["unknown", "\u26AA"],
+]);
+const RESOLVED_MARKER = "\u{1F7E2}";
+const REQUIRED_KEYS = [
+  "priority",
+  "provisional",
+  "impact",
+  "nextAction",
+  "owner",
+  "checkedWindow",
+  "evidenceUrl",
+];
+const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "resolved"]);
 
 function isBoundedLine(value: unknown, maxLength: number): value is string {
   return (
@@ -85,13 +105,16 @@ function readSummary(text: string) {
   }
 
   const fields = value as Record<string, unknown>;
-  const { priority, provisional, impact, nextAction, owner, checkedWindow, evidenceUrl } = fields;
+  const { priority, provisional, impact, nextAction, owner, checkedWindow, evidenceUrl, resolved } =
+    fields;
   const priorityLabel = typeof priority === "string" ? PRIORITY_LABELS.get(priority) : undefined;
   const link = readEvidenceLink(evidenceUrl);
   if (
-    Object.keys(fields).length !== 7 ||
+    !Object.keys(fields).every((key) => ALLOWED_KEYS.has(key)) ||
+    !REQUIRED_KEYS.every((key) => key in fields) ||
     !priorityLabel ||
     typeof provisional !== "boolean" ||
+    (resolved !== undefined && typeof resolved !== "boolean") ||
     !isBoundedLine(impact, 240) ||
     !isBoundedLine(nextAction, 120) ||
     !isBoundedLine(owner, 50) ||
@@ -101,9 +124,14 @@ function readSummary(text: string) {
     return undefined;
   }
 
+  const priorityText =
+    provisional && priority !== "unknown" ? `${priorityLabel} (provisional)` : priorityLabel;
+  const headline =
+    resolved === true
+      ? `${RESOLVED_MARKER} Resolved \u00B7 was ${priorityText}`
+      : `${PRIORITY_MARKERS.get(priority as string)} Priority: ${priorityText}`;
   return {
-    priority:
-      provisional && priority !== "unknown" ? `${priorityLabel} (provisional)` : priorityLabel,
+    headline,
     impact,
     nextAction,
     owner,
@@ -168,7 +196,7 @@ export default definePluginEntry({
           channelData: {
             slack: {
               blocks: [
-                { type: "header", text: plainText(`Priority: ${summary.priority}`) },
+                { type: "header", text: plainText(summary.headline) },
                 section(`Impact: ${summary.impact}`),
                 section(`Next action: ${summary.nextAction}\nOwner: ${summary.owner}`),
                 section(`Evidence: ${summary.checkedWindow}`),
