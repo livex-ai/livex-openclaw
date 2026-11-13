@@ -1,6 +1,11 @@
-# LiveX on stock OpenClaw
+# LiveX on OpenClaw
 
-This folder runs **LiveX Debugger** on unmodified OpenClaw.
+This folder runs **LiveX Debugger** on the official OpenClaw release. This repo
+changes no OpenClaw core source. The deploy image has one build-time patch to the
+official `@openclaw/slack` plugin package (`deploy/patch-slack-navigation.mjs`, a
+passive URL-button guard); it must be re-verified on each Slack plugin version
+bump (see [deploy instructions](deploy/README.md)). `scripts/setup.sh` installs
+the unpatched package.
 
 | Part | Path | What it is |
 | --- | --- | --- |
@@ -16,8 +21,9 @@ Use the OpenClaw CLI on Node 24.16+ and a running Gateway. Configure `gcloud`
 with read access to the intended project.
 
 1. Run `livex-native/scripts/setup.sh` to inspect the commands. Add `--apply`
-   to install Codex, link the two LiveX plugins, and add `debugger` with its
-   workspace. Sign in for that agent with
+   to install Codex and Slack, link the two LiveX plugins, and add `debugger`
+   with its workspace. Run it in a terminal: plugin installs ask for capability
+   consent. Sign in for that agent with
    `openclaw models auth login --provider openai --agent debugger`.
 2. Merge `config/openclaw.fragment.json5` into `~/.openclaw/openclaw.json`.
    Set the Slack bot and app tokens plus `GCLOUD_*`, `CLOUDSDK_CONFIG`,
@@ -65,6 +71,13 @@ reports unavailable evidence and external case updates explicitly.
 and rollback. With `LIVEX_ON_DEV_VM=1`, it stages a separate Gateway on port
 18789 with Slack disabled. The existing DEV bot keeps serving. Use a dedicated
 test VM and its own app for Slack verification. See [deploy instructions](deploy/README.md).
+
+From the repository root, `make deploy_dev` deploys the checked-out, pushed HEAD to the
+live Slack-serving Gateway on the DEV VM (`make deploy_dev CONFIRM=livex-openclaw-dev`;
+`make deploy_dev_dry` prints the commands only). `make` leaves the separately
+shipped `oncall` agent untouched (`LIVEX_UNMANAGED_AGENTS=oncall`; set it empty for
+strict mode). The first run adopts the hand-made install. See
+[the deploy README](deploy/README.md#deploy-the-live-dev-gateway-make-deploy_dev).
 
 The pinned OpenClaw 2026.10.5 image uses bounded, unpaged GCP log reads. Paging
 and recovery are available on hosts that expose the V2 state API.
@@ -206,7 +219,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 | --- | --- |
 | In-place report edits (the `livex-oncall-reports` plugin and Slack edit patches) | An upstream edit-own-reply hook in the Slack plugin |
 | Investigation memory and catalog (`livex-investigations`, `slack_investigation_record`, `investigations.md`) | A tool plugin that stores records in plugin state (`openKeyedStoreV2`) and exposes lookup and record tools. Pre-turn history injection needs an upstream context hook |
-| VM deploy pipeline (`deploy/gcp-vm/`) | Replaced by the much smaller `deploy/` here (test VM, official image, no source build). A production pipeline can live in an ops repo |
+| VM deploy pipeline (`deploy/gcp-vm/`) | Replaced by the much smaller `deploy/` here (test VM, official image, no OpenClaw source build; one build-time Slack package patch). A production pipeline can live in an ops repo |
 | About 8k lines of core patches (memory-core, Slack dispatch, agent tool context, Codex usage projection, session lineage) | Upstream PRs, one generic hook per need. One example is `runtime.agent.session.withDescendantSessionRead`, which the plugin's `child` recovery uses when the host provides it |
 
 Without that hook, `/livex-gcp-recover child ...` is refused with a clear

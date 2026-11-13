@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Deploy a reviewed livex-native bundle to the test VM or stage it on DEV.
+# Deploy a reviewed livex-native bundle to the test VM, stage it on DEV, or (live
+# mode) deploy the Slack-serving native Gateway on DEV.
 # Runs on the operator's Mac. See deploy/README.md for the one-time VM setup.
 #
 #   bash livex-native/deploy/deploy.sh FULL_SHA [--dry-run]
 #
 # --dry-run prints every gcloud command and never runs gcloud.
+# LIVEX_DEV_LIVE=1 targets the LIVE install on livex-openclaw-dev (normally via
+# `make deploy_dev`, which also checks the worktree and that HEAD is pushed).
 set -euo pipefail
 umask 077
 
@@ -34,9 +37,28 @@ git -C "$repo" ls-files --error-unmatch -- livex-native/deploy/deploy.sh >/dev/n
 # with channel startup disabled and leaves the running DEV Gateway alone.
 on_dev=0
 [[ ${LIVEX_ON_DEV_VM:-0} == 1 ]] && on_dev=1
+live=0
+[[ ${LIVEX_DEV_LIVE:-0} == 1 ]] && live=1
+# Agents the live deploy must leave untouched (LIVE mode only; empty = strict).
+unmanaged=${LIVEX_UNMANAGED_AGENTS:-}
+if [[ -n $unmanaged ]]; then
+  ((live)) || { echo "LIVEX_UNMANAGED_AGENTS only applies with LIVEX_DEV_LIVE=1." >&2; exit 1; }
+  [[ $unmanaged =~ ^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*){0,4}$ ]] \
+    || { echo "LIVEX_UNMANAGED_AGENTS must be 1 to 5 comma-separated agent ids like oncall,other." >&2; exit 1; }
+fi
 project=ai-mvp-dv
 zone=${LIVEX_TEST_ZONE:-us-central1-a}
-if ((on_dev)); then
+if ((live)); then
+  # LIVE: fixed VM, project and root; it cannot be mixed with the other targets.
+  ((!on_dev)) || { echo "LIVEX_DEV_LIVE=1 cannot be combined with LIVEX_ON_DEV_VM=1." >&2; exit 1; }
+  [[ -z ${LIVEX_TEST_VM:-} ]] || { echo "LIVEX_DEV_LIVE=1 cannot be combined with LIVEX_TEST_VM." >&2; exit 1; }
+  vm=livex-openclaw-dev
+  # Same gate as `make deploy_dev`, so a direct call cannot skip it.
+  if [[ $dry == 0 && ${CONFIRM:-} != livex-openclaw-dev ]]; then
+    echo "LIVEX_DEV_LIVE=1 restarts the live Slack Gateway; set CONFIRM=livex-openclaw-dev (or use make deploy_dev)." >&2
+    exit 1
+  fi
+elif ((on_dev)); then
   [[ -z ${LIVEX_TEST_VM:-} ]] || { echo "LIVEX_ON_DEV_VM=1 cannot be combined with LIVEX_TEST_VM." >&2; exit 1; }
   vm=livex-openclaw-dev
 else
@@ -61,14 +83,26 @@ else
 fi
 compose_project=livex-openclaw-test
 default_timeout=120
+host_port=18789
 if ((on_dev)); then
   compose_project=livex-openclaw-stage
   default_timeout=300
+elif ((live)); then
+  compose_project=livex-openclaw-native-dev
+  default_timeout=300
+  host_port=18790
 fi
 root=/opt/$compose_project
 health_timeout=${LIVEX_HEALTH_TIMEOUT:-$default_timeout}
 [[ $health_timeout =~ ^[1-9][0-9]{0,3}$ ]] && ((health_timeout <= 3600)) \
   || { echo "LIVEX_HEALTH_TIMEOUT must be a whole number of seconds from 1 to 3600." >&2; exit 2; }
+# Optional free-space floor (GiB) for remote.sh; forwarded only when set.
+min_free_arg=""
+if [[ -n ${LIVEX_MIN_FREE_GIB:-} ]]; then
+  [[ $LIVEX_MIN_FREE_GIB =~ ^[0-9]{1,4}$ ]] \
+    || { echo "LIVEX_MIN_FREE_GIB must be a whole number of GiB from 0 to 9999." >&2; exit 2; }
+  min_free_arg=" LIVEX_MIN_FREE_GIB=$LIVEX_MIN_FREE_GIB"
+fi
 
 run() {
   printf '+'
@@ -85,9 +119,15 @@ hash=$(shasum -a 256 "$archive" | cut -d ' ' -f1)
 echo "Archive: livex-native @ $sha (sha256 $hash)"
 echo "Target: $vm ($project, $zone), project $compose_project, readiness timeout ${health_timeout}s"
 if ((on_dev)); then echo "DEV staging: the current DEV Gateway keeps serving Slack."; fi
+if ((live)); then echo "LIVE: this deploys the Slack-serving Gateway on $vm ($root, loopback port $host_port). It restarts briefly; a failed deploy rolls back. Unmanaged agents left untouched: ${unmanaged:-none (strict)}."; fi
 
 upload="livex-deploy-$sha.tgz"
-if ((on_dev)); then
+if ((live)); then
+  # 1. The live root and its runtime.env already exist (hand-made, then adopted by
+  # remote.sh); only make sure the unpack directory exists. Nothing is created
+  # outside $root.
+  run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="sudo test -d $root && sudo test -r $root/runtime.env && sudo install -d -m 0755 $root/releases"
+elif ((on_dev)); then
   # 1. Bootstrap the separate staging root. Send reviewed code over stdin so it
   # does not depend on the remote login shell's quoting.
   bootstrap=$(git -C "$repo" show "$sha:livex-native/deploy/dev-bootstrap.sh")
@@ -101,12 +141,19 @@ run gcloud compute scp "${location[@]}" ${scp_extra[@]+"${scp_extra[@]}"} "$arch
 # 3. Verify, unpack, and run remote.sh under the deploy lock. sha and hash are
 #    validated hex, so they are safe to embed.
 inner='set -eu; test -f "$UP"; echo "$HASH  $UP" | sha256sum -c - >/dev/null; rel='"$root"'/releases/$SHA; if [ ! -d "$rel" ]; then tmp=$(mktemp -d '"$root"'/releases/.incoming.XXXXXX); trap '\''rm -rf "$tmp"'\'' EXIT; tar -xzf "$UP" -C "$tmp"; mv "$tmp" "$rel"; trap - EXIT; fi; rm -f "$UP"; exec bash "$rel/livex-native/deploy/remote.sh" "$SHA"'
-remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_HEALTH_TIMEOUT=$health_timeout bash -c $(printf %q "$inner")"
+remote_cmd="up=\"\$HOME/$upload\"; sudo flock -n $root/deploy.lock env UP=\"\$up\" SHA=$sha HASH=$hash LIVEX_ON_DEV_VM=$on_dev LIVEX_DEV_LIVE=$live LIVEX_UNMANAGED_AGENTS=$unmanaged LIVEX_HEALTH_TIMEOUT=$health_timeout$min_free_arg bash -c $(printf %q "$inner")"
 run gcloud compute ssh "$vm" "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"} --command="$remote_cmd"
 if [[ $dry == 1 ]]; then echo "Dry run: nothing was uploaded or changed."; exit 0; fi
 
 lx="sudo docker compose --project-name $compose_project -f $root/current-release/livex-native/deploy/compose.yaml --env-file $root/compose.env"
 echo
+if ((live)); then
+  echo "Live Gateway is up on $vm (loopback $host_port). Codex sign-ins carry over in its state; if an agent asks again, sign it in (approve at https://auth.openai.com/codex/device):"
+  for agent in debugger oncall; do
+    printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q -- -t\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent $agent"
+  done
+  exit 0
+fi
 echo "Next, once: sign Codex in for the debugger agent (approve the code at https://auth.openai.com/codex/device):"
 printf '  gcloud compute ssh %s' "$vm"; printf ' %q' "${location[@]}" ${ssh_extra[@]+"${ssh_extra[@]}"}; printf -- " --command=%q -- -t\n" "$lx exec gateway node /app/openclaw.mjs models auth login --provider openai --method device-code --agent debugger"
 if ((on_dev)); then

@@ -115,7 +115,8 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
     SLACK_PLUGIN_SPEC: slackSpec,
     LIVEX_SLACK_TARBALL: tarball,
   };
-  const run = () => spawnSync(process.execPath, [applyPath], { env, encoding: "utf8" });
+  const run = (extra = {}) =>
+    spawnSync(process.execPath, [applyPath], { env: { ...env, ...extra }, encoding: "utf8" });
   const read = () => fs.readFileSync(configPath, "utf8");
   const seed = (config) => fs.writeFileSync(configPath, JSON.stringify(config));
   const applyTwice = () => {
@@ -339,4 +340,290 @@ test("the fragment clears every deployed secret from the Codex process environme
     [],
     "add these to plugins.entries.codex.config.appServer.clearEnv",
   );
+});
+
+test("live guard refuses to drop a serving LiveX agent the release no longer ships", (t) => {
+  const { configPath, oncallWorkspace, run, read, seed } = fixture(t);
+  seed(priorConfig(priorOncall(oncallWorkspace), []));
+  const before = read();
+  const live = { LIVEX_LIVE_GUARD: "1" };
+  for (const extra of [live, { ...live, LIVEX_CHECK_AGENTS_ONLY: "1" }]) {
+    const result = run(extra);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /oncall.+does not ship/);
+    assert.equal(read(), before);
+    assert.equal(fs.existsSync(`${configPath}.pre-regression`), false);
+  }
+  // A custom id is protected when its workspace holds a shipped-skills manifest.
+  const custom = fixture(t);
+  fs.mkdirSync(path.join(custom.state, "workspace-extra", "skills"), { recursive: true });
+  fs.writeFileSync(path.join(custom.state, "workspace-extra", "skills", ".livex-shipped"), "x\n");
+  custom.seed({ agents: { entries: { extra: { workspace: path.join(custom.state, "workspace-extra") } } } });
+  assert.equal(custom.run(live).status, 1);
+  // Without the guard (staging, test VM) the same state is accepted as before.
+  assert.equal(custom.run().status, 0);
+  // A fresh state has nothing to drop, so the live check passes.
+  assert.equal(fixture(t).run(live).status, 0);
+  // A release that ships oncall passes the check against a state that serves it.
+  const optIn = fixture(t, { includeOncall: true });
+  optIn.seed(priorConfig(priorOncall(optIn.oncallWorkspace), []));
+  const checked = optIn.run({ ...live, LIVEX_CHECK_AGENTS_ONLY: "1" });
+  assert.equal(checked.status, 0, checked.stderr);
+});
+
+// Mirrors the live DEV config: oncall (stock entry, installed workspace with a shipped-skills
+// manifest) and debugger, whose only binding is the default-account Slack wildcard.
+function liveLike(t, oncallBindings = []) {
+  const f = fixture(t);
+  const oncall = priorOncall(f.oncallWorkspace);
+  const skills = path.join(f.oncallWorkspace, "skills");
+  fs.mkdirSync(path.join(skills, "debug"), { recursive: true });
+  fs.writeFileSync(path.join(skills, "debug", "SKILL.md"), "operator edited\n");
+  fs.writeFileSync(path.join(skills, ".livex-shipped"), "debug\ninvestigate-alerts\n");
+  fs.writeFileSync(path.join(f.oncallWorkspace, "AGENTS.md"), "oncall agents file\n");
+  f.seed({
+    agents: {
+      ownership: "explicit",
+      defaults: { systemAgent: { agentId: "debugger" } },
+      entries: { oncall, debugger: { name: "LiveX Debugger" } },
+    },
+    bindings: [slackRoute("debugger"), ...oncallBindings],
+  });
+  const workspace = () => {
+    const out = {};
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else out[path.relative(f.oncallWorkspace, full)] = fs.readFileSync(full, "utf8");
+      }
+    };
+    walk(f.oncallWorkspace);
+    return out;
+  };
+  return { ...f, workspace };
+}
+
+test("LIVEX_UNMANAGED_AGENTS=oncall leaves the oncall entry, workspace and routes untouched", (t) => {
+  const { run, read, workspace } = liveLike(t, [slackRoute("oncall", "C0OPTIN")]);
+  const before = JSON.parse(read());
+  const filesBefore = workspace();
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: "oncall" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /live guard: leaving unmanaged agent\(s\) untouched: oncall/);
+  const after = JSON.parse(read());
+  assert.deepEqual(after.agents.entries.oncall, before.agents.entries.oncall);
+  assert.deepEqual(workspace(), filesBefore, "no copy, prune or manifest write in the oncall workspace");
+  assert.deepEqual(
+    after.bindings.filter((b) => b.agentId === "oncall"),
+    before.bindings.filter((b) => b.agentId === "oncall"),
+  );
+  assert.equal(after.agents.defaults.systemAgent.agentId, "debugger");
+  assert.equal(after.agents.ownership, "explicit");
+  assert.ok(after.bindings.some((b) => b.agentId === "debugger"), "debugger route kept");
+});
+
+test("an unmanaged oncall wildcard is not retired; the ambiguity stops apply instead", (t) => {
+  const { run, read } = liveLike(t, [slackRoute("oncall")]);
+  const before = read();
+  const guard = { LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: "oncall" };
+  const result = run(guard);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Slack wildcard.+shadow.+Debugger/);
+  assert.equal(read(), before);
+});
+
+function treeDigest(dir) {
+  const hash = createHash("sha256");
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(d, e.name);
+      hash.update(`${path.relative(dir, full)}|${e.isDirectory() ? "d" : "f"}|`);
+      if (e.isDirectory()) walk(full);
+      else hash.update(fs.readFileSync(full));
+    }
+  };
+  walk(dir);
+  return hash.digest("hex");
+}
+
+test("check-only runs the config preparation and stops on an unmanaged oncall wildcard, writing nothing", (t) => {
+  const { state, run } = liveLike(t, [slackRoute("oncall")]);
+  const digest = treeDigest(state);
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_UNMANAGED_AGENTS: "oncall" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /Slack wildcard.+shadow.+Debugger/);
+  assert.equal(treeDigest(state), digest, "zero writes under the state dir");
+});
+
+test("check-only prints a secret-safe preview and writes nothing; a standalone copy of two files works", (t) => {
+  const { state, configPath, run, seed, read } = liveLike(t, [slackRoute("oncall", "C0OPTIN")]);
+  const config = JSON.parse(read());
+  config.channels = { slack: { enabled: true, botToken: "xoxb-LITERALSECRET", appToken: "xapp-LITERALSECRET" } };
+  config.gateway = { auth: { mode: "token", token: "LITERALGATEWAYSECRET" } };
+  seed(config);
+  const digest = treeDigest(state);
+  const extra = {
+    LIVEX_LIVE_GUARD: "1",
+    LIVEX_CHECK_AGENTS_ONLY: "1",
+    LIVEX_UNMANAGED_AGENTS: "oncall",
+    SLACK_BOT_TOKEN: "xoxb-ENVSECRET",
+    SLACK_APP_TOKEN: "xapp-ENVSECRET",
+  };
+  const result = run(extra);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(treeDigest(state), digest, "zero writes under the state dir");
+  const out = result.stdout;
+  assert.doesNotMatch(out + result.stderr, /LITERAL|ENVSECRET|xoxb|xapp/);
+  assert.match(out, /^preview: apply would change \d+ path\(s\)/m);
+  assert.match(out, /^ {2}~ channels\.slack\.botToken: <changed> -> <changed>$/m);
+  assert.match(out, /^ {2}~ gateway\.auth\.token: <changed> -> <changed>$/m);
+  assert.match(out, /^ {2}\+ agents\.entries\.debugger\.model = "/m);
+  assert.match(out, /^ {2}\+ plugins\.entries\.livex-gcp-readonly\./m);
+  assert.match(out, /^ {2}~ agents\.entries\.debugger\.workspace|^ {2}\+ agents\.entries\.debugger\.workspace/m);
+  assert.match(out, /^preview: shared settings oncall rely on .*: \d+ changed$/m);
+  assert.match(out, /^ {2}channels\.slack\.botToken$/m);
+  assert.doesNotMatch(out, /agents\.entries\.oncall/, "the unmanaged agent's entry is not in the preview");
+  assert.match(out, /^preview: end \(read-only/m);
+  // Deterministic.
+  assert.equal(run(extra).stdout, out);
+  // Standalone: only apply.mjs and the fragment, as the live container check uses them.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "livex-preview-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, "deploy"));
+  fs.mkdirSync(path.join(dir, "config"));
+  fs.copyFileSync(applyPath, path.join(dir, "deploy", "apply.mjs"));
+  fs.copyFileSync(
+    path.join(nativeDir, "config", "openclaw.fragment.json5"),
+    path.join(dir, "config", "openclaw.fragment.json5"),
+  );
+  const alone = spawnSync(process.execPath, [path.join(dir, "deploy", "apply.mjs")], {
+    env: {
+      LIVEX_NATIVE_DIR: dir,
+      OPENCLAW_STATE_DIR: state,
+      OPENCLAW_CONFIG_PATH: configPath,
+      LIVEX_JSON5_FROM: json5From,
+      ...extra,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(alone.status, 0, alone.stderr);
+  assert.match(alone.stdout, /^preview: apply would change/m);
+  assert.equal(treeDigest(state), digest);
+});
+
+test("LIVEX_UNMANAGED_AGENTS is refused without the live guard", (t) => {
+  const { run } = liveLike(t);
+  const result = run({ LIVEX_UNMANAGED_AGENTS: "oncall" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /only valid with LIVEX_LIVE_GUARD=1/);
+});
+
+test("the unmanaged list never excuses another dropped LiveX agent", (t) => {
+  const { state, run, read, seed } = liveLike(t);
+  const config = JSON.parse(read());
+  const workspace = path.join(state, "workspace-extra");
+  fs.mkdirSync(path.join(workspace, "skills"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "skills", ".livex-shipped"), "x\n");
+  config.agents.entries.extra = { workspace };
+  seed(config);
+  const before = read();
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: "oncall" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /extra.+does not ship/);
+  assert.doesNotMatch(result.stderr, /agent\(s\) oncall/);
+  assert.equal(read(), before);
+});
+
+test("a listed agent that the release ships is a configuration error", (t) => {
+  const { run, read } = liveLike(t);
+  const before = read();
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: "oncall,debugger" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /lists debugger, but this release ships and manages it/);
+  assert.equal(read(), before);
+});
+
+test("a malformed LIVEX_UNMANAGED_AGENTS is rejected", (t) => {
+  const { run, read } = liveLike(t);
+  const before = read();
+  for (const bad of ["Oncall", "oncall,", ",oncall", "on call", "a,b,c,d,e,f", "1abc", "on_call"]) {
+    const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: bad });
+    assert.equal(result.status, 1, bad);
+    assert.match(result.stderr, /LIVEX_UNMANAGED_AGENTS must be/, bad);
+    assert.equal(read(), before);
+  }
+});
+
+const ORIGINS = (...ports) => ports.flatMap((p) => [`http://127.0.0.1:${p}`, `http://localhost:${p}`]);
+
+test("Control UI origins cover the container and host ports and keep operator entries", (t) => {
+  // Live-like: both pairs already there, plus an operator origin. Nothing changes.
+  const live = liveLike(t);
+  const seeded = JSON.parse(live.read());
+  const operator = "https://ops.example.test";
+  seeded.gateway = { controlUi: { allowedOrigins: [...ORIGINS(18789, 18790), operator] } };
+  live.seed(seeded);
+  const kept = live.run({ LIVEX_LIVE_GUARD: "1", LIVEX_UNMANAGED_AGENTS: "oncall", LIVEX_HOST_PORT: "18790" });
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.deepEqual(JSON.parse(live.read()).gateway.controlUi.allowedOrigins, [...ORIGINS(18789, 18790), operator]);
+  // The preview shows no change for the origins.
+  const preview = live.run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_UNMANAGED_AGENTS: "oncall", LIVEX_HOST_PORT: "18790" });
+  assert.doesNotMatch(preview.stdout, /allowedOrigins/);
+  // Old install (container-port pair only) gains the host-port pair after the existing ones.
+  const old = liveLike(t);
+  const cfg = JSON.parse(old.read());
+  cfg.gateway = { controlUi: { allowedOrigins: [operator, ...ORIGINS(18789)] } };
+  old.seed(cfg);
+  assert.equal(old.run({ LIVEX_HOST_PORT: "18790" }).status, 0);
+  assert.deepEqual(JSON.parse(old.read()).gateway.controlUi.allowedOrigins, [operator, ...ORIGINS(18789, 18790)]);
+  // Fresh state: both pairs. Stage/test (host port 18789 or unset): the container pair only.
+  const fresh = fixture(t);
+  assert.equal(fresh.run({ LIVEX_HOST_PORT: "18790" }).status, 0);
+  assert.deepEqual(JSON.parse(fresh.read()).gateway.controlUi.allowedOrigins, ORIGINS(18789, 18790));
+  for (const extra of [{ LIVEX_HOST_PORT: "18789" }, {}]) {
+    const stage = fixture(t);
+    assert.equal(stage.run(extra).status, 0);
+    assert.deepEqual(JSON.parse(stage.read()).gateway.controlUi.allowedOrigins, ORIGINS(18789));
+  }
+});
+
+test("a malformed LIVEX_HOST_PORT is rejected", (t) => {
+  const { run, read } = fixture(t);
+  for (const bad of ["0", "65536", "abc", "18790x", "-1", "018790"]) {
+    const result = run({ LIVEX_HOST_PORT: bad });
+    assert.equal(result.status, 1, bad);
+    assert.match(result.stderr, /LIVEX_HOST_PORT must be a port number/);
+  }
+});
+
+test("LIVEX_PLUGIN_ROOT sets the plugin load paths for a standalone preview", (t) => {
+  const { run, read, seed } = liveLike(t);
+  const config = JSON.parse(read());
+  config.plugins = { load: { paths: ["/opt/livex-native/plugins/livex-gcp-readonly", "/opt/livex-native/plugins/livex-slack-summary"] } };
+  seed(config);
+  const preview = run({
+    LIVEX_LIVE_GUARD: "1",
+    LIVEX_CHECK_AGENTS_ONLY: "1",
+    LIVEX_UNMANAGED_AGENTS: "oncall",
+    LIVEX_PLUGIN_ROOT: "/opt/livex-native",
+  });
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.doesNotMatch(preview.stdout, /plugins\.load\.paths/);
+});
+
+test("preview masks credentials by value and never prints object contents", (t) => {
+  const { seed, run } = fixture(t);
+  seed({
+    gateway: { port: { hidden: "LEAKME4" }, controlUi: { allowedOrigins: "http://127.0.0.1:18789" } },
+    hooks: { notify: "https://hooks.slack.com/services/T0/B0/LEAKME1" },
+    upstream: { url: "https://user:LEAKME2@example.test/x" },
+    headers: { Authorization: "Bearer LEAKME3" },
+    // A type change (object -> number) must not print the object's contents.
+  });
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  for (const leak of ["LEAKME1", "LEAKME2", "LEAKME3", "LEAKME4"]) {
+    assert.ok(!result.stdout.includes(leak) && !result.stderr.includes(leak), `preview leaked ${leak}`);
+  }
 });

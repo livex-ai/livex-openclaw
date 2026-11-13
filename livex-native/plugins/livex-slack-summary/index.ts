@@ -4,7 +4,13 @@ import manifest from "./openclaw.plugin.json" with { type: "json" };
 const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V1";
 const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${SUMMARY_MARKER}[ \\t]*(?=\\r?\\n|$)`, "u");
 const MAX_EVIDENCE_URL = 1600;
-const DEBUGGER_SLACK_THREAD = /^agent:debugger:slack:channel:[cg][a-z0-9]+:thread:\d+\.\d+$/u;
+// The shipped evidence tool only produces Logs Explorer links on this host. The
+// model writes the URL, so anything else (including lookalikes) is dropped.
+const EVIDENCE_HOSTS = ["console.cloud.google.com"];
+// `agent:debugger:slack:channel:<id>:thread:<ts>`, or with the team-qualified peer
+// `channel:team:<team>:channel:<id>` that Slack workspace routing produces.
+const DEBUGGER_SLACK_THREAD =
+  /^agent:debugger:slack:channel:(?:team:[a-z0-9%._-]+:channel:)?[cg][a-z0-9]+:thread:\d+\.\d+$/u;
 const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
 const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
 const PRIORITY_LABELS = new Map([
@@ -46,6 +52,11 @@ function readEvidenceLink(value: unknown): string | null | undefined {
       !url.password &&
       escapedUrl.length <= MAX_EVIDENCE_URL
     ) {
+      // A well-formed link to any other host or port is dropped, not fatal: the
+      // card still posts without it.
+      if (!EVIDENCE_HOSTS.includes(url.hostname) || url.port !== "") {
+        return null;
+      }
       return `<${escapedUrl}|View evidence>`;
     }
   } catch {

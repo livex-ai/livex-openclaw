@@ -202,8 +202,9 @@ Full evidence report goes here.
 - Use single-line plain strings. Maximum lengths in characters are 240 for
   `impact`, 120 for `nextAction`, 50 for `owner`, and 64 for `checkedWindow`.
   Include UTC bounds and whether the evidence is fresh or saved. Use
-  `Unassigned` when ownership is unverified. Use one verified HTTPS source
-  in `evidenceUrl` or null when none is available.
+  `Unassigned` when ownership is unverified. Use only a Logs Explorer link
+  (`console.cloud.google.com`) returned by the evidence tool in `evidenceUrl`,
+  else null. The Gateway drops any other host from the card.
 - Put decisive customer impact, material uncertainty and the next action in the
   card fields. Keep identifiers, query diagnostics, secondary hypotheses and
   additional sources in the full report after the blank line. The Gateway sends
