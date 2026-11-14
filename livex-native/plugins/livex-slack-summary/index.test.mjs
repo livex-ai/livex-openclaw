@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { INVALID_SUMMARY, colorOf } from "./core.mjs";
-import { SESSION, cardOf, cardText, factsOf, linked, load, postCard, recordRead, summary } from "./test-helpers.mjs";
+import { SESSION, cardOf, cardText, factsOf, linked, load, postCard, recordOutcomes, recordRead, summary } from "./test-helpers.mjs";
 
 const sdkHook = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -54,11 +54,12 @@ const flat = (slack) => [slack.blocks[0], ...slack.attachments[0].blocks, ...sla
 const mrkdwn = (text) => ({ type: "section", text: { type: "mrkdwn", text, verbatim: true } });
 const envelope = (fields, full = evidence) => `${mark}\n${JSON.stringify(fields)}\n\n${full}`;
 // The evidence link counts only when the log tool returned it in the same session.
+// The id-scoped read is also an outcome read; three make "no client effect" possible.
 const recordLink = (sessionKey) =>
   hooks.get("after_tool_call")(
     {
       toolName: "livex_gcp_logs_read",
-      params: {},
+      params: { insertIds: ["abc123"] },
       result: { content: [], details: { project: "livex-copilot-prd", entries: [{ entryUrl: linked.evidenceUrl }] } },
     },
     { toolName: "livex_gcp_logs_read", sessionKey },
@@ -69,7 +70,7 @@ const event = {
   channel: "slack",
   sessionKey: "agent:debugger:slack:channel:c123:thread:1768996800.000001",
 };
-recordLink(event.sessionKey);
+for (let index = 0; index < 3; index += 1) recordLink(event.sessionKey);
 
 test("registered hook emits only a compact card and preserves the original evidence and route", () => {
   const text = envelope(linked);
@@ -93,14 +94,14 @@ test("registered hook emits only a compact card and preserves the original evide
             fallback: [
               "*Title:* checkout-api upstream timeouts",
               "*Priority:* \u{1F7E1} Medium",
-              "*Why:* clients affected (1 of 5 sampled) · known: no · alert: error",
+              "*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · users affected: one customer or a minority of the sample",
               `*Next action:* ${linked.nextAction} (Owner: Unassigned)`,
               `*Summary:* ${linked.summary}`,
               "*Evidence:* Logs · Checked window: 2026-01-21 12:20–12:25 UTC",
             ].join("\n"),
             blocks: [
               mrkdwn("*Priority:* \u{1F7E1} Medium"),
-              mrkdwn("*Why:* clients affected (1 of 5 sampled) · known: no · alert: error"),
+              mrkdwn("*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · users affected: one customer or a minority of the sample"),
               mrkdwn(`*Next action:* ${linked.nextAction} (Owner: Unassigned)`),
               mrkdwn(`*Summary:* ${linked.summary}`),
               mrkdwn(`*Evidence:* <${EVIDENCE_LINK}|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC`),
@@ -127,7 +128,7 @@ test("renders model fields as literal text and a computed low priority without a
   );
   const blocks = flat(render({ ...event, payload: { text } }).payload.channelData.slack);
   assert.equal(blocks[1].text.text, "*Priority:* \u26AA Low");
-  assert.equal(blocks[2].text.text, "*Why:* no client effect found (5 sampled) · known: no · alert: error");
+  assert.equal(blocks[2].text.text, "*Why:* no client effect found (5 sampled) · known: no · alert: error · no user impact found");
   assert.equal(
     blocks[4].text.text,
     "*Summary:* Model text with &lt;!channel&gt; and *\u200Dformatting*\u200D and @\u200Dhere stays literal.",
@@ -311,7 +312,7 @@ const priorityOf = (fields) =>
     .text.text;
 
 test("priority marker and written word render for every computed priority", () => {
-  // The c123 session has one recorded read: 3 of 5 affected is broad, 1 is narrow, 0 is no effect.
+  // The c123 session has three recorded outcome reads: 3 of 5 affected is broad, 1 is narrow, 0 is no effect.
   const expected = [
     [3, "*Priority:* \u{1F534} High"],
     [1, "*Priority:* \u{1F7E1} Medium"],
@@ -398,7 +399,7 @@ test("the card shows the computed priority and why", () => {
   recordRead(loaded);
   const text = cardText(postCard(loaded));
   assert.match(text, /\*Priority:\* 🟡 Medium/u);
-  assert.match(text, /\*Why:\* clients affected \(1 of 5 sampled\) · known: no · alert: error/u);
+  assert.match(text, /\*Why:\* clients affected \(1 of 5 sampled\) · known: no · alert: error · users affected: one customer or a minority of the sample/u);
   assert.equal(colorOf(cardOf(postCard(loaded))), "#D99A00");
 });
 
@@ -408,9 +409,10 @@ test("with no recorded read the effect is not verified and a user-facing alert i
   assert.match(text, /client effect not verified \(1 of 5 sampled\)/u);
 });
 
-test("a capped listing read does not block 'no effect'", () => {
+test("a capped listing read does not block 'no effect' when the outcome reads are clean", () => {
   const loaded = load();
-  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] });
+  recordOutcomes(loaded);
+  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] }, SESSION, { query: "x" });
   const text = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0 } }));
   assert.match(text, /no client effect found/u);
 });
@@ -447,14 +449,15 @@ test("a known reference is shown as inert text and an unaccepted one counts as n
   assert.doesNotMatch(hostile, /<!channel>|<https:\/\/evil/u);
 });
 
-test("alternates: the highest-rated fact set becomes the card and the rest are listed", () => {
+test("alternates: the highest-rated fact set sets the level, the main title stays, and every alternate is listed", () => {
   const loaded = load();
   recordRead(loaded);
   const alt = { ...factsOf(summary), title: "avatar sessions silent", sampleAffected: 4 };
   const text = cardText(postCard(loaded, { fields: { ...summary, alternates: [alt] } }));
-  assert.match(text, /\*Title:\* avatar sessions silent/u);
+  assert.match(text, /\*Title:\* checkout-api upstream timeouts/u);
   assert.match(text, /\*Priority:\* 🔴 High/u);
-  assert.match(text, /Also: checkout-api upstream timeouts — Medium/u);
+  assert.match(text, /rated by: avatar sessions silent/u);
+  assert.match(text, /Also: avatar sessions silent — High/u);
 });
 
 test("the priority engine registry carries the result for the memory plugin", () => {
@@ -489,16 +492,16 @@ test("alternates: a tie keeps the main fact set, and the Also line is inert plai
 
 test("the Why line shows recurring and an accepted Slack reference, cut to 300 characters", () => {
   const loaded = load();
-  recordRead(loaded);
+  recordOutcomes(loaded);
   // 200 characters; every "&" grows to "&amp;" when neutralized, so the line must be cut.
-  const ref = `https://livex.slack.com/archives/C0ALERTS1/p1768996800000001?${"&x".repeat(69)}y`;
+  const ref = `https://livexai.slack.com/archives/C0ALERTS1/p1768996800000001?${"&x".repeat(68)}y`;
   assert.equal(ref.length, 200);
   const fields = { ...summary, sampleAffected: 0, sustained: true, known: "ongoing", knownRef: ref };
   const why = cardText(postCard(loaded, { fields })).split("\n").find((line) => line.startsWith("*Why:* "));
-  assert.ok(why.startsWith("*Why:* no client effect found (5 sampled) · known: ongoing (https:‍//livex.slack.com"));
+  assert.ok(why.startsWith("*Why:* no client effect found (5 sampled) · known: ongoing (https:‍//livexai.slack.com"));
   assert.equal(why.length - "*Why:* ".length, 300);
   const short = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0, sustained: true } }));
-  assert.match(short, /\*Why:\* no client effect found \(5 sampled\) · known: no · alert: error, recurring/u);
+  assert.match(short, /\*Why:\* no client effect found \(5 sampled\) · known: no · alert: error, recurring · no user impact found; recurring/u);
   assert.match(short, /\*Priority:\* 🟡 Medium/u);
 });
 
@@ -546,4 +549,95 @@ test("a configured policy file changes the computed priority; a bad one warns an
   assert.deepEqual(broken.warnings, ["livex-slack-summary: priority policy could not be read or parsed; using the built-in default"]);
   recordRead(broken);
   assert.match(cardText(postCard(broken, { fields: { ...summary, sampleAffected: 4 } })), /\*Priority:\* 🔴 High/u);
+});
+
+// ------------------------------------------------------------ final review fixes
+
+const whyOf = (result) => cardText(result).split("\n").find((line) => line.startsWith("*Why:* "));
+
+test("the Why line ends with the rating's notes, so a discounted or raised level is visible", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 5, traffic: "test" } })),
+    "*Why:* clients affected (5 of 5 sampled) · known: no · alert: error · affected traffic is test/demo",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 0, known: "harmless", knownRef: "pattern:made-up-thing" } })),
+    "*Why:* no client effect found (5 sampled) · known: no · alert: error · known reference not accepted; no user impact found",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 0, known: "harmless", knownRef: "pattern:wyze-malformed-agent-id" } })),
+    "*Why:* no client effect found (5 sampled) · known: harmless (pattern:wyze-malformed-agent-id) · alert: error · known; discounted",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 1, traffic: "test", known: "fixed", knownRef: "LX-12525" } })),
+    "*Why:* clients affected (1 of 5 sampled) · known: fixed (LX-12525) · alert: error · affected traffic is test/demo; marked known but users still affected",
+  );
+});
+
+test("'no client effect' needs outcome reads: a capped listing and a claimed 3/0 sample is not verified", () => {
+  const loaded = load();
+  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] }, SESSION, { query: "x" });
+  const result = postCard(loaded, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } });
+  assert.match(whyOf(result), /^\*Why:\* client effect not verified \(0 of 3 sampled, fewer than 3 outcome reads\)/u);
+  assert.match(cardText(result), /\*Priority:\* 🟡 Medium/u);
+});
+
+test("three clean id-scoped reads give 'no client effect found'; a complete count is an outcome read", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  assert.match(whyOf(postCard(loaded, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /no client effect found \(3 sampled\)/u);
+  const counted = load();
+  recordOutcomes(counted, 2);
+  assert.match(whyOf(postCard(counted, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /fewer than 3 outcome reads/u);
+  recordRead(counted, { complete: true, totals: { x: 4 } }, SESSION, { mode: "count", phrases: ["x"] });
+  assert.equal(counted.plugin.readStatsFor(SESSION).outcomes, 3);
+  assert.match(whyOf(postCard(counted, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /no client effect found/u);
+});
+
+test("alternates: the card keeps the main title and facts; the highest rating sets the level and is named", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  const alt = { ...factsOf(summary), title: "avatar sessions silent", sampleAffected: 4 };
+  const other = { ...factsOf(summary), title: "quiet category", sampleAffected: 0 };
+  const result = postCard(loaded, { runId: "run-alt", fields: { ...summary, alternates: [alt, other] } });
+  const text = cardText(result);
+  assert.match(text, /\*Title:\* checkout-api upstream timeouts/u);
+  assert.match(text, /\*Priority:\* 🔴 High/u);
+  assert.equal(
+    whyOf(result),
+    "*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · rated by: avatar sessions silent · users affected: several customers or most of the sample",
+  );
+  assert.match(text, /Also: avatar sessions silent — High; quiet category — Low/u);
+  const entry = globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION);
+  assert.deepEqual(entry.primary, { signature: summary.signature, priority: "high", ruleId: "live-broad" });
+  // A tie keeps the main rating: no "rated by".
+  const tie = postCard(loaded, { fields: { ...summary, alternates: [{ ...factsOf(summary), title: "same level" }] } });
+  assert.doesNotMatch(whyOf(tie), /rated by/u);
+  assert.deepEqual(globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION).primary, { signature: summary.signature, priority: "medium", ruleId: "live-narrow" });
+});
+
+test("the attachment fallback is cut to 4000 characters, never inside a surrogate pair", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  // Every "&" grows to "&amp;", so the neutralized card is far over 4000 characters and the
+  // cut lands in the summary's emoji run; the two titles shift it by one character.
+  const lengths = [];
+  for (const tail of ["x", "xy"]) {
+    const fields = {
+      ...summary,
+      title: `${"&".repeat(118)}${tail}`,
+      nextAction: "&".repeat(300),
+      owner: "&".repeat(80),
+      summary: `${"&".repeat(200)}${"\u{1F600}".repeat(200)}`,
+      checkedWindow: "&".repeat(80),
+    };
+    const { fallback } = postCard(loaded, { fields }).payload.channelData.slack.attachments[0];
+    assert.ok(fallback.startsWith("*Title:* &amp;"));
+    assert.doesNotMatch(fallback, /[\uD800-\uDBFF]$/u);
+    assert.ok(fallback.endsWith("\u{1F600}"));
+    lengths.push(fallback.length);
+  }
+  assert.deepEqual(lengths.sort(), [3999, 4000]);
 });

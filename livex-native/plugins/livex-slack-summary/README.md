@@ -13,20 +13,26 @@ marker version (including V2) renders the short notice instead.
   is not shown; another plugin reads it to record the investigation.
 - **Priority.** The model never writes it. `computePriority` (`priority.mjs`) rates the facts
   with the policy at `priorityPolicyPath` (built-in default when unset or invalid, with one
-  warning) and this thread's recorded `livex_gcp_logs_read` outcomes: High, Medium or Low. With
-  `alternates`, the highest-rated fact set becomes the card (a tie keeps the main one) and the
-  others are listed on an `Also:` line. The result is published on
-  `globalThis[Symbol.for("livex.priority-engine.v1")].results` for the memory plugin.
+  warning) and this thread's recorded `livex_gcp_logs_read` outcomes: High, Medium or Low.
+  "No client effect" also needs `minSample` outcome reads (clean id-scoped reads or complete
+  counts). A `pattern:<id>` reference must be in the policy's `knownPatterns`, a Slack link on a
+  workspace in `slackWorkspaces`. With `alternates`, the card keeps the main title and facts, its
+  priority is the highest rating (a tie keeps the main one), the Why line names an alternate
+  that set it (`rated by:`), and the alternates are listed on an `Also:` line. The result (main
+  signature, displayed priority, the setting rule) is published on
+  `globalThis[Symbol.for("livex.priority-engine.v1")].results` for the memory plugin, again after
+  each accepted amendment.
 - **Card.** The layout of PR #1: the Title is the only top-level section (the priority buttons
   follow it, so they are always visible); Priority (emoji and level, or
-  `Resolved · was High`), Why (client effect, known state, alert severity), Next action with
+  `Resolved · was High`), Why (client effect, known state, alert severity, the policy notes), Next action with
   owner, Summary, Evidence (a `Logs` link and the checked window), the "mention this bot" hint
   and the optional `Also:` line are one Slack attachment with a colour bar (high `#D92D20`,
   medium `#D99A00`, resolved `#2E8B57`, low `#9CA3AF`). The reply
   payload sets `channelData.slack.blocks` and `channelData.slack.attachments`; a button click
   passes `blocks` and `attachments` to `respond.editMessage`. Stock Slack outbound drops
   attachments, so this needs `deploy/patch-slack-attachments.mjs` (applied by the image build;
-  without it the colour-barred part of the card is not sent). The message's fallback text is
+  without it the colour-barred part of the card is not sent; the attachment's `fallback` is cut
+  to 4000 characters so the patch keeps it). The message's fallback text is
   `<emoji> <title>`. Anything malformed becomes a short notice; the JSON and the full report
   never reach Slack.
 - **Evidence link.** Accepted only on `console.cloud.google.com`, path `/logs/query`, and only

@@ -15,5 +15,7 @@
   ],
   "raise": [
     { "id": "known-but-affected", "when": { "clientEffect": ["yes"], "known": ["fixed", "harmless"] }, "atLeast": "medium", "note": "marked known but users still affected" }
-  ]
+  ],
+  "knownPatterns": ["wyze-zendesk-suspended-requester", "wyze-malformed-agent-id", "avatar-tts-flash-v3-model"],
+  "slackWorkspaces": ["livexai"]
 }

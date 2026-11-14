@@ -32,3 +32,19 @@ test("every playbook has the sections the table depends on and valid pattern ids
     for (const [, id] of text.matchAll(/pattern:([^\s|`)]+)/gu)) assert.match(id, /^[a-z0-9-]{3,60}$/u, `${name}: ${id}`);
   }
 });
+
+test("the playbooks' Known patterns tables and the shipped policy's knownPatterns list the same ids", () => {
+  const refs = "skills/investigate-alerts/references/";
+  const inTables = new Set();
+  for (const name of fs.readdirSync(new URL(refs, dir)).filter((f) => f.endsWith(".md"))) {
+    const text = read(`${refs}${name}`);
+    const start = text.indexOf("## Known patterns");
+    if (start < 0) continue;
+    const rest = text.slice(start + 1);
+    const section = rest.slice(0, rest.search(/\n## /u) < 0 ? undefined : rest.search(/\n## /u));
+    for (const [, id] of section.matchAll(/^\|\s*`pattern:([^`]+)`/gmu)) inTables.add(id);
+  }
+  const shipped = JSON.parse(fs.readFileSync(new URL("../../config/priority-policy.json", import.meta.url), "utf8"));
+  assert.ok(inTables.size > 0);
+  assert.deepEqual([...inTables].sort(), [...shipped.knownPatterns].sort());
+});

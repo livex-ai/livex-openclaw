@@ -16,7 +16,8 @@
     },
     "reads": {
       "ok": 3,
-      "degraded": false
+      "degraded": false,
+      "outcomes": 3
     },
     "expected": "low",
     "ownerConfirmed": false
@@ -38,7 +39,8 @@
     },
     "reads": {
       "ok": 4,
-      "degraded": true
+      "degraded": true,
+      "outcomes": 0
     },
     "expected": "medium",
     "ownerConfirmed": false
@@ -60,7 +62,8 @@
     },
     "reads": {
       "ok": 0,
-      "degraded": false
+      "degraded": false,
+      "outcomes": 0
     },
     "expected": "medium",
     "ownerConfirmed": false
@@ -82,7 +85,8 @@
     },
     "reads": {
       "ok": 3,
-      "degraded": true
+      "degraded": true,
+      "outcomes": 0
     },
     "expected": "high",
     "ownerConfirmed": false
@@ -104,7 +108,8 @@
     },
     "reads": {
       "ok": 3,
-      "degraded": false
+      "degraded": false,
+      "outcomes": 0
     },
     "expected": "high",
     "ownerConfirmed": false

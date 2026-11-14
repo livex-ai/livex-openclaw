@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, recordEvidence, linked as summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, recordEvidence, recordOutcomes, linked as summary } from "./test-helpers.mjs";
 
 const OTHER_THREAD = "1768990000.000009";
 const OTHER_SESSION = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:${OTHER_THREAD}`;
@@ -15,6 +15,7 @@ const blocked = (result) => result?.block === true && typeof result.blockReason 
 function ready(config = baseConfig) {
   const loaded = load(config);
   recordEvidence(loaded, { entryUrls: [summary.evidenceUrl] });
+  recordOutcomes(loaded);
   postCard(loaded);
   return loaded;
 }
@@ -42,7 +43,7 @@ test("an amendment of the agent's own card in its own thread is allowed and re-r
   assert.deepEqual(sectionsOf(params), [
     "*Title:* checkout-api upstream timeouts",
     "*Priority:* \u{1F534} High",
-    "*Why:* clients affected (4 of 5 sampled) · known: no · alert: error",
+    "*Why:* clients affected (4 of 5 sampled) · known: no · alert: error · users affected: several customers or most of the sample",
     `*Next action:* ${summary.nextAction} (Owner: Unassigned)`,
     `*Summary:* ${summary.summary}`,
     "*Evidence:* <https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC",
@@ -391,11 +392,24 @@ test("an amendment is recomputed from its facts with this thread's logs reads", 
   const before = sectionsOf(guard(unread, edit({ message: envelope({ ...summary, sampleAffected: 0 }) })).params);
   assert.equal(before[1], "*Priority:* \u{1F7E1} Medium");
   assert.match(before[2], /^\*Why:\* client effect not verified \(0 of 5 sampled\)/u);
-  // With a recorded read the same facts are "no client effect" and Low; more affected is High.
+  // With three outcome reads the same facts are "no client effect" and Low; more affected is High.
   const loaded = ready();
   const low = sectionsOf(guard(loaded, edit({ message: envelope({ ...summary, sampleAffected: 0 }) })).params);
   assert.equal(low[1], "*Priority:* ⚪ Low");
   const high = guard(loaded, edit());
   assert.equal(sectionsOf(high.params)[1], "*Priority:* \u{1F534} High");
   assert.equal(high.params.livexAttachments[0].color, "#D92D20");
+});
+
+test("a successful amendment publishes the recomputed result to the priority registry", () => {
+  const registry = () => globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION);
+  const loaded = ready();
+  assert.deepEqual(registry().primary, { signature: summary.signature, priority: "medium", ruleId: "live-narrow" });
+  const result = loaded.hooks.get("before_tool_call")({ ...edit(), runId: "run-amend" }, ctx());
+  assert.equal(result.block, undefined);
+  assert.equal(registry().runId, "run-amend");
+  assert.deepEqual(registry().primary, { signature: summary.signature, priority: "high", ruleId: "live-broad" });
+  // A refused amendment leaves the registry as it was.
+  guard(loaded, edit({ messageId: "1768997777.000001", message: envelope({ ...summary, sampleAffected: 0 }) }));
+  assert.equal(registry().primary.priority, "high");
 });

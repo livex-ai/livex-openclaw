@@ -79,6 +79,8 @@ const SLUG = /^[a-z][a-z0-9-]{1,59}$/u;
 const MAX_SAMPLE = 500;
 // Longest Why and Also line, counted after neutralize.
 const MAX_DERIVED_LINE = 300;
+// Longest attachment fallback text the Slack patch sanitizer accepts.
+const MAX_FALLBACK = 4000;
 
 // Buttons a human may press. High/Medium/Low reset the priority, Resolved closes it.
 const CHOICES = new Map([
@@ -244,22 +246,42 @@ function validAlternates(alternates) {
   );
 }
 
-/** The Why line's text (before neutralize): client effect, known state and the alert. */
-function whyOf(facts, rating, reads) {
+/** The facts part of the Why line (before neutralize): client effect, known state and the alert. */
+function factsLine(facts, rating, reads, policy) {
   const checked = facts.sampleChecked;
   const affected = facts.sampleAffected;
+  const why = reads?.degraded
+    ? ", a read was capped or failed"
+    : rating.fewOutcomes
+      ? `, fewer than ${policy.minSample} outcome reads`
+      : "";
   const effect =
     rating.clientEffect === "yes"
       ? `clients affected (${affected} of ${checked} sampled)`
       : rating.clientEffect === "no"
         ? `no client effect found (${checked} sampled)`
-        : `client effect not verified (${affected} of ${checked} sampled${reads?.degraded ? ", a read was capped or failed" : ""})`;
+        : `client effect not verified (${affected} of ${checked} sampled${why})`;
   // rating.known is "no" unless the reference was accepted (validKnownRef), so knownRef is set.
   const known = rating.known === "no" ? "no" : `${rating.known} (${facts.knownRef})`;
   return `${effect} · known: ${known} · alert: ${facts.alertSeverity}${facts.sustained ? ", recurring" : ""}`;
 }
 
-const DEFAULT_READS = Object.freeze({ ok: 0, degraded: false });
+/** The policy notes of a rating (fixed strings), so a discounted or raised level is visible. */
+const notesOf = (rating) => rating.notes.join("; ");
+
+/** Cut to `max` characters, never inside a surrogate pair. */
+function cutText(text, max) {
+  if (text.length <= max) {
+    return text;
+  }
+  const cut = text.slice(0, max);
+  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+// Longest stored Why text (card validation allows 1000); the rendered line is cut to 300.
+const MAX_WHY = 1000;
+
+const DEFAULT_READS = Object.freeze({ ok: 0, degraded: false, outcomes: 0 });
 
 /**
  * Parse the envelope into `{ card }` or `{ reason }`; the reason is a fixed code, never content.
@@ -312,28 +334,32 @@ function parseSummary(text, evidenceOptions, rating) {
   if (!validAlternates(alternates)) {
     return { reason: "invalid field alternates" };
   }
-  // Rate every fact set; the highest becomes the card (a tie keeps the main one).
+  // Rate every fact set. The card keeps the main title and facts; its priority is the highest
+  // rating (a tie keeps the main one), and an alternate that set it is named on the Why line.
   const policy = rating?.policy ?? DEFAULT_POLICY;
   const reads = rating?.reads ?? DEFAULT_READS;
-  const rated = [value, ...(alternates ?? [])].map((item) => {
+  const [main, ...others] = [value, ...(alternates ?? [])].map((item) => {
     const facts = factsFrom(item);
     return { title: item.title, facts, rating: computePriority(facts, policy, reads) };
   });
-  let chosen = rated[0];
-  for (const entry of rated.slice(1)) {
-    if (PRIORITY_ORDER.indexOf(entry.rating.priority) > PRIORITY_ORDER.indexOf(chosen.rating.priority)) {
-      chosen = entry;
+  let setter = main;
+  for (const entry of others) {
+    if (PRIORITY_ORDER.indexOf(entry.rating.priority) > PRIORITY_ORDER.indexOf(setter.rating.priority)) {
+      setter = entry;
     }
   }
+  const mainLine = factsLine(main.facts, main.rating, reads, policy);
+  const why =
+    setter === main
+      ? `${mainLine} · ${notesOf(main.rating)}`
+      : `${mainLine} · rated by: ${setter.title} · ${notesOf(setter.rating)}`;
   const card = {
-    title: chosen.title,
+    title: main.title,
     signature,
-    priority: chosen.rating.priority,
-    rating: chosen.rating,
-    why: whyOf(chosen.facts, chosen.rating, reads),
-    also: rated
-      .filter((entry) => entry !== chosen)
-      .map((entry) => ({ title: entry.title, priority: entry.rating.priority })),
+    priority: setter.rating.priority,
+    rating: setter.rating,
+    why: cutText(why, MAX_WHY),
+    also: others.map((entry) => ({ title: entry.title, priority: entry.rating.priority })),
     resolved: resolved === true,
     summary,
     nextAction,
@@ -394,12 +420,7 @@ function priorityText(card) {
 
 /** Model-derived text for one line: neutralized, then cut (never inside a surrogate pair). */
 function derivedLine(text) {
-  const safe = neutralize(text);
-  if (safe.length <= MAX_DERIVED_LINE) {
-    return safe;
-  }
-  const cut = safe.slice(0, MAX_DERIVED_LINE);
-  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+  return cutText(neutralize(text), MAX_DERIVED_LINE);
 }
 
 /** The context line naming the fact sets that did not become the card, or undefined. */
@@ -522,7 +543,11 @@ export function renderBlocks(card, controls) {
       {
         color: colorOf(card),
         // Plain text: the only live link is the Evidence section's.
-        fallback: [...sectionTexts(card), ...(also ? [also] : [])].join("\n").replace(/<[^>|]*\|([^>]*)>/gu, "$1"),
+        // Cut so the Slack patch sanitizer never drops the coloured attachment for its length.
+        fallback: cutText(
+          [...sectionTexts(card), ...(also ? [also] : [])].join("\n").replace(/<[^>|]*\|([^>]*)>/gu, "$1"),
+          MAX_FALLBACK,
+        ),
         // Context elements stay plain_text: patch-slack-attachments.mjs accepts nothing else.
         blocks: [
           ...rest.map(section),
@@ -857,6 +882,11 @@ function readLostEntries(details) {
 
 const ID_PARAMS = ["conversationId", "jobId", "roomId", "traceId", "insertId", "insertIds"];
 
+/** True only when the params name at least one id (unknown params are not). */
+function carriesIds(params) {
+  return params !== null && typeof params === "object" && isIdScoped(params);
+}
+
 /** A read keyed on ids has its own outcome to protect; a listing is only a sample. Unknown: scoped. */
 function isIdScoped(params) {
   if (params === null || typeof params !== "object") {
@@ -898,26 +928,28 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
   const overrides = new Map();
   // sessionKey -> Map(evidence url -> recorded at), from livex_gcp_logs_read results.
   const evidenceUrls = new Map();
-  // sessionKey -> { ok, degraded, at }: how this thread's logs reads turned out.
+  // sessionKey -> { ok, degraded, outcomes, at }: how this thread's logs reads turned out.
+  // outcomes counts the successful, non-lossy reads that show an outcome: id-scoped or a complete count.
   const readStats = new Map();
 
   /** Logs-read outcome for a thread; zeros for an unknown or expired session. */
   function readStatsFor(sessionKey) {
     const stats = readStats.get(sessionKey);
     if (!stats || now() - stats.at > EVIDENCE_TTL_MS) {
-      return { ok: 0, degraded: false };
+      return { ok: 0, degraded: false, outcomes: 0 };
     }
-    return { ok: stats.ok, degraded: stats.degraded };
+    return { ok: stats.ok, degraded: stats.degraded, outcomes: stats.outcomes };
   }
 
-  function noteRead(sessionKey, { ok, degraded }) {
+  function noteRead(sessionKey, { ok, degraded, outcome = false }) {
     const at = now();
     const prior = readStats.get(sessionKey);
-    const live = prior && at - prior.at <= EVIDENCE_TTL_MS ? prior : { ok: 0, degraded: false };
+    const live = prior && at - prior.at <= EVIDENCE_TTL_MS ? prior : { ok: 0, degraded: false, outcomes: 0 };
     readStats.delete(sessionKey);
     readStats.set(sessionKey, {
       ok: live.ok + (ok ? 1 : 0),
       degraded: live.degraded || degraded,
+      outcomes: live.outcomes + (outcome ? 1 : 0),
       at,
     });
     while (readStats.size > MAX_SESSIONS) {
@@ -990,11 +1022,12 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
       }
       const details = readToolDetails(event.result);
       if (details !== undefined) {
-        noteRead(sessionKey, {
-          ok: true,
-          degraded:
-            details.complete === false || (readLostEntries(details) && isIdScoped(event.params)),
-        });
+        const degraded =
+          details.complete === false || (readLostEntries(details) && isIdScoped(event.params));
+        const outcome =
+          (carriesIds(event.params) && !degraded) ||
+          (event.params?.mode === "count" && details.complete === true);
+        noteRead(sessionKey, { ok: true, degraded, outcome });
       }
       const project = details?.project;
       if (typeof project !== "string" || (config.gcpProject && project !== config.gcpProject)) {
@@ -1260,6 +1293,13 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         );
       }
       let card = envelope.card;
+      const runId = typeof (event.runId ?? ctx?.runId) === "string" ? (event.runId ?? ctx?.runId) : undefined;
+      try {
+        // The memory plugin must see the amended rating, not the first card's.
+        publishResult(sessionKey, runId, card);
+      } catch {
+        notice("priority result not published: registry write failed");
+      }
       const human = overrides.get(`${session.channelId}:${messageId}`);
       if (human) {
         // A person's button choice outranks the agent's re-assessment.

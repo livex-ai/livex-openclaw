@@ -24,28 +24,57 @@ export const DEFAULT_POLICY = deepFreeze({
   raise: [
     { id: "known-but-affected", when: { clientEffect: ["yes"], known: ["fixed", "harmless"] }, atLeast: "medium", note: "marked known but users still affected" },
   ],
+  // `pattern:<id>` references accepted as known (the playbooks' Known patterns tables).
+  knownPatterns: ["wyze-zendesk-suspended-requester", "wyze-malformed-agent-id", "avatar-tts-flash-v3-model"],
+  // Slack workspaces whose thread links are accepted; empty or missing accepts any.
+  slackWorkspaces: ["livexai"],
 });
 
 const WHEN_KEYS = new Set(["clientEffect", "traffic", "broad", "userFacing", "known", "alertSeverity", "sustained"]);
 const PRIORITIES = ["low", "medium", "high"];
-const PATTERN_REF = /^pattern:[a-z0-9-]{3,60}$/;
+const PATTERN_ID = /^[a-z0-9-]{3,60}$/;
+const WORKSPACE_ID = /^[a-z0-9-]{1,40}$/;
+const PATTERN_REF = /^pattern:([a-z0-9-]{3,60})$/;
 const TICKET_REF = /^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/;
-const SLACK_REF = /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[CG][A-Z0-9]+\/p\d{10,20}(\?\S{0,200})?$/;
+const SLACK_REF = /^https:\/\/([a-z0-9-]+)\.slack\.com\/archives\/[CG][A-Z0-9]+\/p\d{10,20}(\?\S{0,200})?$/;
 
-export function validKnownRef(known, ref) {
+/** A `pattern:<id>` listed in policy.knownPatterns (a missing list accepts none). */
+function listedPattern(ref, policy) {
+  const id = PATTERN_REF.exec(ref)?.[1];
+  return id !== undefined && Array.isArray(policy?.knownPatterns) && policy.knownPatterns.includes(id);
+}
+
+/** A Slack thread link on a workspace in policy.slackWorkspaces (an empty or missing list accepts any). */
+function listedSlackLink(ref, policy) {
+  const workspace = SLACK_REF.exec(ref)?.[1];
+  if (workspace === undefined) return false;
+  const list = policy?.slackWorkspaces;
+  return !Array.isArray(list) || list.length === 0 || list.includes(workspace);
+}
+
+export function validKnownRef(known, ref, policy) {
   if (typeof ref !== "string") return false;
-  if (known === "harmless") return PATTERN_REF.test(ref);
-  if (known === "ongoing" || known === "fixed") return PATTERN_REF.test(ref) || TICKET_REF.test(ref) || SLACK_REF.test(ref);
+  if (known === "harmless") return listedPattern(ref, policy);
+  if (known === "ongoing" || known === "fixed") return listedPattern(ref, policy) || TICKET_REF.test(ref) || listedSlackLink(ref, policy);
   return false;
 }
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const nonEmptyStr = (v) => typeof v === "string" && v.length > 0;
 
+const BOOL_KEYS = new Set(["broad", "userFacing", "sustained"]);
+
+/** Every key is a known fact; booleans for broad/userFacing/sustained, else a non-empty list of in-domain values. */
 function validWhen(when) {
   if (!isObj(when)) return false;
-  return Object.entries(when).every(([k, v]) => WHEN_KEYS.has(k) && (typeof v === "boolean" || (Array.isArray(v) && v.length > 0)));
+  return Object.entries(when).every(([k, v]) =>
+    WHEN_KEYS.has(k) &&
+    (BOOL_KEYS.has(k)
+      ? typeof v === "boolean"
+      : Array.isArray(v) && v.length > 0 && v.every((item) => STATE_VALUES[k].includes(item))));
 }
+
+const validIdList = (list, pattern) => Array.isArray(list) && list.every((id) => typeof id === "string" && pattern.test(id));
 
 function validBoolMap(m) {
   return isObj(m) && Object.values(m).every((v) => typeof v === "boolean");
@@ -82,13 +111,17 @@ function policyProblem(p) {
   for (const r of p.rules) {
     if (!isObj(r) || !nonEmptyStr(r.id) || !nonEmptyStr(r.note) || !PRIORITIES.includes(r.priority) || !validWhen(r.when)) return "has an invalid rule";
   }
+  if (new Set(p.rules.map((r) => r.id)).size !== p.rules.length) return "has duplicate rule ids";
   if (!coversEveryState(p.rules)) return "has rules that leave some fact sets unmatched";
   if (p.raise !== undefined) {
     if (!Array.isArray(p.raise)) return "has an invalid raise list";
     for (const r of p.raise) {
       if (!isObj(r) || !nonEmptyStr(r.id) || !nonEmptyStr(r.note) || !PRIORITIES.includes(r.atLeast) || !validWhen(r.when)) return "has an invalid raise entry";
     }
+    if (new Set(p.raise.map((r) => r.id)).size !== p.raise.length) return "has duplicate raise ids";
   }
+  if (p.knownPatterns !== undefined && !validIdList(p.knownPatterns, PATTERN_ID)) return "has an invalid knownPatterns list";
+  if (p.slackWorkspaces !== undefined && !validIdList(p.slackWorkspaces, WORKSPACE_ID)) return "has an invalid slackWorkspaces list";
   return null;
 }
 
@@ -98,7 +131,7 @@ export function loadPolicy(path, warn) {
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
     reason = policyProblem(parsed);
-    if (!reason) return { ...parsed, raise: parsed.raise ?? [] };
+    if (!reason) return { ...parsed, raise: parsed.raise ?? [], knownPatterns: parsed.knownPatterns ?? [], slackWorkspaces: parsed.slackWorkspaces ?? [] };
   } catch {
     reason = "could not be read or parsed";
   }
@@ -110,11 +143,20 @@ export function loadPolicy(path, warn) {
   return DEFAULT_POLICY;
 }
 
+/**
+ * `{ effect, fewOutcomes }`. "no" needs a clean, verified sample of at least minSample items and
+ * at least minSample outcome reads (id-scoped or complete-count reads; a missing count is 0).
+ * fewOutcomes marks the case where the outcome reads alone kept it from "no".
+ */
 function deriveClientEffect(facts, policy, reads) {
-  if (!reads || !(reads.ok > 0)) return "unverified";
-  if (facts.sampleAffected > 0) return "yes";
-  if (facts.clientEffectVerified && facts.sampleChecked >= policy.minSample && !reads.degraded) return "no";
-  return "unverified";
+  if (!reads || !(reads.ok > 0)) return { effect: "unverified", fewOutcomes: false };
+  if (facts.sampleAffected > 0) return { effect: "yes", fewOutcomes: false };
+  if (facts.clientEffectVerified && facts.sampleChecked >= policy.minSample && !reads.degraded) {
+    return (reads.outcomes ?? 0) >= policy.minSample
+      ? { effect: "no", fewOutcomes: false }
+      : { effect: "unverified", fewOutcomes: true };
+  }
+  return { effect: "unverified", fewOutcomes: false };
 }
 
 function matches(when, state) {
@@ -124,11 +166,11 @@ function matches(when, state) {
 export function computePriority(facts, policy, reads) {
   const notes = [];
   let known = facts.known;
-  if (known !== "no" && !validKnownRef(known, facts.knownRef)) {
+  if (known !== "no" && !validKnownRef(known, facts.knownRef, policy)) {
     known = "no";
     notes.push("known reference not accepted");
   }
-  const clientEffect = deriveClientEffect(facts, policy, reads);
+  const { effect: clientEffect, fewOutcomes } = deriveClientEffect(facts, policy, reads);
   const uf = policy.userFacing;
   const userFacing = Object.hasOwn(uf.byService, facts.service)
     ? uf.byService[facts.service]
@@ -154,5 +196,5 @@ export function computePriority(facts, policy, reads) {
       notes.push(r.note);
     }
   }
-  return { priority, ruleId: rule.id, clientEffect, userFacing, known, notes };
+  return { priority, ruleId: rule.id, clientEffect, fewOutcomes, userFacing, known, notes };
 }

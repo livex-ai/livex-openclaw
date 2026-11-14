@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { classifyEnvelope, decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
 import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
-import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, recordRead, linked as summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, recordOutcomes, recordRead, linked as summary } from "./test-helpers.mjs";
 
 const slackOf = (result) => result.payload.channelData.slack;
 const pick = (slack, label) => buttonsOf(slack.blocks).find((button) => button.text.text === label).value;
@@ -43,7 +43,7 @@ test("without controls the Title is the only top-level block", () => {
 test("the colour bar follows the computed priority: high red, medium amber, low grey, resolved green", () => {
   const colorFor = (fields) => {
     const loaded = load();
-    recordRead(loaded);
+    recordOutcomes(loaded);
     return slackOf(postCard(loaded, { fields: { ...summary, ...fields } })).attachments[0].color;
   };
   assert.equal(colorFor({ sampleAffected: 4 }), "#D92D20");
@@ -370,17 +370,46 @@ test("recorded links expire, and each session and the session count are bounded"
   }
 });
 
+test("read stats expire after the evidence TTL and the session count is bounded", () => {
+  let clock = 2_000_000;
+  const realNow = Date.now;
+  Date.now = () => clock;
+  try {
+    const loaded = load(baseConfig);
+    recordOutcomes(loaded, 1);
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+    clock += 3 * 60 * 60_000;
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+    clock += 1;
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false, outcomes: 0 });
+    // A read after expiry starts a fresh count.
+    recordOutcomes(loaded, 1);
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+
+    // 501 sessions: the least recently read one is evicted.
+    const sessionOf = (index) => `agent:debugger:slack:channel:c0alerts1:thread:1768990000.${String(index).padStart(6, "0")}`;
+    for (let index = 0; index < 501; index += 1) {
+      recordOutcomes(loaded, 1, sessionOf(index));
+    }
+    assert.equal(readStats(loaded, sessionOf(0)).ok, 0);
+    assert.equal(readStats(loaded, sessionOf(1)).ok, 1);
+    assert.equal(readStats(loaded, sessionOf(500)).ok, 1);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("logs reads are counted per thread and a capped, incomplete or failed read marks it degraded", () => {
   const loaded = load();
   const call = (target, event) => target.hooks.get("after_tool_call")(event, { sessionKey: SESSION });
-  assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false, outcomes: 0 });
   call(loaded, { toolName: "livex_gcp_logs_read", result: { details: { entries: [], truncated: false, truncationReasons: [] } } });
-  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 0 });
   call(loaded, { toolName: "livex_repository_read", result: { details: { truncated: true } } });
-  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 0 });
   const fieldOnly = load();
   call(fieldOnly, { toolName: "livex_gcp_logs_read", result: { details: { truncated: true, truncationReasons: ["field"] } } });
-  assert.deepEqual(readStats(fieldOnly, SESSION), { ok: 1, degraded: false });
+  assert.deepEqual(readStats(fieldOnly, SESSION), { ok: 1, degraded: false, outcomes: 0 });
   for (const details of [
     { truncated: true },
     { complete: false },
@@ -390,7 +419,7 @@ test("logs reads are counted per thread and a capped, incomplete or failed read 
   ]) {
     const fresh = load();
     call(fresh, { toolName: "livex_gcp_logs_read", result: { details } });
-    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true });
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true, outcomes: 0 });
   }
   const row = { truncationReasons: ["row-limit"] };
   for (const [params, degraded] of [
@@ -402,22 +431,41 @@ test("logs reads are counted per thread and a capped, incomplete or failed read 
   ]) {
     const fresh = load();
     call(fresh, { toolName: "livex_gcp_logs_read", ...(params ? { params } : {}), result: { details: row } });
-    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded }, JSON.stringify(params));
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded, outcomes: 0 }, JSON.stringify(params));
   }
   const countIncomplete = load();
   call(countIncomplete, { toolName: "livex_gcp_logs_read", params: { query: "x" }, result: { details: { complete: false } } });
-  assert.deepEqual(readStats(countIncomplete, SESSION), { ok: 1, degraded: true });
+  assert.deepEqual(readStats(countIncomplete, SESSION), { ok: 1, degraded: true, outcomes: 0 });
+  // Outcome reads: a clean read keyed on ids, or a complete count. Unknown params are not one.
+  for (const [params, details, outcomes] of [
+    [{ conversationId: "c1" }, { entries: [] }, 1],
+    [{ jobId: "j1" }, { truncated: true, truncationReasons: ["field"] }, 1],
+    [{ roomId: "r1" }, { entries: [] }, 1],
+    [{ traceId: "t1" }, { entries: [] }, 1],
+    [{ insertId: "i1" }, { entries: [] }, 1],
+    [{ insertIds: ["a"] }, { entries: [] }, 1],
+    [{ insertIds: [] }, { entries: [] }, 0],
+    [{ query: "x" }, { entries: [] }, 0],
+    [undefined, { entries: [] }, 0],
+    [{ conversationId: "c1" }, { truncationReasons: ["row-limit"] }, 0],
+    [{ mode: "count", phrases: ["x"] }, { complete: true }, 1],
+    [{ mode: "count", phrases: ["x"] }, { complete: false }, 0],
+  ]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", ...(params ? { params } : {}), result: { details } });
+    assert.equal(readStats(fresh, SESSION).outcomes, outcomes, JSON.stringify([params, details]));
+  }
   for (const [error, expected] of [
-    ["boom", { ok: 0, degraded: true }],
-    ["Cloud log read exceeded its output limit", { ok: 0, degraded: true }],
-    ["Invalid end: use ISO UTC", { ok: 0, degraded: false }],
-    [new Error("Invalid end: use ISO UTC"), { ok: 0, degraded: false }],
+    ["boom", { ok: 0, degraded: true, outcomes: 0 }],
+    ["Cloud log read exceeded its output limit", { ok: 0, degraded: true, outcomes: 0 }],
+    ["Invalid end: use ISO UTC", { ok: 0, degraded: false, outcomes: 0 }],
+    [new Error("Invalid end: use ISO UTC"), { ok: 0, degraded: false, outcomes: 0 }],
   ]) {
     const failed = load();
     call(failed, { toolName: "livex_gcp_logs_read", error });
     assert.deepEqual(readStats(failed, SESSION), expected, String(error));
   }
-  assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false });
+  assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false, outcomes: 0 });
 });
 
 test("card plugin and memory plugin accept and reject the same V3 envelopes", async () => {

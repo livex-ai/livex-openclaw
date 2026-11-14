@@ -206,3 +206,10 @@ export const cardText = (result) =>
   flat(result.payload.channelData.slack)
     .map((block) => block.text?.text ?? block.elements?.map((element) => element.text?.text ?? element.text).join(" ") ?? "")
     .join("\n");
+
+/** Feed `count` clean, id-scoped logs reads: each one an outcome read for the client-effect check. */
+export function recordOutcomes(loaded, count = 3, sessionKey = SESSION) {
+  for (let index = 0; index < count; index += 1) {
+    recordRead(loaded, undefined, sessionKey, { insertIds: [`outcome${index}`] });
+  }
+}
