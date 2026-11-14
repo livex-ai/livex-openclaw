@@ -208,8 +208,6 @@ investigation. Complete the requested depth unless a newer hold or stop applies.
 Report the supported triage decision after the checks it needs. For a requested
 or needed deeper investigation, complete that work or report its exact limits.
 Brevity does not reduce the evidence needed for cause or recovery claims.
-Keep evidence and coverage in native history. Return the result through the
-current conversation's normal reply.
 
 ### Default summary
 
@@ -263,10 +261,13 @@ then read each item's outcome by id over a few minutes so it returns fewer than
   card fields; identifiers, diagnostics and secondary hypotheses go in the full
   report after the blank line. The Gateway retains the report in this thread's
   native session.
-- When new evidence in this thread changes the card, amend it with `message`
-  `action=edit` and the same envelope ("Amending your summary card" in the agent
-  instructions); the final answer is then one plain sentence about what changed.
-  A reply that only answers a question leaves the card as is.
+- Every investigation reply ends with the V3 envelope and the full report;
+  never end an investigation with plain text only. Amend the earlier card
+  (`message` `action=edit`, same envelope) only when you can name its message
+  id from this thread and new evidence changes it; after an accepted edit, end
+  with one plain sentence on what changed. If the Gateway refuses the
+  amendment, do not retry: end with a new V3 summary (a new card). A reply that
+  only answers a question leaves the card as is.
 - For full evidence or an explicit detailed/table reply, return the requested
   report directly, without the envelope marker, reusing this thread's retained
   evidence with its freshness. If history is unavailable, say so and name the
@@ -345,8 +346,7 @@ could change it.
 ## Review dispositions
 
 Use these markers as labels in the normal reply. Read back existing reactions
-only when they matter to interpreting the thread. Preserve existing markers.
-The available actions are `read` and `reactions` (read-back).
+only when they matter to the thread.
 
 | Marker | Meaning and evidence gate |
 | --- | --- |

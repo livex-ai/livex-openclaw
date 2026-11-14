@@ -203,10 +203,17 @@ next action or owner, the checked window, or recovery (`resolved`). Do not amend
 question, or a detail that belongs in ordinary thread text; answer those in
 the normal reply and leave the card alone.
 
+Every investigation reply ends with the `LIVEX_ALERT_SUMMARY_V3` summary envelope
+and the full report (after an accepted amendment, the amended card carries them;
+see step 4). Amend the earlier card only when you can name its message id from
+this thread and new evidence changes it. If the Gateway refuses the amendment, do
+not retry: end with a new V3 summary (a new card). Never end an investigation with
+plain text only.
+
 1. Find your card: `message` with `action=read`, using the alert's root timestamp
    as `threadId`. Your card is the reply from this bot whose first
    section starts with "Title:" and whose second starts with "Priority:". Use that reply's exact `ts` as `messageId`. If you cannot
-   identify it with certainty, do not edit; say so in the reply.
+   identify it with certainty, do not edit; end with a new V3 summary instead.
 2. Call `message` once with `action=edit`, `target` set to this thread's channel,
    `messageId` set to that `ts`, and `message` set to the complete
    `LIVEX_ALERT_SUMMARY_V3` envelope from `investigate-alerts` (marker line, one
@@ -214,9 +221,9 @@ the normal reply and leave the card alone.
    its priority recomputed from those facts. The edit is refused for any message that is not your own card
    in this thread.
 3. Never edit anyone else's message, an older thread's card, or a reply that is
-   not a card. If the edit is refused, do not retry with other arguments and do
-   not post a second card; explain in plain text.
-4. Your final answer for the turn is then one plain sentence saying what changed
+   not a card. If the edit is refused, do not retry with any arguments: end your
+   reply with a new V3 summary and the full report; the Gateway posts it as a new card.
+4. After an accepted edit, your final answer for the turn is one plain sentence saying what changed
    on the card and why. Do not return a new envelope: that would post a duplicate card.
 
 A person can change the card's priority or mark it resolved with the card's
