@@ -286,8 +286,8 @@ reactions" sentence.
 2. Click as the allowed user: the same message is edited in place. Click as another user in
    the same channel: ephemeral refusal, no edit. Click Resolved, then High: reopens.
 3. Confirm `message_sent` carries the Slack ts as `messageId` for the card and the plugin
-   recorded it: ask the agent to amend (new evidence). If the edit is blocked with "not one (or
-   this gateway has restarted...)" although the card is fresh, `message_sent` is not delivering
+   recorded it: ask the agent to amend (new evidence). If the edit is blocked with "cannot be
+   amended (it is not a summary card this Gateway posted...)" although the card is fresh, `message_sent` is not delivering
    `sessionKey`/`messageId` for this Slack reply path and the record never fills. That is the
    single unverified link in the chain (it was read from source, not exercised).
 4. Ask the agent to amend its card, then try to make it edit a human's message ts and a card in

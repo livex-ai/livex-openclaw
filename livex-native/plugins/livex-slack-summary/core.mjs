@@ -960,6 +960,22 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
   /** What the priority is computed with for one session: the policy and its logs reads. */
   const ratingFor = (sessionKey) => ({ policy, reads: readStatsFor(sessionKey) });
 
+  /** Rates `facts` for a session, card or no card. Invalid facts throw, like the envelope check. */
+  function computeFor(sessionKey, facts) {
+    if (facts === null || typeof facts !== "object" || invalidFactField(facts) !== undefined) {
+      throw new TypeError("livex-slack-summary: invalid facts");
+    }
+    return computePriority(factsFrom(facts), policy, readStatsFor(sessionKey));
+  }
+
+  try {
+    // The memory plugin rates a case with this when no card was rendered for the session.
+    // Several instances can load in one process: the one installed last wins.
+    priorityRegistry().computeFor = computeFor;
+  } catch {
+    notice("priority engine not published: registry write failed");
+  }
+
   /**
    * Publishes the card's computed result for other plugins in this process (the memory
    * plugin reads it when it saves the case). `compute` rates another fact set the same way.
@@ -977,12 +993,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
       runId,
       at,
       primary: { signature: card.signature, priority: card.priority, ruleId: card.rating.ruleId },
-      compute(facts) {
-        if (facts === null || typeof facts !== "object" || invalidFactField(facts) !== undefined) {
-          throw new TypeError("livex-slack-summary: invalid facts");
-        }
-        return computePriority(factsFrom(facts), policy, readStatsFor(sessionKey));
-      },
+      compute: (facts) => computeFor(sessionKey, facts),
     });
     while (results.size > MAX_SESSIONS) {
       results.delete(results.keys().next().value);
@@ -1213,6 +1224,10 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
 
   // -------------------------------------------------------------- before_tool_call
   const block = (reason) => ({ block: true, blockReason: reason });
+  // Refusals where a new card is the right way out: the model must not end with plain text.
+  const NEW_CARD_FALLBACK =
+    `Do not retry the edit. End your reply with a new ${SUMMARY_MARKER} summary and the full ` +
+    "report instead; the Gateway posts it as a new card.";
 
   function beforeToolCall(event, ctx) {
     try {
@@ -1248,10 +1263,10 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
       // Target: any supplied target must be this thread's channel, and one must be present.
       const channel = params.channel;
       if (channel !== undefined && String(channel).trim().toLowerCase() !== "slack") {
-        return block("Report amendments are limited to this Slack thread.");
+        return block(`Report amendments are limited to this Slack thread. ${NEW_CARD_FALLBACK}`);
       }
       if (params.targets !== undefined) {
-        return block("Report amendments take a single target in this thread's channel.");
+        return block(`Report amendments take a single target in this thread's channel. ${NEW_CARD_FALLBACK}`);
       }
       const targets = ["target", "to", "channelId"]
         .map((key) => params[key])
@@ -1260,7 +1275,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         targets.length === 0 ||
         !targets.every((value) => readChannelId(value) === session.channelId)
       ) {
-        return block("Report amendments must target this thread's channel.");
+        return block(`Report amendments must target this thread's channel. ${NEW_CARD_FALLBACK}`);
       }
 
       // Message: one well-formed ts that this plugin recorded as a card in this session.
@@ -1274,22 +1289,26 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         !SLACK_TS.test(messageId) ||
         !ids.every((value) => value === messageId)
       ) {
-        return block("messageId must be the timestamp of your own summary card in this thread.");
+        return block(
+          `messageId must be the timestamp of your own summary card in this thread. ${NEW_CARD_FALLBACK}`,
+        );
       }
       if (!cards.get(sessionKey)?.has(messageId)) {
         return block(
-          "Only a LiveX summary card this bot posted in this thread can be amended. " +
-            "That message is not one (or this gateway has restarted since it was posted).",
+          "This message cannot be amended (it is not a summary card this Gateway posted in this " +
+            `thread, or the Gateway restarted since). ${NEW_CARD_FALLBACK}`,
         );
       }
 
       // Content: the same envelope the first reply used, through the same renderer.
       const envelope = classifyEnvelope(params.message, evidenceOptionsFor(sessionKey), ratingFor(sessionKey));
       if (!envelope.marked || !envelope.card) {
-        notice(`amendment refused: ${envelope.marked ? (envelope.reason ?? "invalid card") : "no summary envelope"}`);
+        // The reason is a fixed phrase or a field name, never envelope content.
+        const why = envelope.marked ? (envelope.reason ?? "invalid card") : "no summary envelope";
+        notice(`amendment refused: ${why}`);
         return block(
-          `Amended content must use the summary envelope: ${SUMMARY_MARKER}, one JSON line with ` +
-            "the summary fields, a blank line, then the full report. Nothing else is accepted.",
+          `Amended content is not a valid summary envelope (${why}): it must be ${SUMMARY_MARKER}, ` +
+            `one JSON line with the summary fields, a blank line, then the full report. ${NEW_CARD_FALLBACK}`,
         );
       }
       let card = envelope.card;

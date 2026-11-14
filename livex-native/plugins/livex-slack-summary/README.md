@@ -21,7 +21,8 @@ marker version (including V2) renders the short notice instead.
   that set it (`rated by:`), and the alternates are listed on an `Also:` line. The result (main
   signature, displayed priority, the setting rule) is published on
   `globalThis[Symbol.for("livex.priority-engine.v1")].results` for the memory plugin, again after
-  each accepted amendment.
+  each accepted amendment. The same registry carries `computeFor(sessionKey, facts)` (the
+  instance loaded last wins) so the memory plugin can rate a case when no card was rendered.
 - **Card.** The layout of PR #1: the Title is the only top-level section (the priority buttons
   follow it, so they are always visible); Priority (emoji and level, or
   `Resolved · was High`), Why (client effect, known state, alert severity, the policy notes), Next action with

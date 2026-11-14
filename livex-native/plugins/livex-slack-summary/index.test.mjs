@@ -532,6 +532,32 @@ test("the registry is shared across plugin instances, pruned after 30 minutes an
   }
 });
 
+test("computeFor rates a session with no rendered card, with the last-installed instance's read stats", () => {
+  const key = Symbol.for("livex.priority-engine.v1");
+  const first = load();
+  const registry = globalThis[key];
+  assert.equal(typeof registry.computeFor, "function");
+  const noCard = "agent:debugger:slack:channel:c0nocard1:thread:1768996800.000001";
+  recordOutcomes(first, 3, noCard);
+  const facts = { ...factsOf(summary), sampleAffected: 0 };
+  // Three outcome reads: no client effect, Low. No reads: not verified, Medium.
+  assert.equal(registry.computeFor(noCard, facts).priority, "low");
+  assert.equal(registry.computeFor("agent:debugger:slack:channel:c0unknown:thread:1.000001", facts).priority, "medium");
+  assert.equal(registry.computeFor(noCard, { ...factsOf(summary), sampleAffected: 4 }).priority, "high");
+  assert.equal(typeof registry.computeFor(noCard, facts).ruleId, "string");
+  // Invalid facts are refused like the per-session compute.
+  assert.throws(() => registry.computeFor(noCard, { ...factsOf(summary), scope: "everywhere" }), TypeError);
+  assert.throws(() => registry.computeFor(noCard, null), TypeError);
+  // No card was rendered, so there is no per-session entry.
+  assert.equal(registry.results.has(noCard), false);
+  // A later instance reuses the registry and its computeFor wins.
+  const before = registry.computeFor;
+  load();
+  assert.equal(globalThis[key], registry);
+  assert.notEqual(registry.computeFor, before);
+  assert.equal(registry.computeFor(noCard, facts).priority, "medium");
+});
+
 test("a configured policy file changes the computed priority; a bad one warns and uses the default", async () => {
   const { mkdtempSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

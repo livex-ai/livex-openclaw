@@ -241,6 +241,43 @@ test("an amendment must use the same summary envelope; anything else is blocked 
   assert.equal(resolved.params.message, "\u{1F7E2} checkout-api upstream timeouts");
 });
 
+const NEW_CARD = "Do not retry the edit. End your reply with a new LIVEX_ALERT_SUMMARY_V3 summary and the full report instead; the Gateway posts it as a new card.";
+
+test("an unknown card (or a restarted gateway) is refused with the new-card fallback, no message content", () => {
+  // A fresh instance: the thread's earlier card is not in its memory, as after a restart.
+  const restarted = load();
+  const result = guard(restarted, edit());
+  assert.ok(blocked(result));
+  assert.equal(
+    result.blockReason,
+    "This message cannot be amended (it is not a summary card this Gateway posted in this thread, or the Gateway restarted since). " + NEW_CARD,
+  );
+  const loaded = ready();
+  assert.equal(guard(loaded, edit({ messageId: "1768997777.000001" })).blockReason, result.blockReason);
+});
+
+test("refusals where a new card is the fallback say so; an invalid envelope names what is wrong, never its content", () => {
+  const loaded = ready();
+  const missing = { ...summary };
+  delete missing.nextAction;
+  const cases = [
+    [edit({ message: "Updated: now High priority." }), /no summary envelope/u],
+    [edit({ message: envelope(missing) }), /missing field nextAction/u],
+    [edit({ message: envelope({ ...summary, sampleAffected: 6 }) }), /invalid field sampleAffected/u],
+    [edit({ messageId: "not-a-ts" }), /messageId/u],
+    [edit({ target: "channel:C0OTHER99" }), /target/u],
+  ];
+  for (const [event, why] of cases) {
+    const result = guard(loaded, event);
+    assert.ok(blocked(result));
+    assert.match(result.blockReason, why);
+    assert.ok(result.blockReason.endsWith(NEW_CARD), result.blockReason);
+    assert.doesNotMatch(result.blockReason, /Updated: now|private IDs|checkout-api|\{/u);
+  }
+  const envelopeReason = guard(loaded, edit({ message: envelope(missing) })).blockReason;
+  assert.match(envelopeReason, /valid summary envelope/u);
+});
+
 test("a person's button choice outranks the agent's later re-assessment of the same card", async () => {
   const loaded = ready();
   const first = guard(loaded, edit({ message: envelope({ ...summary, sampleAffected: 4 }) }));
