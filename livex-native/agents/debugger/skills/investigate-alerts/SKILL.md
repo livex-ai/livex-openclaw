@@ -205,9 +205,7 @@ investigation. Complete the requested depth unless a newer hold or stop applies.
 
 ## Report
 
-Report the supported triage decision after the checks it needs. For a requested
-or needed deeper investigation, complete that work or report its exact limits.
-Brevity does not reduce the evidence needed for cause or recovery claims.
+Report the supported triage decision after the checks it needs.
 
 ### Default summary
 
@@ -261,13 +259,17 @@ then read each item's outcome by id over a few minutes so it returns fewer than
   card fields; identifiers, diagnostics and secondary hypotheses go in the full
   report after the blank line. The Gateway retains the report in this thread's
   native session.
-- Every investigation reply ends with the V3 envelope and the full report;
-  never end an investigation with plain text only. Amend the earlier card
-  (`message` `action=edit`, same envelope) only when you can name its message
-  id from this thread and new evidence changes it; after an accepted edit, end
-  with one plain sentence on what changed. If the Gateway refuses the
-  amendment, do not retry: end with a new V3 summary (a new card). A reply that
-  only answers a question leaves the card as is.
+- A new investigation, or a re-mention that asks you to investigate or brings
+  new evidence, ends with the V3 envelope and full report. Only three replies
+  end otherwise: one plain sentence after an amendment that was not blocked;
+  plain text for a pure question or status request (the card stays); an
+  explicit detailed or table report request (below). Never end any other
+  investigation with plain text only. Amend (`action=edit`, same envelope) only
+  a card you can name by message id from this thread, when new evidence changes
+  it. If the edit is blocked with a reason saying the message cannot be
+  amended, do not retry: end with a new V3 summary whose `summary` says it
+  replaces the earlier card. If it fails for another reason (such as a Slack
+  error), post no new card; say in one sentence the update could not be applied.
 - For full evidence or an explicit detailed/table reply, return the requested
   report directly, without the envelope marker, reusing this thread's retained
   evidence with its freshness. If history is unavailable, say so and name the
@@ -316,8 +318,8 @@ detail or a table, provide that format and the full supporting evidence.
 ### Full evidence report
 
 The report after the envelope follows the fixed shape in Workflow step 7.
-Retain evidence and coverage in the full report/investigation record, and link
-it when saved. Never invent a saved report or link. A multi-alert digest or an
+Link the full report when saved. Never invent a saved report or link.
+A multi-alert digest or an
 explicit table request may use this table, attention-needed rows first:
 
 | Area | Channel | Slack thread link | Findings | Escalation needed | Next step |
@@ -340,8 +342,7 @@ pagination/limits and ingestion caveats. "No issue found" needs complete stated
 coverage and applies only to that scope and window; otherwise report partial
 evidence and unknowns, and surface any gap that changes the conclusion in the
 short summary too. Keep the capability record and hypothesis provenance in the
-full report, with confidence per conclusion and the next observation that
-could change it.
+full report.
 
 ## Review dispositions
 
@@ -367,7 +368,7 @@ If missing evidence is a routine investigator check, use question. If a specific
 operator intervention is established as necessary (for example, a user-supplied
 approved log export), use warning for that named blocker, with `clientEffectVerified`
 false when impact is insufficient. Access failure alone does not establish
-service severity. Complete required investigation work or name its limits; these
+service severity. These
 markers do not authorize premature closure or replace the missing evidence.
 Unrelated discoveries get separate findings/tracking; they do not justify warning
 on this alert without verified source/operation association.
