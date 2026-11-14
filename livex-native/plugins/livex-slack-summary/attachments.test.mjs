@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
 import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
-import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, recordRead, linked as summary } from "./test-helpers.mjs";
 
 const slackOf = (result) => result.payload.channelData.slack;
 const pick = (slack, label) => buttonsOf(slack.blocks).find((button) => button.text.text === label).value;
@@ -20,18 +20,18 @@ test("the card is a Title block plus buttons at top level and one coloured attac
   assert.match(attachment.color, /^#[0-9A-F]{6}$/u);
   assert.deepEqual(
     attachment.blocks.map((block) => block.type),
-    ["section", "section", "section", "section", "context"],
+    ["section", "section", "section", "section", "section", "context"],
   );
   assert.deepEqual(
-    attachment.blocks.slice(0, 4).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
-    ["Priority", "Next action", "Summary", "Evidence"],
+    attachment.blocks.slice(0, 5).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
+    ["Priority", "Why", "Next action", "Summary", "Evidence"],
   );
   assert.ok(attachment.blocks.length <= 10);
   // Priority keeps its emoji in the attachment.
-  assert.equal(attachment.blocks[0].text.text, "*Priority:* \u{1F7E1} Medium (provisional)");
+  assert.equal(attachment.blocks[0].text.text, "*Priority:* \u{1F7E1} Medium");
   assert.equal(attachment.fallback.includes("<http"), false);
   assert.match(attachment.fallback, /^\*Title:\* .*\n\*Priority:\* /u);
-  assert.deepEqual(buttonsOf(slack.blocks).map((button) => button.text.text), ["High", "Medium", "Low", "Resolved"]);
+  assert.deepEqual(buttonsOf(slack.blocks).map((button) => button.text.text), ["High", "Low", "Resolved"]);
 });
 
 test("without controls the Title is the only top-level block", () => {
@@ -40,15 +40,17 @@ test("without controls the Title is the only top-level block", () => {
   assert.equal(slack.attachments.length, 1);
 });
 
-test("the colour bar mirrors PR 1: high and critical red, medium amber, resolved green, else grey", () => {
-  const colorFor = (fields) => slackOf(postCard(load(), { fields: { ...summary, ...fields } })).attachments[0].color;
-  assert.equal(colorFor({ priority: "high", provisional: false }), "#D92D20");
-  assert.equal(colorFor({ priority: "critical", provisional: false }), "#D92D20");
-  assert.equal(colorFor({ priority: "medium" }), "#D99A00");
-  assert.equal(colorFor({ priority: "low" }), "#9CA3AF");
-  assert.equal(colorFor({ priority: "unknown" }), "#9CA3AF");
+test("the colour bar follows the computed priority: high red, medium amber, low grey, resolved green", () => {
+  const colorFor = (fields) => {
+    const loaded = load();
+    recordRead(loaded);
+    return slackOf(postCard(loaded, { fields: { ...summary, ...fields } })).attachments[0].color;
+  };
+  assert.equal(colorFor({ sampleAffected: 4 }), "#D92D20");
+  assert.equal(colorFor({ sampleAffected: 1 }), "#D99A00");
+  assert.equal(colorFor({ sampleAffected: 0 }), "#9CA3AF");
   // Verified resolution outranks the priority colour.
-  assert.equal(colorFor({ priority: "high", resolved: true }), "#2E8B57");
+  assert.equal(colorFor({ sampleAffected: 4, resolved: true }), "#2E8B57");
 });
 
 test("a priority click passes blocks and a recoloured attachment to editMessage", async () => {
@@ -72,6 +74,7 @@ test("a priority click passes blocks and a recoloured attachment to editMessage"
 
 test("an amendment keeps the first post's split: Title and buttons as presentation, colour bar as livexAttachments", () => {
   const loaded = load();
+  recordRead(loaded);
   const first = slackOf(postCard(loaded));
   const result = loaded.hooks.get("before_tool_call")(
     {
@@ -81,7 +84,7 @@ test("an amendment keeps the first post's split: Title and buttons as presentati
         channel: "slack",
         target: CHANNEL,
         messageId: CARD_TS,
-        message: `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ ...summary, priority: "high", provisional: false })}\n\nfull`,
+        message: `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify({ ...summary, sampleAffected: 4 })}\n\nfull`,
       },
     },
     { sessionKey: SESSION },
@@ -93,7 +96,9 @@ test("an amendment keeps the first post's split: Title and buttons as presentati
   assert.equal(params.livexAttachments.length, 1);
   assert.equal(params.livexAttachments[0].color, "#D92D20");
   // Same attachment content as the first post of the same card, apart from the new priority.
-  const same = slackOf(postCard(load(), { fields: { ...summary, priority: "high", provisional: false } }));
+  const fresh = load();
+  recordRead(fresh);
+  const same = slackOf(postCard(fresh, { fields: { ...summary, sampleAffected: 4 } }));
   assert.deepEqual(params.livexAttachments, same.attachments);
   // The shallow merge of the hook's params over the original keeps the route and adds ours.
   const merged = { ...{ action: "edit", channel: "slack", target: CHANNEL }, ...params };
@@ -140,7 +145,7 @@ test("evidence links must open an entry or a bounded time range in Logs Explorer
 test("a dropped evidence link still posts the card with 'No verified evidence link'", () => {
   const generic = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=resource.type%3D%22k8s_container%22";
   const slack = slackOf(postCard(load(), { fields: { ...summary, evidenceUrl: generic } }));
-  const evidence = slack.attachments[0].blocks[3].text.text;
+  const evidence = slack.attachments[0].blocks[4].text.text;
   assert.equal(evidence, `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`);
   assert.doesNotMatch(JSON.stringify(slack), /<https?:|k8s_container/u);
 });
@@ -151,7 +156,8 @@ test("a button token minted with a now-dropped link still decodes, without the l
   const generic = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=resource.type%3D%22k8s_container%22";
   const card = {
     priority: "medium",
-    provisional: true,
+    why: "client effect not verified (1 of 5 sampled) · known: no · alert: error",
+    also: [{ title: "other issue", priority: "low" }],
     resolved: false,
     title: "t",
     summary: "s",
@@ -162,14 +168,14 @@ test("a button token minted with a now-dropped link still decodes, without the l
   };
   const token = encodeState(card, bind, key);
   assert.deepEqual(decodeState(token, bind, key), { ...card, evidenceHref: null });
-  assert.equal(renderBlocks({ ...card, evidenceHref: null }, undefined).attachments[0].blocks[3].text.text.includes("No verified"), true);
+  assert.equal(renderBlocks({ ...card, evidenceHref: null }, undefined).attachments[0].blocks[4].text.text.includes("No verified"), true);
 });
 
 // ---------------------------------------------------------------- evidence provenance
 
 const BASE = "https://console.cloud.google.com/logs/query";
 const link = (query, project = PROJECT) => `${BASE}?project=${project}&query=${encodeURIComponent(query)}`;
-const evidenceOf = (result) => slackOf(result).attachments[0].blocks[3].text.text;
+const evidenceOf = (result) => slackOf(result).attachments[0].blocks[4].text.text;
 const NO_LINK = `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`;
 const amendCtx = { sessionKey: SESSION, agentId: "debugger", toolName: "message" };
 const amend = (loaded, evidenceUrl) =>
@@ -177,7 +183,7 @@ const amend = (loaded, evidenceUrl) =>
     { toolName: "message", params: { action: "edit", target: `channel:${CHANNEL}`, messageId: CARD_TS, message: envelope({ ...summary, evidenceUrl }) } },
     amendCtx,
   );
-const amendedEvidence = (result) => result.params.livexAttachments[0].blocks[3].text.text;
+const amendedEvidence = (result) => result.params.livexAttachments[0].blocks[4].text.text;
 
 // Each of these passes the substring shape check (insertId= or both timestamp bounds) but was never
 // returned by the log tool.

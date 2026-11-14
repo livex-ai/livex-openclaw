@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, recordEvidence, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, recordEvidence, linked as summary } from "./test-helpers.mjs";
 
 const OTHER_THREAD = "1768990000.000009";
 const OTHER_SESSION = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:${OTHER_THREAD}`;
 const ctx = (sessionKey = SESSION) => ({ sessionKey, agentId: "debugger", toolName: "message" });
 const edit = (params = {}) => ({
   toolName: "message",
-  params: { action: "edit", target: `channel:${CHANNEL}`, messageId: CARD_TS, message: envelope({ ...summary, priority: "high", provisional: false }), ...params },
+  params: { action: "edit", target: `channel:${CHANNEL}`, messageId: CARD_TS, message: envelope({ ...summary, sampleAffected: 4 }), ...params },
 });
 const guard = (loaded, event, sessionKey) => loaded.hooks.get("before_tool_call")(event, ctx(sessionKey));
 const blocked = (result) => result?.block === true && typeof result.blockReason === "string" && result.blockReason.length > 0;
@@ -19,11 +19,11 @@ function ready(config = baseConfig) {
   return loaded;
 }
 
-// The five card sections of an amendment in display order: Title from the presentation,
+// The six card sections of an amendment in display order: Title from the presentation,
 // the rest from the colour-bar attachment.
 const sectionsOf = (params) => [
   params.presentation.blocks[0].text,
-  ...params.livexAttachments[0].blocks.slice(0, 4).map((block) => block.text.text),
+  ...params.livexAttachments[0].blocks.slice(0, 5).map((block) => block.text.text),
 ];
 const buttonsBlockOf = (params) => params.presentation.blocks[1];
 
@@ -42,6 +42,7 @@ test("an amendment of the agent's own card in its own thread is allowed and re-r
   assert.deepEqual(sectionsOf(params), [
     "*Title:* checkout-api upstream timeouts",
     "*Priority:* \u{1F534} High",
+    "*Why:* clients affected (4 of 5 sampled) · known: no · alert: error",
     `*Next action:* ${summary.nextAction} (Owner: Unassigned)`,
     `*Summary:* ${summary.summary}`,
     "*Evidence:* <https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC",
@@ -76,13 +77,13 @@ test("model text in an amendment is inert: no mentions, links, channel refs or e
   const loaded = ready();
   const body = "Ping <!channel> and <@U123> or <https://evil.example|click> & more.";
   const first = sectionsOf(guard(loaded, edit({ message: envelope({ ...summary, summary: body }) })).params);
-  assert.equal(first[3], "*Summary:* Ping &lt;!channel&gt; and &lt;@\u200DU123&gt; or &lt;https:\u200D//evil.example|click&gt; &amp; more.");
+  assert.equal(first[4], "*Summary:* Ping &lt;!channel&gt; and &lt;@\u200DU123&gt; or &lt;https:\u200D//evil.example|click&gt; &amp; more.");
 
   const hostile = "see https://evil.example/login @here #general *bold*";
   const more = `${hostile} _it_ ~s~ \`c\``;
   const hostileParams = guard(loaded, edit({ message: envelope({ ...summary, title: hostile, summary: more, nextAction: hostile, owner: "@here", checkedWindow: hostile }) })).params;
   const sections = sectionsOf(hostileParams);
-  const modelBlocks = [0, 2, 3, 4].map((index) => ({ text: sections[index] }));
+  const modelBlocks = [0, 3, 4, 5].map((index) => ({ text: sections[index] }));
   // Strip the card's own label and the evidence link, leaving only model text.
   const text = modelBlocks
     .map((block) => block.text.replace(/^\*[^:]+:\* /u, "").replace(/<https:\/\/console\.cloud\.google\.com[^>]*>/u, ""))
@@ -105,7 +106,7 @@ test("an amendment carries no buttons when buttons are not configured, but is st
   const loaded = ready(null);
   const result = guard(loaded, edit());
   assert.deepEqual(result.params.presentation.blocks.map((block) => block.type), ["text"]);
-  assert.equal(result.params.livexAttachments[0].blocks.length, 5);
+  assert.equal(result.params.livexAttachments[0].blocks.length, 6);
 });
 
 test("message target forms for the current channel are accepted", () => {
@@ -178,7 +179,7 @@ test("a non-card message from this bot in this thread is blocked", () => {
   // An ordinary text reply, the invalid-summary notice, and a failed post are never cards.
   send({ messageId: "1768997000.000001", content: "Plain answer from the thread." });
   loaded.hooks.get("reply_payload_sending")(
-    { kind: "final", channel: "slack", sessionKey: SESSION, payload: { text: `LIVEX_ALERT_SUMMARY_V2\n{bad}\n\nfull` } },
+    { kind: "final", channel: "slack", sessionKey: SESSION, payload: { text: `LIVEX_ALERT_SUMMARY_V3\n{bad}\n\nfull` } },
     {},
   );
   send({ messageId: "1768997000.000002", content: "Could not format the investigation summary. Mention this bot in the thread for full evidence." });
@@ -218,12 +219,15 @@ test("an amendment must use the same summary envelope; anything else is blocked 
     `Here you go\n${envelope()}`,
     "```\n" + envelope() + "\n```",
     envelope({ ...summary, priority: "urgent" }),
+    envelope({ ...summary, priority: "high" }),
+    envelope({ ...summary, sampleAffected: 6 }),
     envelope({ ...summary, resolved: "yes" }),
     envelope({ ...summary, evidenceUrl: 42 }),
     envelope({ ...summary, extra: 1 }),
     `LIVEX_ALERT_SUMMARY_V1\n${JSON.stringify(summary)}\n\nfull`,
-    `LIVEX_ALERT_SUMMARY_V2\n{not json}\n\nfull`,
-    ` \nLIVEX_ALERT_SUMMARY_V2\n${JSON.stringify(summary)}\n\nfull`.replace(" \n", "x\n"),
+    `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify(summary)}\n\nfull`,
+    `LIVEX_ALERT_SUMMARY_V3\n{not json}\n\nfull`,
+    ` \nLIVEX_ALERT_SUMMARY_V3\n${JSON.stringify(summary)}\n\nfull`.replace(" \n", "x\n"),
   ];
   for (const message of cases) {
     const result = guard(loaded, edit({ message }));
@@ -232,19 +236,20 @@ test("an amendment must use the same summary envelope; anything else is blocked 
   }
   // The agent can mark the report resolved through the envelope.
   const resolved = guard(loaded, edit({ message: envelope({ ...summary, resolved: true }) }));
-  assert.equal(sectionsOf(resolved.params)[1], "*Priority:* \u{1F7E2} Resolved · was Medium (provisional)");
+  assert.equal(sectionsOf(resolved.params)[1], "*Priority:* \u{1F7E2} Resolved · was Medium");
   assert.equal(resolved.params.message, "\u{1F7E2} checkout-api upstream timeouts");
 });
 
 test("a person's button choice outranks the agent's later re-assessment of the same card", async () => {
   const loaded = ready();
-  const first = guard(loaded, edit({ message: envelope({ ...summary, priority: "high", provisional: false }) }));
+  const first = guard(loaded, edit({ message: envelope({ ...summary, sampleAffected: 4 }) }));
   const click = fakeClick({ value: buttonsBlockOf(first.params).buttons.find((b) => b.label === "Low").action.value });
   await loaded.interactive.handler(click.ctx);
   assert.equal(flat(click.calls.edits[0])[1].text.text, "*Priority:* ⚪ Low");
-  const second = guard(loaded, edit({ message: envelope({ ...summary, priority: "critical", provisional: false, summary: "New evidence: errors continue." }) }));
+  // The agent's new facts compute High; the person's Low stands.
+  const second = guard(loaded, edit({ message: envelope({ ...summary, sampleAffected: 5, summary: "New evidence: errors continue." }) }));
   assert.equal(sectionsOf(second.params)[1], "*Priority:* ⚪ Low");
-  assert.equal(sectionsOf(second.params)[3], "*Summary:* New evidence: errors continue.");
+  assert.equal(sectionsOf(second.params)[4], "*Summary:* New evidence: errors continue.");
 });
 
 test("everything that is not a debugger-thread message edit is left alone", () => {
@@ -377,4 +382,20 @@ test("a debugger card edit always overwrites a model-supplied livexAttachments",
   assert.doesNotMatch(JSON.stringify(params), /forged/u);
   // A debugger edit that is refused never reaches the patched edit path.
   assert.equal(blocked(guard(loaded, edit({ messageId: "1768997777.000001", livexAttachments: forgedAttachments }))), true);
+});
+
+test("an amendment is recomputed from its facts with this thread's logs reads", () => {
+  // No read in this thread (e.g. a new process): the effect is not verified, so 0 affected is not "no".
+  const unread = load();
+  postCard(unread);
+  const before = sectionsOf(guard(unread, edit({ message: envelope({ ...summary, sampleAffected: 0 }) })).params);
+  assert.equal(before[1], "*Priority:* \u{1F7E1} Medium");
+  assert.match(before[2], /^\*Why:\* client effect not verified \(0 of 5 sampled\)/u);
+  // With a recorded read the same facts are "no client effect" and Low; more affected is High.
+  const loaded = ready();
+  const low = sectionsOf(guard(loaded, edit({ message: envelope({ ...summary, sampleAffected: 0 }) })).params);
+  assert.equal(low[1], "*Priority:* ⚪ Low");
+  const high = guard(loaded, edit());
+  assert.equal(sectionsOf(high.params)[1], "*Priority:* \u{1F534} High");
+  assert.equal(high.params.livexAttachments[0].color, "#D92D20");
 });
