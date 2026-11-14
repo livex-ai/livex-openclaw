@@ -11,6 +11,14 @@ export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V3";
 // Any versioned marker identifies an envelope; only the current version is accepted.
 const MARKER_PATTERN = "LIVEX_ALERT_SUMMARY_V[0-9]+";
 export const INTERACTIVE_NAMESPACE = "livex-priority";
+// Added to every debugger turn in an alert thread. A long-lived thread session keeps
+// the instructions and reply style it started with, so the current rule is restated here.
+export const ENVELOPE_REMINDER = [
+  "Gateway note (current reply rules for this alert thread; they override earlier replies in this session):",
+  `- A reply that reports investigation results, including a re-mention that asks you to investigate or brings new evidence, must end with the ${SUMMARY_MARKER} envelope (facts only, never a priority) followed by the full report.`,
+  "- Read the investigate-alerts skill again before answering: its envelope format and playbooks may have changed since this thread started.",
+  "- Plain text alone is correct only for a pure question or status request, an explicit detailed or table report request, or the one sentence after an amendment that was not blocked.",
+].join("\n");
 export const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
 export const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
 
@@ -1111,6 +1119,19 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
     config.buttons && Boolean(session) && channelAllowed(config, session.channelId);
 
   // ------------------------------------------------------ reply_payload_sending
+  /** Restates the envelope rule on every debugger turn in an alert thread. */
+  function beforePromptBuild(event, ctx) {
+    try {
+      const sessionKey = ctx?.sessionKey ?? event?.sessionKey;
+      if (typeof sessionKey !== "string" || !DEBUGGER_SLACK_THREAD.test(sessionKey)) {
+        return undefined;
+      }
+      return { prependContext: ENVELOPE_REMINDER };
+    } catch {
+      return undefined;
+    }
+  }
+
   function replyPayloadSending(event, ctx) {
     let marked = false;
     let route = {};
@@ -1405,5 +1426,5 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
     }
   }
 
-  return { config, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, readStatsFor, interactive };
+  return { config, beforePromptBuild, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, readStatsFor, interactive };
 }

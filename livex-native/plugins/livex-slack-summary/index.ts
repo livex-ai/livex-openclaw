@@ -46,6 +46,9 @@ export default definePluginEntry({
     const policy = loadPolicy(api.pluginConfig?.priorityPolicyPath, warn);
     const plugin = createPlugin(api.pluginConfig, { key, warn, policy });
 
+    // Restates the summary-envelope rule on each debugger turn in an alert thread
+    // (needs hooks.allowPromptInjection on this plugin's entry).
+    api.on("before_prompt_build", (event, ctx) => plugin.beforePromptBuild(event, ctx));
     // Renders the marked summary as a card and remembers it until Slack confirms the post.
     api.on("reply_payload_sending", (event, ctx) => plugin.replyPayloadSending(event, ctx));
     // Learns the Slack ts of each confirmed card (the amendment allow-list).

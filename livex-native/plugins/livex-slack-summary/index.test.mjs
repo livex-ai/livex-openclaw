@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
-import { INVALID_SUMMARY, colorOf } from "./core.mjs";
+import { ENVELOPE_REMINDER, INVALID_SUMMARY, colorOf } from "./core.mjs";
 import { SESSION, cardOf, cardText, factsOf, linked, load, postCard, recordOutcomes, recordRead, summary } from "./test-helpers.mjs";
 
 const sdkHook = registerHooks({
@@ -38,6 +38,7 @@ entry.register({
 });
 assert.deepEqual([...hooks.keys()].sort(), [
   "after_tool_call",
+  "before_prompt_build",
   "before_tool_call",
   "message_sent",
   "reply_payload_sending",
@@ -666,4 +667,15 @@ test("the attachment fallback is cut to 4000 characters, never inside a surrogat
     lengths.push(fallback.length);
   }
   assert.deepEqual(lengths.sort(), [3999, 4000]);
+});
+
+test("every debugger turn in an alert thread gets the envelope reminder; other sessions get nothing", () => {
+  const loaded = load();
+  const hook = loaded.hooks.get("before_prompt_build");
+  assert.deepEqual(hook({ prompt: "investigate" }, { sessionKey: SESSION }), { prependContext: ENVELOPE_REMINDER });
+  assert.match(ENVELOPE_REMINDER, /LIVEX_ALERT_SUMMARY_V3/);
+  assert.ok(ENVELOPE_REMINDER.length < 900);
+  for (const sessionKey of [undefined, "agent:oncall:slack:channel:c1:thread:1.1", "agent:debugger:slack:direct:u1", "agent:debugger:main"]) {
+    assert.equal(hook({ prompt: "x" }, { sessionKey }), undefined);
+  }
 });
