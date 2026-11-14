@@ -242,6 +242,7 @@ test("an amendment must use the same summary envelope; anything else is blocked 
 });
 
 const NEW_CARD = "Do not retry the edit. End your reply with a new LIVEX_ALERT_SUMMARY_V3 summary and the full report instead; the Gateway posts it as a new card.";
+const RETRY_ONCE = "Correct this and call edit once more; if it is refused again, end your reply with a new LIVEX_ALERT_SUMMARY_V3 summary instead.";
 
 test("an unknown card (or a restarted gateway) is refused with the new-card fallback, no message content", () => {
   // A fresh instance: the thread's earlier card is not in its memory, as after a restart.
@@ -256,7 +257,7 @@ test("an unknown card (or a restarted gateway) is refused with the new-card fall
   assert.equal(guard(loaded, edit({ messageId: "1768997777.000001" })).blockReason, result.blockReason);
 });
 
-test("refusals where a new card is the fallback say so; an invalid envelope names what is wrong, never its content", () => {
+test("fixable refusals on a recorded card ask for one corrected retry; an invalid envelope names what is wrong, never its content", () => {
   const loaded = ready();
   const missing = { ...summary };
   delete missing.nextAction;
@@ -271,7 +272,8 @@ test("refusals where a new card is the fallback say so; an invalid envelope name
     const result = guard(loaded, event);
     assert.ok(blocked(result));
     assert.match(result.blockReason, why);
-    assert.ok(result.blockReason.endsWith(NEW_CARD), result.blockReason);
+    assert.ok(result.blockReason.endsWith(RETRY_ONCE), result.blockReason);
+    assert.ok(!result.blockReason.includes("Do not retry"), result.blockReason);
     assert.doesNotMatch(result.blockReason, /Updated: now|private IDs|checkout-api|\{/u);
   }
   const envelopeReason = guard(loaded, edit({ message: envelope(missing) })).blockReason;

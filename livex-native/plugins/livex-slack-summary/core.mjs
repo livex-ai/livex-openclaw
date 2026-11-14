@@ -1224,10 +1224,14 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
 
   // -------------------------------------------------------------- before_tool_call
   const block = (reason) => ({ block: true, blockReason: reason });
-  // Refusals where a new card is the right way out: the model must not end with plain text.
+  // No valid card to edit: the right way out is a new card, never a plain-text ending.
   const NEW_CARD_FALLBACK =
     `Do not retry the edit. End your reply with a new ${SUMMARY_MARKER} summary and the full ` +
     "report instead; the Gateway posts it as a new card.";
+  // A fixable argument or envelope refusal: one corrected retry, then a new card.
+  const RETRY_ONCE =
+    "Correct this and call edit once more; if it is refused again, end your reply with a new " +
+    `${SUMMARY_MARKER} summary instead.`;
 
   function beforeToolCall(event, ctx) {
     try {
@@ -1263,10 +1267,10 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
       // Target: any supplied target must be this thread's channel, and one must be present.
       const channel = params.channel;
       if (channel !== undefined && String(channel).trim().toLowerCase() !== "slack") {
-        return block(`Report amendments are limited to this Slack thread. ${NEW_CARD_FALLBACK}`);
+        return block(`Report amendments are limited to this Slack thread. ${RETRY_ONCE}`);
       }
       if (params.targets !== undefined) {
-        return block(`Report amendments take a single target in this thread's channel. ${NEW_CARD_FALLBACK}`);
+        return block(`Report amendments take a single target in this thread's channel. ${RETRY_ONCE}`);
       }
       const targets = ["target", "to", "channelId"]
         .map((key) => params[key])
@@ -1275,7 +1279,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         targets.length === 0 ||
         !targets.every((value) => readChannelId(value) === session.channelId)
       ) {
-        return block(`Report amendments must target this thread's channel. ${NEW_CARD_FALLBACK}`);
+        return block(`Report amendments must target this thread's channel. ${RETRY_ONCE}`);
       }
 
       // Message: one well-formed ts that this plugin recorded as a card in this session.
@@ -1290,7 +1294,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         !ids.every((value) => value === messageId)
       ) {
         return block(
-          `messageId must be the timestamp of your own summary card in this thread. ${NEW_CARD_FALLBACK}`,
+          `messageId must be the timestamp of your own summary card in this thread. ${RETRY_ONCE}`,
         );
       }
       if (!cards.get(sessionKey)?.has(messageId)) {
@@ -1308,7 +1312,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         notice(`amendment refused: ${why}`);
         return block(
           `Amended content is not a valid summary envelope (${why}): it must be ${SUMMARY_MARKER}, ` +
-            `one JSON line with the summary fields, a blank line, then the full report. ${NEW_CARD_FALLBACK}`,
+            `one JSON line with the summary fields, a blank line, then the full report. ${RETRY_ONCE}`,
         );
       }
       let card = envelope.card;
