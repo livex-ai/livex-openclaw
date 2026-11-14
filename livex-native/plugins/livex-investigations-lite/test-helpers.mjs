@@ -48,3 +48,23 @@ export const toolContext = (over = {}) => ({
   assertInvocationCurrent() {},
   ...over,
 });
+
+// The V3 summary fields (same values as livex-slack-summary's test-helpers `summary`).
+export const v3Summary = {
+  title: "checkout-api upstream timeouts",
+  signature: "checkout-api | create order | upstream timeout",
+  alertClass: "gke-application-errors", service: "chat-engine", alertSeverity: "error", sustained: false,
+  known: "no", sampleChecked: 5, sampleAffected: 1, scope: "single", traffic: "live", clientEffectVerified: true,
+  summary: "An upstream timeout was recovered by the request retry.",
+  nextAction: "Confirm whether later requests needed retries.",
+  owner: "Unassigned",
+  checkedWindow: "2026-01-21 12:20–12:25 UTC",
+};
+/** The ten fact keys of `v3Summary`, as the record tool takes them. */
+export const v3Facts = {
+  alertClass: "gke-application-errors", service: "chat-engine", alertSeverity: "error", sustained: false,
+  known: "no", sampleChecked: 5, sampleAffected: 1, scope: "single", traffic: "live", clientEffectVerified: true,
+};
+/** A `LIVEX_ALERT_SUMMARY_V3` envelope of `v3Summary` with `fields` merged over it. */
+export const v3Envelope = (fields = {}) =>
+  `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify({ ...v3Summary, ...fields })}\n\nFull report with private IDs.`;

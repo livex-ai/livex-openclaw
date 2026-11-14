@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
+import { classifyEnvelope, decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
 import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
 import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, recordRead, linked as summary } from "./test-helpers.mjs";
 
@@ -387,4 +387,66 @@ test("logs reads are counted per thread and a capped, incomplete or failed read 
   call(failed, { toolName: "livex_gcp_logs_read", error: "boom" });
   assert.deepEqual(readStats(failed, SESSION), { ok: 0, degraded: true });
   assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false });
+});
+
+test("card plugin and memory plugin accept and reject the same V3 envelopes", async () => {
+  const lite = await import("../livex-investigations-lite/core.mjs");
+  const variants = [{}, { priority: "high" }, { sampleAffected: 9 }, { known: "maybe" }, { alertClass: "Bad Class" }, { knownRef: "x".repeat(201) }, { scope: "many" }, { extra: 1 }];
+  for (const v of variants) {
+    const text = envelope({ ...summary, ...v });
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), JSON.stringify(v));
+  }
+});
+
+test("card plugin and memory plugin agree on alternates, evidence links and optional fields", async () => {
+  const lite = await import("../livex-investigations-lite/core.mjs");
+  const facts = Object.fromEntries(
+    ["alertClass", "service", "alertSeverity", "sustained", "known", "sampleChecked", "sampleAffected", "scope", "traffic", "clientEffectVerified"].map((key) => [key, summary[key]]),
+  );
+  const alternate = { title: "Other category", ...facts, known: "ongoing", knownRef: "LX-1234" };
+  const variants = [
+    { alternates: [alternate] },
+    { alternates: [] },
+    { alternates: Array(4).fill(alternate) },
+    { alternates: Array(5).fill(alternate) },
+    { alternates: [{ ...alternate, signature: "x | y" }] },
+    { alternates: [{ ...alternate, title: "" }] },
+    { alternates: [{ ...alternate, sampleAffected: 6 }] },
+    { alternates: [{ ...alternate, knownRef: undefined }] },
+    { alternates: [{ ...alternate, scope: undefined }] },
+    { alternates: [null] },
+    { alternates: [[]] },
+    { alternates: {} },
+    { evidenceUrl: null },
+    { evidenceUrl: "https://example.com/not-a-logs-link" },
+    { evidenceUrl: "not a url" },
+    { evidenceUrl: 7 },
+    { resolved: true },
+    { resolved: "yes" },
+    { knownRef: "INC-7", known: "fixed" },
+    { knownRef: "" },
+    { sampleChecked: 501, sampleAffected: 0 },
+    { sampleChecked: 0, sampleAffected: 0 },
+    { sampleChecked: 1.5 },
+    { sustained: "no" },
+    { clientEffectVerified: null },
+    { alertSeverity: "critical" },
+    { traffic: "staging" },
+    { service: "a" },
+    { title: "t".repeat(121) },
+    { signature: "s".repeat(161) },
+    { summary: "x".repeat(601) },
+    { nextAction: "line\nbreak" },
+    { owner: " " },
+    { checkedWindow: "w".repeat(81) },
+    { provisional: false },
+  ];
+  for (const v of variants) {
+    const text = envelope({ ...summary, ...v });
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), JSON.stringify(v));
+  }
+  const { alertClass, ...missing } = summary;
+  for (const text of [envelope(missing), envelope(summary, undefined, "LIVEX_ALERT_SUMMARY_V2"), ` \n${envelope(summary)}`, `x\n${envelope(summary)}`]) {
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), text.slice(0, 30));
+  }
 });
