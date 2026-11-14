@@ -525,7 +525,8 @@ const NOOP_LOG = { warn() {}, info() {}, reject() {}, fault() {}, notOffered() {
 // ---------------------------------------------------------- priority
 
 // Published by livex-slack-summary when it renders a card: sessionKey ->
-// { runId, at, primary: { signature, priority, ruleId }, compute(facts) }.
+// { runId, at, primary: { signature, priority, ruleId }, compute(facts) }, and
+// `computeFor(sessionKey, facts)` on the same registry for a session with no card.
 const PRIORITY_ENGINE = Symbol.for("livex.priority-engine.v1");
 const RATED = ["high", "medium", "low"];
 
@@ -537,6 +538,16 @@ function engineResultFor(sessionKey) {
     return result !== null && typeof result === "object" && typeof result.compute === "function"
       ? result
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The registry's rater for a session with no rendered card, or undefined. */
+function engineComputeFor() {
+  try {
+    const computeFor = globalThis[PRIORITY_ENGINE]?.computeFor;
+    return typeof computeFor === "function" ? computeFor : undefined;
   } catch {
     return undefined;
   }
@@ -575,6 +586,32 @@ function rateRecord(record, result, runId, log) {
   }
   log.notice("priority compute failed; case stored unrated");
   return { priority: "unrated" };
+}
+
+/**
+ * Records of a run with no usable card result: each is rated by the registry's
+ * `computeFor`, else stored "unrated" with one line for the whole commit.
+ */
+function rateWithoutCard(records, sessionKey, log) {
+  const computeFor = engineComputeFor();
+  if (!computeFor) {
+    log.notice("priority engine unavailable; case stored unrated");
+    return records.map((record) => ({ ...record, priority: "unrated" }));
+  }
+  let failed = false;
+  const rated = records.map((record) => {
+    try {
+      const computed = computeFor(sessionKey, record.facts);
+      const value = rating(computed?.priority, computed?.ruleId);
+      if (value) return { ...record, ...value };
+    } catch {
+      // Invalid facts or an engine fault: stored unrated below.
+    }
+    failed = true;
+    return { ...record, priority: "unrated" };
+  });
+  if (failed) log.notice("priority compute failed; case stored unrated");
+  return rated;
 }
 
 function markLogged(error) {
@@ -938,12 +975,13 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
       }
       const replyTs = typeof messageId === "string" && SLACK_TS.test(messageId) ? messageId : undefined;
       // The priority is the card plugin's, computed from the facts; never the model's.
-      const engine = engineResultFor(sessionKey);
-      if (!engine) log.notice("priority engine unavailable; case stored unrated");
-      const records = [...entry.records.values()].map((record) => ({
-        ...record,
-        ...(engine ? rateRecord(record, engine, entry.stagedRunId, log) : { priority: "unrated" }),
-      }));
+      // A results entry from another run is not this run's card (none was rendered).
+      const result = engineResultFor(sessionKey);
+      const staged = [...entry.records.values()];
+      const records =
+        result && result.runId === entry.stagedRunId
+          ? staged.map((record) => ({ ...record, ...rateRecord(record, result, entry.stagedRunId, log) }))
+          : rateWithoutCard(staged, sessionKey, log);
       const run = state.queue.then(async () => {
         let store;
         try {

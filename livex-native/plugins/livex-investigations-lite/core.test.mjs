@@ -920,7 +920,8 @@ test("createLog.notOffered rate limits per tool and reason with the injected clo
 
 /**
  * Install a priority engine whose result exists for every session (runId "any", so the
- * card's own priority never applies) and rates facts with `compute`. Returns a restore.
+ * card's own priority never applies) and rates facts with `compute`, through the
+ * registry's `computeFor` (a stale entry is not used). Returns a restore.
  */
 function withEngine(compute) {
   const engine = Symbol.for("livex.priority-engine.v1");
@@ -930,7 +931,7 @@ function withEngine(compute) {
       return entry;
     }
   }
-  globalThis[engine] = { results: new EverySession() };
+  globalThis[engine] = { results: new EverySession(), computeFor: (_sessionKey, facts) => compute(facts) };
   return () => delete globalThis[engine];
 }
 
@@ -1000,15 +1001,86 @@ test("other records take compute(facts); a stale run's card priority is not reus
       "[livex-investigations-lite] priority compute failed; case stored unrated",
     ]);
 
-    // The registry entry belongs to another run: the card's priority is not reused, the facts are rated.
+    // The registry entry belongs to another run: neither the card's priority nor the stale
+    // entry's compute is used; the registry's computeFor rates the facts.
+    globalThis[engine].computeFor = () => ({ priority: "low", ruleId: "no-effect" });
     const stale = hooksFor();
     sendFinal(stale, { runId: "r2", payload: { text: v3Envelope() } });
     await sent(stale);
     const last = (await stale.store.entries())[0].value.occurrences.at(-1);
-    assert.deepEqual([last.priority, last.ruleId], ["high", "live-broad"]);
+    assert.deepEqual([last.priority, last.ruleId], ["low", "no-effect"]);
   } finally {
     delete globalThis[engine];
   }
+});
+
+test("no card rendered: tool records are rated by the registry's computeFor", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const calls = [];
+  const computeFor = (sessionKey, facts) => {
+    calls.push(sessionKey);
+    return { priority: facts.sampleAffected > 1 ? "high" : "medium", ruleId: facts.sampleAffected > 1 ? "live-broad" : "live-narrow" };
+  };
+  // A Gateway restart: no card was rendered for this session, so there is no results entry.
+  globalThis[engine] = { results: new Map(), computeFor };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    const tool = createRecordTool(config, toolContext(), env.memory);
+    await tool.execute("t", params({ signature: "checkout-api | create order | upstream timeout", sampleAffected: 4 }));
+    await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+    await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+    // The reply ended in plain text: no envelope, no card.
+    sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+    await sent(env);
+    const bySig = Object.fromEntries((await env.store.entries()).map((r) => [r.value.signature.split(" ")[0], r.value.occurrences.at(-1)]));
+    assert.deepEqual([bySig["checkout-api"].priority, bySig["checkout-api"].ruleId], ["high", "live-broad"]);
+    assert.deepEqual([bySig["other-svc"].priority, bySig["other-svc"].ruleId], ["medium", "live-narrow"]);
+    assert.deepEqual([bySig["billing-api"].priority, bySig["billing-api"].ruleId], ["medium", "live-narrow"]);
+    assert.deepEqual(calls, [SESSION, SESSION, SESSION]);
+    assert.deepEqual(env.lines.filter((l) => /unrated/u.test(l)), []);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("no card rendered and computeFor throws: the records are stored unrated with one line", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  globalThis[engine] = { results: new Map(), computeFor: () => { throw new TypeError("livex-slack-summary: invalid facts"); } };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    const tool = createRecordTool(config, toolContext(), env.memory);
+    await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+    await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+    sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+    await sent(env);
+    const occurrences = (await env.store.entries()).map((r) => r.value.occurrences.at(-1));
+    assert.equal(occurrences.length, 2);
+    for (const occurrence of occurrences) {
+      assert.equal(occurrence.priority, "unrated");
+      assert.equal(occurrence.ruleId, undefined);
+    }
+    assert.equal(env.lines.filter((l) => /case stored unrated/u.test(l)).length, 1);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("no card rendered and no registry: the records are stored unrated as before", async () => {
+  delete globalThis[Symbol.for("livex.priority-engine.v1")];
+  const env = hooksFor();
+  await startTurn(env, SESSION, "r1");
+  const tool = createRecordTool(config, toolContext(), env.memory);
+  await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+  await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+  sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+  await sent(env);
+  const occurrences = (await env.store.entries()).map((r) => r.value.occurrences.at(-1));
+  assert.deepEqual(occurrences.map((o) => o.priority), ["unrated", "unrated"]);
+  assert.deepEqual(env.lines.filter((l) => /case stored unrated/u.test(l)), [
+    "[livex-investigations-lite] priority engine unavailable; case stored unrated",
+  ]);
 });
 
 test("an envelope with alternates stages only the main record", async () => {

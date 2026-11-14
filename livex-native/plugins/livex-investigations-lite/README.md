@@ -88,7 +88,10 @@ keys. Mapping: `signature` to the case signature (then normalized like the tool'
 the facts and `resolved` directly, `finding` = `summary` (bounded to 240 chars),
 `title` = `title`, no trend. The model never writes a priority: at commit the case
 stores the card's computed priority (and `ruleId`) for the card's own signature,
-else the priority engine's rating of the record's facts, else `unrated`. On a
+else the priority engine's rating of the record's facts, else `unrated`. When this
+run rendered no card (no registry entry, or one from another run), the registry's
+`computeFor(sessionKey, facts)` rates each record; only when it is missing or throws
+is the case stored `unrated` (one log line). On a
 signature shared with an `investigation_record` call, the envelope's facts, resolved
 state and title are kept with the tool's finding and trend. The usual
 tag-and-commit-on-`message_sent` flow then saves it.
