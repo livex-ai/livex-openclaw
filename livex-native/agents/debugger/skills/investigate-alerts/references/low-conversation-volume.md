@@ -52,7 +52,7 @@ No GKE workload is named. To look for the agent's traffic use chat-engine:
 | --- | --- | --- | --- |
 | No requests in B1 or B2 | | no recent traffic | Not affected; say "no recent traffic" in the summary. *(unmined)* |
 | Requests in exactly one of B1 or B2 | | sparse traffic | Not affected; say "sparse traffic" in the summary. *(unmined)* |
-| Requests in both B1 and B2, none in the alert window | no person has said the agent is off | the visitor flow stopped, device off or a fault | Affected (Client effect check). *(unverified)* |
+| Requests in both B1 and B2, none in the alert window | no person has said the agent is off or the event ended | the visitor flow stopped, device off or a fault | Affected (Client effect check). *(unverified)* |
 | A silent agent is a test or demo agent | | non-customer traffic | Same rule as any agent; it stays in the affected set. Report `traffic: "test"` only when every affected item is on a test or demo agent (wording in the Client effect check). Event and kiosk agents are live. *(unmined)* |
 | Traffic stops for agents of several customers at once | chat-engine or gateway errors up | platform or ingress problem | One investigation of the platform workloads. *(unverified)* |
 | Agent has errors in the window but no requests | `Could not find agent with id` or config validation errors | agent config or publish broken | See error-digest-categories.md. *(unverified)* |
@@ -67,13 +67,13 @@ Sample the agents of the round, N=5 by default (proposed); each agent is an
 item, and its outcome is the two counts of step 3. For each agent, in order:
 
 1. Requests in both B1 and B2, none in the alert window, and no person in the
-   thread has said the agent is off: **affected**.
+   thread has said the agent is off or the event ended: **affected**.
 2. Requests in exactly one of B1 or B2: "sparse traffic", not affected; say so
    in the summary.
 3. No requests in B1 or B2: "no recent traffic", not affected; say so in the
    summary.
-4. Otherwise (requests in the alert window, or a person said it is off): not
-   affected.
+4. Otherwise (requests in the alert window, or a person said it is off or the
+   event ended): not affected.
 
 Test and demo agents follow the same steps; they are not excluded from the
 affected set. Never count an agent whose counts you did not read; if either

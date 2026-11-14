@@ -35,7 +35,7 @@ The digest's own Logs link carries the window; use its timestamps as
 1. **Inventory.** List every category in the digest with its count and service.
    Mark pairs that share a count (likely the same events at two layers).
 2. **Rank by user impact, not by count.** Check the category sections below for
-   whether the handler fails the user's request. Pick the top 3 to verify.
+   whether the handler fails the user's request. Pick at most 2 to verify.
 3. **Size and onset.** For each picked category,
    `livex_gcp_logs_read {mode:"count", resourceType, resourceLabels, phrases:[<literal phrase>], start, end}`
    over the digest window; `buckets` show whether it is a burst or steady.
@@ -133,7 +133,8 @@ Call `investigation_lookup` with `chat-engine | <operation> | <category in plain
 
 ## Client effect check
 
-Per picked category, sample N=5 conversations by default (proposed). List ids
+Per picked category (at most 2), sample 3 conversations, so a run stays near a
+dozen reads. List ids
 with `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, textContains:"<phrase>", start, end, limit:50}`
 over one hour of the digest window, then read each one's outcome with one
 `mode:"context"` read by `conversationId` over that turn plus a few minutes.
@@ -149,10 +150,10 @@ when every affected item is on a test or demo agent, shown by an explicit
 marker (`test_run`, `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole
 word `test` or `demo` in the agent name; event and kiosk agents are live.
 
-Put the category you judge most serious in the envelope's main fields and up
-to four other picked categories in `alternates`, each with its own `title` and
-facts (and `knownRef` when known). List any remaining categories in the
-report.
+Put the category you investigated most fully in the envelope's main fields and
+the other picked category in `alternates`, with its own `title` and facts (and
+`knownRef` when known); the Gateway shows the higher level. List any remaining
+categories in the report.
 
 ## Sustained check
 
@@ -166,7 +167,8 @@ lower bounds and blocks "no client effect" for the thread.
 
 `knownRef` is the id cell, copied verbatim; `known` is the row's state, except
 that a `fixed` row is `ongoing` while the symptom is in the latest completed
-window. A ticket a person filed
+window: a `count` of its phrase over the last complete hour before now. A
+ticket a person filed
 (for example LX-12524 for API usage limits) is `known: "ongoing"` with the
 ticket id. Only people edit this table; suggest a new row in the thread.
 

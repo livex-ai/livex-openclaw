@@ -47,7 +47,9 @@ Call `investigation_lookup` with `chat-engine | <operation> | <error class>` and
 
 Sample N=5 conversations by default (proposed): the alert's own conversation
 (step 1) plus up to 4 others. Find them with `mode:"count"` and the alert's key
-phrase over the last 6 h (its `samples` carry ids), or
+phrase over the last 6 h (its `samples` carry `insertId`, `timestamp`,
+`entryUrl` and text, not conversation ids: use the sample's insertId with a
+`discover` read, or the id in its text), or
 `mode:"errors", textContains:<phrase>, limit:50` over one hour (a capped
 listing read is fine); then one `context` read per id by `conversationId` over
 that turn plus a few minutes. Each outcome read is ID-scoped, so keep it to a few minutes (or add
@@ -69,9 +71,10 @@ answered is not affected.
 
 ## Known patterns
 
-`knownRef` is the id cell, copied verbatim; `known` is the row's state. Only
-people edit this table;
-suggest a new row in the thread.
+`knownRef` is the id cell, copied verbatim; `known` is the row's state, except
+that a `fixed` row is `ongoing` while the symptom is in the latest completed
+window: a `count` of its phrase over the last complete hour before now. Only
+people edit this table; suggest a new row in the thread.
 
 | id | pattern | state (fixed, harmless or ongoing) | since | source |
 | --- | --- | --- | --- | --- |

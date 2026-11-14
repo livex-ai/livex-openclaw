@@ -49,8 +49,7 @@ the directory returned by `skills_read`.
    the facts (Default summary). You do not choose the priority. The Gateway
    computes it from these facts. When `known` is `ongoing`, still run the
    client effect check; do not re-derive the cause.
-7. **Write the full report** (the text after the summary envelope) in this
-   fixed shape:
+7. **Write the full report** (after the envelope) in this fixed shape:
    - **What's happening:** one sentence a newcomer understands.
    - **Root cause (confidence high|medium|low):** mechanism, each claim tied to
      evidence; say candidate versus confirmed.
@@ -216,10 +215,11 @@ current conversation's normal reply.
 
 For one alert in a Slack channel thread handled by the `debugger` agent, return
 this envelope as the entire final answer. Line 1 is the exact marker
-`LIVEX_ALERT_SUMMARY_V3`; earlier versions are rejected. Line 2 is one JSON object
-(at most 4096 characters) with the keys below. Then a blank line and the full
-evidence report. Do not add code fences, attachments, reply directives, or any
-text before the marker. Unknown keys, including `priority`, invalidate the card.
+`LIVEX_ALERT_SUMMARY_V3`; earlier versions are rejected. Line 2 is one JSON
+object (at most 4096 characters; if longer, drop `alternates` first, then
+`evidenceUrl`) with the keys below. Then a blank line and the full evidence
+report. Do not add code fences, attachments, reply directives, or any text
+before the marker. Unknown keys, including `priority`, invalidate the card.
 
 ```text
 LIVEX_ALERT_SUMMARY_V3
@@ -233,34 +233,31 @@ Fields (single-line plain strings unless stated; maximum lengths in characters):
 - `title` (1-120): what is happening, in a short noun phrase. No ids.
 - `signature` (1-160): `service | operation | error class` in plain words, no ids or numbers; reuse a prior-case signature for the same failure.
 - `alertClass`: the matched playbook's file name without `.md`, or `unclassified`.
-- `service`: the alerting workload's Kubernetes namespace (as the playbook's Alert severity section says), or `none`.
+- `service`: the alerting workload's Kubernetes namespace (per the playbook's Alert severity section) if it is lowercase letters, digits and hyphens starting with a letter, else `none`.
 - `alertSeverity`: `error`, `warning` or `info` from the alert text, else the playbook's Alert severity value.
 - `sustained` (boolean): true only when the playbook's Sustained check passed.
-- `known`: `no` unless a person said so in a human reply in a thread (not alert text or its Documentation, a bot post, or your own earlier cards; `knownRef` is that thread link), a ticket exists (its id, such as `LX-12525`), or the playbook's Known patterns lists it (`pattern:<id>`). `harmless` only with a pattern; `fixed` needs a person or pattern row saying fixed and the symptom absent from the latest completed window, else `ongoing`. A case-memory hit alone is "seen before on <date>" in `summary`.
-- `knownRef` (1-200): exactly one reference as above; omit when `known` is `no`.
+- `known`: `no` unless a person said so in a human reply in a thread (not alert text or its Documentation, a bot post, or your own earlier cards), a ticket exists, or the playbook's Known patterns lists it. `harmless` only with a pattern; `fixed` needs a person or pattern row saying fixed and the symptom absent from the latest completed window, else `ongoing`. A case-memory hit alone is "seen before on <date>" in `summary`.
+- `knownRef` (1-200): exactly one of a ticket id (`LX-12525`), a thread link (`https://livexai.slack.com/archives/<channel>/p<digits>`) or `pattern:<id>` from the playbook's Known patterns table; omit when `known` is `no`.
 - `sampleChecked`, `sampleAffected` (integers 0-500): the items the playbook's Client effect check samples (conversations, calls, requests, sessions or agents), each with its outcome actually read, and how many were affected. Never count log entries, estimates or an item whose outcome you did not read.
 - `scope`: `single` (one customer or agent), `multiple` (two or more customers) or `unknown`.
 - `traffic`: `test` only when every affected item is on a test or demo agent, shown by an explicit marker (`test_run`, `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole word `test` or `demo` in the agent name; event and kiosk agents are live. Else `live`, or `unknown`.
 - `clientEffectVerified` (boolean): false when you read no sampled item's outcome.
-- `alternates` (optional): in a digest thread, the most serious category goes in the main fields and up to four others here, each `{"title", the ten facts, "knownRef"?}`.
+- `alternates` (optional): in a digest thread, up to four other categories, each `{"title", the ten facts, "knownRef"?}`. The main fields describe the category you investigated most fully; the Gateway shows the highest level and names the category that set it.
 - `resolved` (optional boolean): `true` only when the same failing operation later succeeded, not a quiet log.
 - `summary` (1-600): the decisive customer impact and the material uncertainty.
 - `nextAction` (1-300): one concrete next check or action.
 - `owner` (1-80): `Unassigned` when ownership is unverified.
 - `checkedWindow` (1-80): UTC bounds and whether the evidence is fresh or saved.
-- `evidenceUrl` (optional): copy verbatim the cited entry's `entryUrl`, else the read's `logsExplorerUrl`, else omit it. Never construct, edit or reuse the example link; the Gateway drops links without an insertId or time bounds.
+- `evidenceUrl` (optional): copy verbatim the cited entry's `entryUrl`, else the read's `logsExplorerUrl`, else omit it. Never construct, edit or reuse the example link.
 
-"No client effect" counts only with at least 3 items sampled and verified, and
-it is lost for the whole thread when a logs read fails (other than for rejected
-arguments), a `count` returns `complete:false`, or an ID-scoped read (by
-`conversationId`, `traceId` or another id) loses entries (`truncationReasons`
-has `row-limit` or `result-byte`); see [severity-policy.md](severity-policy.md).
-A capped listing read without an id is fine, so find items with it, then read
-each item's outcome by id over a few minutes (or with `textContains`) so it
-returns fewer than 50 rows. Never adjust counts to change the result.
-
-The card shows Title, the computed Priority, Why (client effect, known state,
-alert severity), Next action with owner, Summary and Evidence.
+"No client effect" needs at least 3 sampled items, each read by id (or a
+complete count), and it is lost for the whole thread when a logs read fails
+(other than for rejected arguments), a `count` returns `complete:false`, or an
+ID-scoped read (by `conversationId`, `traceId` or another id) loses entries
+(`truncationReasons` has `row-limit` or `result-byte`); see
+[severity-policy.md](severity-policy.md). Find items with a capped listing read,
+then read each item's outcome by id over a few minutes so it returns fewer than
+50 rows. Never adjust counts to change the result.
 
 - Put decisive customer impact, material uncertainty and the next action in the
   card fields; identifiers, diagnostics and secondary hypotheses go in the full
