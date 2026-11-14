@@ -15,7 +15,8 @@ export function memoryStore({ maxEntries = 500, overflowPolicy = "evict-oldest" 
         const oldest = [...rows].sort((a, b) => a[1].createdAt - b[1].createdAt)[0][0];
         rows.delete(oldest);
       }
-      const createdAt = rows.get(key)?.createdAt ?? ++clock;
+      // The real register upserts created_at, so a re-register refreshes it.
+      const createdAt = ++clock;
       rows.set(key, { value: structuredClone(value), createdAt });
     },
     async entries() {

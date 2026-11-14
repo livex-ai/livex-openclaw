@@ -87,7 +87,8 @@ export function sanitizeLine(value, maxChars) {
     .normalize("NFKC")
     // Angle brackets would let stored text forge the prompt block delimiters.
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
-    .replace(/[<>]/gu, " ")
+    // Includes lookalike brackets (NFKC leaves several of them unchanged).
+    .replace(/[<>\u2039\u203a\u00ab\u00bb\u2329\u232a\u3008\u3009\u27e8\u27e9\u276e\u276f\u27ea\u27eb\u02c2\u02c3\u300a\u300b]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   return text.length > maxChars ? `${text.slice(0, maxChars - 1).trimEnd()}…` : text;
@@ -132,11 +133,10 @@ export function normalizeSignature(raw) {
       "Signature is too generic after removing ids and numbers; use service | operation | error class",
     );
   }
-  const signature = parts.map((tokens) => tokens.join("-")).join(" | ");
-  if (signature.length > MAX_SIGNATURE_CHARS) {
-    return signature.slice(0, MAX_SIGNATURE_CHARS).replace(/[-| ]+$/u, "");
-  }
-  return signature;
+  // Never truncated: the case key hashes the full canonical form so distinct
+  // issues cannot merge. Length is bounded by the part/token limits above;
+  // only the display copy is shortened (see renderCase).
+  return parts.map((tokens) => tokens.join("-")).join(" | ");
 }
 
 export function signatureTokens(signature) {
@@ -177,11 +177,16 @@ export function authorizeToolContext(config, context) {
   return session;
 }
 
-/** Hook gate: enabled agent's Slack thread in an allowed channel, by the allowed sender if known. */
-export function authorizeHookContext(config, sessionKey, ctx) {
+/**
+ * Hook gate: enabled agent's Slack thread in an allowed channel. A present
+ * senderId must be the allowed sender; `requireSender` (prompt injection)
+ * additionally refuses a missing senderId.
+ */
+export function authorizeHookContext(config, sessionKey, ctx, { requireSender = false } = {}) {
   const session = parseSession(sessionKey, config.agents);
   if (!session || !channelAllowed(config, session.channel)) return null;
   if (ctx?.agentId !== undefined && ctx.agentId !== session.agentId) return null;
+  if (requireSender && ctx?.senderId !== config.allowedSenderId) return null;
   if (ctx?.senderId !== undefined && ctx.senderId !== config.allowedSenderId) return null;
   return session;
 }
@@ -260,7 +265,11 @@ export function mergeCase(existing, staged, { now, replyTs, limits }) {
   // A repeat investigation in the same thread refines that occurrence in place.
   const kept = sameThread ? existing.occurrences.slice(0, -1) : (existing?.occurrences ?? []);
   const occurrences = [...kept, occurrence].slice(-limits.maxOccurrences);
-  const allNotes = [...(existing?.notes ?? []), ...notes.map((n) => sanitizeLine(n, MAX_NOTE_CHARS))];
+  // Each note remembers the channel it was written in so views can filter it.
+  const allNotes = [
+    ...(existing?.notes ?? []),
+    ...notes.map((n) => ({ text: sanitizeLine(n, MAX_NOTE_CHARS), channel: staged.thread.channel })),
+  ];
   return {
     signature: staged.signature,
     title: staged.title,
@@ -284,10 +293,38 @@ function score(caseValue, queryTokens) {
 }
 
 /**
+ * Restrict a stored case to occurrences recorded in `channel`; null when it has
+ * none there. Counts and dates are recomputed only when something was hidden.
+ */
+function channelView(value, channel) {
+  const all = Array.isArray(value.occurrences) ? value.occurrences : [];
+  const visible = all.filter((o) => o?.thread?.channel === channel);
+  if (visible.length === 0) return null;
+  // Notes keep only this channel's text; legacy notes without a channel are hidden.
+  const notes = (Array.isArray(value.notes) ? value.notes : [])
+    .filter((n) => n && typeof n === "object" && n.channel === channel && typeof n.text === "string")
+    .map((n) => n.text);
+  if (visible.length === all.length) return { ...value, notes };
+  return {
+    ...value,
+    // The stored title may come from a hidden channel; show the signature instead.
+    title: value.signature,
+    occurrences: visible,
+    totalOccurrences: visible.length,
+    firstSeen: visible[0].at,
+    lastSeen: visible.at(-1).at,
+    notes,
+  };
+}
+
+/**
  * Deterministic matching: exact canonical signature first, then token coverage
  * of each stored signature by the query (ties: newest lastSeen, then key).
+ * Only occurrences recorded in `channel` are visible; without a channel nothing
+ * is returned.
  */
-export async function findCases(store, { signature, query }, max = LOOKUP_MAX_CASES) {
+export async function findCases(store, { signature, query, channel }, max = LOOKUP_MAX_CASES) {
+  if (typeof channel !== "string" || !channel) return [];
   const found = [];
   const seen = new Set();
   if (typeof signature === "string" && signature.trim()) {
@@ -300,8 +337,9 @@ export async function findCases(store, { signature, query }, max = LOOKUP_MAX_CA
     if (canonical) {
       const key = signatureKey(canonical);
       const exact = await store.lookup(key);
-      if (exact) {
-        found.push({ key, value: exact, match: "exact" });
+      const view = exact ? channelView(exact, channel) : null;
+      if (view) {
+        found.push({ key, value: view, match: "exact" });
         seen.add(key);
       }
     }
@@ -316,7 +354,9 @@ export async function findCases(store, { signature, query }, max = LOOKUP_MAX_CA
     for (const entry of await store.entries()) {
       if (seen.has(entry.key) || !entry.value || typeof entry.value.signature !== "string") continue;
       const coverage = score(entry.value, queryTokens);
-      if (coverage !== null) ranked.push({ key: entry.key, value: entry.value, coverage });
+      if (coverage === null) continue;
+      const view = channelView(entry.value, channel);
+      if (view) ranked.push({ key: entry.key, value: view, coverage });
     }
     ranked.sort(
       (a, b) =>
@@ -341,18 +381,20 @@ function threadRef(thread) {
   return `thread ${thread.channel}/${thread.threadTs}${reply}`;
 }
 
-function renderCase(entry, { maxOccurrences, findingChars }) {
+/**
+ * Injected block lines: signature, latest priority and resolved state, count,
+ * lastSeen and a short trend. Free-text findings and titles are deliberately
+ * left out; they stay available through investigation_lookup only.
+ */
+function renderCase(entry, { trendChars }) {
   const c = entry.value;
+  const latest = (c.occurrences ?? []).at(-1);
+  const state = latest ? `${readPriority(latest.priority)} ${latest.resolved === true ? "resolved" : "open"}` : "unknown";
   const lines = [
-    `- ${sanitizeLine(c.title, MAX_TITLE_CHARS)} [${sanitizeLine(c.signature, MAX_SIGNATURE_CHARS)}] (${entry.match}); first ${day(c.firstSeen)}, last ${day(c.lastSeen)}, ${Number(c.totalOccurrences) || (c.occurrences?.length ?? 0)} seen`,
+    `- [${sanitizeLine(c.signature, MAX_SIGNATURE_CHARS)}] (${entry.match}); latest ${state}; last seen ${day(c.lastSeen)}; ${Number(c.totalOccurrences) || (c.occurrences?.length ?? 0)} seen`,
   ];
-  for (const o of (c.occurrences ?? []).slice(-maxOccurrences).reverse()) {
-    lines.push(
-      `  * ${day(o.at)} ${readPriority(o.priority)}${o.resolved === true ? " resolved" : " open"}: ${sanitizeLine(o.finding, findingChars)} (${threadRef(o.thread)})`,
-    );
-  }
   const note = (c.notes ?? []).at(-1);
-  if (note) lines.push(`  * trend: ${sanitizeLine(note, MAX_NOTE_CHARS)}`);
+  if (note && trendChars > 0) lines.push(`  * trend: ${sanitizeLine(note, trendChars)}`);
   return lines.join("\n");
 }
 
@@ -367,11 +409,7 @@ export function renderSeenBefore(entries, { maxCases, maxChars }) {
   let used = 0;
   for (const entry of entries.slice(0, maxCases)) {
     // Shrink a case rather than drop it when it is too long for the budget.
-    for (const shape of [
-      { maxOccurrences: 3, findingChars: 140 },
-      { maxOccurrences: 1, findingChars: 100 },
-      { maxOccurrences: 1, findingChars: 40 },
-    ]) {
+    for (const shape of [{ trendChars: 120 }, { trendChars: 40 }, { trendChars: 0 }]) {
       const text = renderCase(entry, shape);
       if (used + text.length + 1 <= budget) {
         body.push(text);
@@ -409,8 +447,10 @@ export function toLookupDetails(entries) {
  * returns a V2 keyed store; hooks open it without an invocation authority.
  */
 export function createMemory(config, { openStore, now = Date.now }) {
-  // sessionKey -> {records: Map<key, staged>, stagedAt, tagged, runId}
+  // sessionKey -> {records: Map<key, staged>, stagedAt, tagged, stagedRunId}
   const pending = new Map();
+  // sessionKey -> latest runId seen by before_prompt_build (tool contexts carry none).
+  const runs = new Map();
   let queue = Promise.resolve();
 
   const live = (entry) => entry && now() - entry.stagedAt <= config.pendingTtlMs;
@@ -420,13 +460,35 @@ export function createMemory(config, { openStore, now = Date.now }) {
 
   return {
     pending,
+    runs,
+
+    /**
+     * Record the run a session's current prompt build belongs to. A different
+     * runId than the one that staged the pending entry means that entry belongs
+     * to an earlier, undelivered turn: drop it. A missing runId changes nothing,
+     * so it can never wipe entries staged under a known run; a prompt rebuild
+     * inside the same run (Codex, retries) keeps the staged record.
+     */
+    observeRun(sessionKey, runId) {
+      if (typeof runId !== "string" || runId.length === 0) return;
+      const entry = pending.get(sessionKey);
+      if (entry && entry.stagedRunId !== runId) pending.delete(sessionKey);
+      runs.delete(sessionKey);
+      runs.set(sessionKey, runId);
+      if (runs.size > MAX_PENDING_SESSIONS) runs.delete(runs.keys().next().value);
+    },
 
     stage(sessionKey, record) {
       sweep();
+      const runId = runs.get(sessionKey);
       let entry = pending.get(sessionKey);
+      if (entry && entry.stagedRunId !== runId) {
+        pending.delete(sessionKey);
+        entry = undefined;
+      }
       if (!entry) {
         if (pending.size >= MAX_PENDING_SESSIONS) pending.delete(pending.keys().next().value);
-        entry = { records: new Map(), stagedAt: now(), tagged: false, runId: undefined };
+        entry = { records: new Map(), stagedAt: now(), tagged: false, stagedRunId: runId };
         pending.set(sessionKey, entry);
       }
       const key = signatureKey(record.signature);
@@ -437,24 +499,23 @@ export function createMemory(config, { openStore, now = Date.now }) {
       entry.stagedAt = now();
     },
 
-    /** A new turn starts: anything still pending belonged to an earlier, undelivered turn. */
     discard(sessionKey) {
       pending.delete(sessionKey);
     },
 
-    /** The final reply for this turn is about to be delivered. */
+    /**
+     * A final reply for `runId` is about to be delivered. Only the run that
+     * staged the entry may tag it; any other run's reply drops it as stale.
+     */
     tag(sessionKey, runId) {
       const entry = pending.get(sessionKey);
-      if (!live(entry)) {
-        pending.delete(sessionKey);
-        return;
-      }
-      if (entry.tagged && entry.runId !== runId) {
+      if (!entry) return;
+      // A missing runId proves nothing: it must never match an entry staged without one.
+    if (!live(entry) || typeof runId !== "string" || runId.length === 0 || runId !== entry.stagedRunId) {
         pending.delete(sessionKey);
         return;
       }
       entry.tagged = true;
-      entry.runId = runId;
     },
 
     /** Delivery outcome. Resolves after the commit settles (hooks may ignore it). */
@@ -465,9 +526,9 @@ export function createMemory(config, { openStore, now = Date.now }) {
         return false;
       }
       if (!entry.tagged) return false;
-      if (runId !== undefined && entry.runId !== undefined && runId !== entry.runId) return false;
-      if (!success) return false; // kept until its TTL; a retried delivery can still confirm
-      pending.delete(sessionKey);
+      if (runId !== undefined && entry.stagedRunId !== undefined && runId !== entry.stagedRunId) return false;
+      pending.delete(sessionKey); // a failed final is dropped, not kept for retry
+      if (!success) return false;
       const replyTs = typeof messageId === "string" && SLACK_TS.test(messageId) ? messageId : undefined;
       const records = [...entry.records.values()];
       const run = queue.then(async () => {
@@ -544,7 +605,8 @@ export function createRecordTool(config, context, memory) {
 }
 
 export function createLookupTool(config, context, openStore) {
-  if (!authorizeToolContext(config, context)) return null;
+  const session = authorizeToolContext(config, context);
+  if (!session) return null;
   return {
     name: "investigation_lookup",
     label: "Look up past investigations",
@@ -565,7 +627,7 @@ export function createLookupTool(config, context, openStore) {
       const query = typeof params?.query === "string" ? params.query : undefined;
       if (!signature?.trim() && !query?.trim()) throw new Error("Provide signature or query");
       const store = openStore({ assertCurrent: context.assertInvocationCurrent });
-      const cases = toLookupDetails(await findCases(store, { signature, query }));
+      const cases = toLookupDetails(await findCases(store, { signature, query, channel: session.channel }));
       context.assertInvocationCurrent();
       const details = {
         cases,
@@ -583,11 +645,17 @@ export function createHooks(config, memory, openStore) {
   return {
     async beforePromptBuild(event, ctx) {
       try {
-        const session = authorizeHookContext(config, ctx?.sessionKey, ctx);
+        // Record the run before any gate: a turn by another sender still ends
+        // the earlier turn's undelivered staged record.
+        if (parseSession(ctx?.sessionKey, config.agents)) memory.observeRun(ctx.sessionKey, ctx.runId);
+        const session = authorizeHookContext(config, ctx?.sessionKey, ctx, { requireSender: true });
         if (!session) return undefined;
-        memory.discard(ctx.sessionKey);
         const text = String(event?.currentUserMessage ?? event?.prompt ?? "").slice(0, MAX_QUERY_CHARS);
-        const found = await findCases(openStore(), { query: text }, config.seenBeforeMaxCases);
+        const found = await findCases(
+          openStore(),
+          { query: text, channel: session.channel },
+          config.seenBeforeMaxCases,
+        );
         const block = renderSeenBefore(found, {
           maxCases: config.seenBeforeMaxCases,
           maxChars: config.seenBeforeMaxChars,
@@ -598,20 +666,20 @@ export function createHooks(config, memory, openStore) {
       }
     },
 
-    replyPayloadSending(event) {
+    replyPayloadSending(event, ctx) {
       try {
         const payload = event?.payload;
         if (
           event?.kind !== "final" ||
           event.channel !== "slack" ||
-          !authorizeHookContext(config, event.sessionKey, undefined) ||
+          !authorizeHookContext(config, event.sessionKey, ctx) ||
           payload?.isReasoning ||
           payload?.isCommentary ||
           payload?.isStatusNotice
         ) {
           return undefined;
         }
-        memory.tag(event.sessionKey, event.runId);
+        memory.tag(event.sessionKey, event.runId ?? ctx?.runId);
       } catch {
         // Memory is best-effort; never alter or block the reply.
       }
@@ -621,7 +689,7 @@ export function createHooks(config, memory, openStore) {
     async messageSent(event, ctx) {
       try {
         const sessionKey = event?.sessionKey ?? ctx?.sessionKey;
-        if (!authorizeHookContext(config, sessionKey, undefined)) return;
+        if (!authorizeHookContext(config, sessionKey, ctx)) return;
         await memory.delivered(sessionKey, {
           success: event.success === true,
           messageId: event.messageId,

@@ -55,6 +55,8 @@ test("the entry registers gated tools and the three hooks end to end", async () 
     assert.equal(factory.create(toolContext({ requesterSenderId: "U0OTHER" })), null);
   }
 
+  const promptCtx = { channelId: "slack", sessionKey: SESSION, agentId: "debugger", senderId: SENDER, runId: "r" };
+  await handlers.get("before_prompt_build")({ prompt: "start of turn" }, promptCtx);
   const record = factories.get("investigation_record").factory.create(toolContext());
   await record.execute("c", {
     signature: "checkout-api | create order | upstream timeout",
@@ -63,20 +65,28 @@ test("the entry registers gated tools and the three hooks end to end", async () 
     finding: "Recovered after provider retry.",
   });
   assert.equal(store.rows.size, 0);
-  handlers.get("reply_payload_sending")({ kind: "final", channel: "slack", sessionKey: SESSION, runId: "r", payload: {} });
-  await handlers.get("message_sent")({ success: true, sessionKey: SESSION, messageId: "1768996900.000200" }, {});
+  handlers.get("reply_payload_sending")(
+    { kind: "final", channel: "slack", sessionKey: SESSION, runId: "r", payload: {} },
+    { channelId: "slack", sessionKey: SESSION, senderId: SENDER, runId: "r" },
+  );
+  await handlers.get("message_sent")(
+    { success: true, sessionKey: SESSION, messageId: "1768996900.000200" },
+    { channelId: "slack", sessionKey: SESSION },
+  );
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(store.rows.size, 1);
 
   const injected = await handlers.get("before_prompt_build")(
     { prompt: "checkout-api create order upstream timeout" },
-    { sessionKey: SESSION, agentId: "debugger", senderId: SENDER },
+    { ...promptCtx, runId: "r" },
   );
-  assert.match(injected.prependContext, /Recovered after provider retry/);
+  assert.match(injected.prependContext, /latest medium resolved/);
+  assert.ok(!injected.prependContext.includes("Recovered after provider retry"));
 
   const lookup = factories.get("investigation_lookup").factory.create(toolContext());
   const found = await lookup.execute("c", { query: "create order upstream timeout checkout-api" });
   assert.equal(found.details.cases.length, 1);
+  assert.match(found.details.cases[0].occurrences[0].finding, /Recovered after provider retry/);
   const withAuthority = opened.filter((o) => o.authority);
   assert.ok(withAuthority.length >= 1, "tool reads bind the invocation authority");
   assert.deepEqual(opened[0].options, { namespace: "cases", maxEntries: 500, overflowPolicy: "evict-oldest" });

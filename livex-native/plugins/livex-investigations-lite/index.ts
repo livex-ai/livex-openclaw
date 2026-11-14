@@ -45,7 +45,7 @@ export default definePluginEntry({
     );
 
     api.on("before_prompt_build", (event, ctx) => hooks.beforePromptBuild(event, ctx));
-    api.on("reply_payload_sending", (event) => hooks.replyPayloadSending(event));
+    api.on("reply_payload_sending", (event, ctx) => hooks.replyPayloadSending(event, ctx));
     api.on("message_sent", (event, ctx) => hooks.messageSent(event, ctx));
   },
 });
