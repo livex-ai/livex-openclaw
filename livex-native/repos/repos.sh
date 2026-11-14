@@ -323,7 +323,13 @@ write_previous() { # $1=target
 
 # Take deploy.lock unless the caller (repos_dev.sh) already holds it.
 take_deploy_lock() {
-  [[ ${LIVEX_REPOS_LOCKED:-} != 1 ]] || return 0
+  if [[ ${LIVEX_REPOS_LOCKED:-} == 1 ]]; then
+    # Trust the marker only if the lock really is held by someone else.
+    if flock -n "$root/deploy.lock" true; then
+      die "LIVEX_REPOS_LOCKED=1 but $root/deploy.lock is not held"
+    fi
+    return 0
+  fi
   command -v flock >/dev/null 2>&1 || die "flock (util-linux) is required to take $root/deploy.lock"
   exec 9>"$root/deploy.lock" || die "cannot open $root/deploy.lock"
   flock -n 9 || die "a deploy or another repos change holds $root/deploy.lock; retry when it finishes"
@@ -355,6 +361,20 @@ archive_size_checked() { # $1=archive
   [[ $total =~ ^[0-9]+$ ]] || total=0
   ((total > 0)) || die "cannot determine the uncompressed size of $1; nothing extracted"
   printf '%s\n' "$total"
+}
+
+inode_of() { # $1=path; GNU stat, then BSD stat
+  stat -c %i "$1" 2>/dev/null || stat -f %i "$1" 2>/dev/null
+}
+
+# Inode of the directory the live Gateway has mounted at /repos (read inside the running
+# container: Docker re-resolves the `repos` symlink at every container start, so the
+# symlink and repos.mounted can both be stale). Prints nothing when it cannot be read.
+mounted_inode() {
+  local out
+  out=$(docker exec "${LIVEX_GATEWAY_CONTAINER:-livex-openclaw-native-dev-gateway-1}" stat -c %i /repos 2>/dev/null) || return 0
+  [[ $out =~ ^[0-9]+$ ]] && printf '%s\n' "$out"
+  return 0
 }
 
 install_new=""
@@ -427,20 +447,25 @@ cmd_install() {
     switch_link "$dest" "$root/repos"
     if [[ $old =~ ^$root/repos-[0-9a-f]{12}$ ]]; then write_previous "$old"; fi
   fi
-  # Keep the current and previous snapshots and the one the live container mounts
-  # ($root/repos.mounted, written by the deploy); drop older ones and leftovers. Without a
-  # valid record nothing is pruned: the mounted snapshot cannot be told apart.
-  local prev="" mounted="" d
+  # Keep the current and previous snapshots and whatever the running container has
+  # mounted; drop older ones and leftovers. The mounted directory is identified by the
+  # inode of /repos inside the running container. If that cannot be read (container
+  # stopped, no docker), nothing is pruned. $root/repos.mounted (written by the deploy)
+  # is an extra keep on top of the inode check.
+  local prev="" rec="" live_inode="" d
   [[ -s $root/repos.previous ]] && prev=$(<"$root/repos.previous")
-  [[ -s $root/repos.mounted ]] && mounted=$(<"$root/repos.mounted")
-  if [[ $mounted =~ ^"$root"/repos-([0-9a-f]{12}|empty)$ ]]; then
+  [[ -s $root/repos.mounted ]] && rec=$(<"$root/repos.mounted")
+  live_inode=$(mounted_inode)
+  if [[ -n $live_inode ]]; then
     for d in "$root"/repos-*; do
       [[ -e $d ]] || continue
       [[ $d =~ ^"$root"/repos-([0-9a-f]{12})(\.new)?$ ]] || continue
-      [[ $d == "$dest" || $d == "$prev" || $d == "$mounted" ]] || rm -rf "$d"
+      [[ $d == "$dest" || $d == "$prev" || $d == "$rec" ]] && continue
+      [[ $(inode_of "$d") == "$live_inode" ]] && continue
+      rm -rf "$d"
     done
   else
-    echo "repos: no valid $root/repos.mounted record (written by make deploy_dev); keeping every snapshot"
+    echo "repos: cannot read the running Gateway's /repos mount (container not running?); keeping every snapshot"
   fi
   echo "repos: installed $dest (previous: ${prev:-none}); $root/repos -> $(readlink "$root/repos")"
   echo "repos: the running Gateway keeps its old /repos mount until the container is recreated: run make deploy_dev"

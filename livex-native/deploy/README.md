@@ -609,8 +609,11 @@ The pins live in [`repos/manifest.json`](../repos/manifest.json); the operator f
   `LIVEX_REPOS_DIR` to `compose.env`: live mode uses `$root/repos`, a symlink that
   `repos.sh install` repoints (an empty `$root/repos-empty` stands in until the first
   install); stage and test modes mount an empty `$root/repos-empty`.
-- Docker resolves the symlink when the container is created, so a new snapshot is only
-  seen after a deploy (or `docker compose up -d --force-recreate gateway`).
+- Docker re-resolves the symlink at every container start (create, restart, rollback), so
+  a new snapshot is only seen after a deploy (or `docker compose up -d --force-recreate gateway`).
+  `remote.sh` records the mounted target in `$root/repos.mounted` after the new container
+  is up and after a successful rollback start; `repos.sh install` also reads the live
+  container's `/repos` inode and never prunes a matching directory.
 - Before anything is stopped (live mode), `remote.sh` runs a throwaway container from
   the new image as uid 1000 and checks that every pinned entry has `$root/repos/<id>`
   owned by that user with `git cat-file -e <commit>^{commit}` succeeding. A missing

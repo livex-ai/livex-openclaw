@@ -37,7 +37,8 @@ make deploy_dev CONFIRM=livex-openclaw-dev       # activate: recreates the conta
 - `make repos_dev_dry` runs the same checks and prints the gcloud commands without
   building or running anything. `LIVEX_TEST_IAP=0` selects direct SSH as for `deploy_dev`.
 - `make repos_dev` does not restart anything. The running container keeps the `/repos`
-  mount it was created with (Docker resolves the `repos` symlink at creation), so the
+  mount it started with (Docker re-resolves the `repos` symlink at every container start,
+  including a restart or a failed-deploy rollback, never while it runs), so the
   new snapshot is used after `make deploy_dev` or
   `docker compose up -d --force-recreate gateway`.
 - `deploy_dev` refuses (Gateway untouched, "run make repos_dev first") when a pinned
@@ -74,15 +75,18 @@ archive's uncompressed size on `$root` (override the requirement with
 tar supports them, then `chown -R 1000:1000` and `chmod 0750` on the snapshot root. The
 uploaded archive and manifest are mode 0600.
 
-Pruning keeps three snapshots: the current one, the previous one (`repos.previous`) and
-the one the running container mounts. `make deploy_dev` records that last one in
-`$root/repos.mounted` (the resolved `repos` target) after the container is created, so
-running `repos_dev` twice before a deploy cannot delete the snapshot still bind-mounted.
-If `repos.mounted` is missing or not `$root/repos-<12hex>` (or `repos-empty`), install
-prunes nothing and says so.
+Pruning keeps the current snapshot, the previous one (`repos.previous`), the one named in
+`$root/repos.mounted` and any directory whose inode equals that of `/repos` inside the
+running Gateway (`docker exec <gateway> stat -c %i /repos`). The inode check is the
+authority: the symlink and the record can be stale, because Docker re-resolves the symlink
+at each container start (a failed-deploy rollback restarts the container on whatever
+`repos` points to then). `make deploy_dev` rewrites `repos.mounted` after the new container
+is up and after a successful rollback start. If the container is not running or its mount
+cannot be read, install prunes nothing and says so.
 
 Locking: `repos_dev.sh` runs install under `flock -n $root/deploy.lock` and sets
-`LIVEX_REPOS_LOCKED=1` so `repos.sh` does not take the lock again. Run by hand,
+`LIVEX_REPOS_LOCKED=1` so `repos.sh` does not take the lock again (it checks that the lock
+really is held and refuses otherwise). Run by hand,
 `repos.sh install` and `repos.sh rollback` take `$root/deploy.lock` themselves (non-blocking:
 they fail when a deploy holds it). `verify` only reads and takes no lock. It needs `git` and
 `setpriv` on the VM host. If `$root/repos` is a real directory (a hand-made layout), move

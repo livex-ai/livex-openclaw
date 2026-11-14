@@ -20,8 +20,8 @@ x-runtime: &runtime
     # Pinned, reviewed source snapshots for livex_repository_read, read-only.
     # remote.sh always sets LIVEX_REPOS_DIR: on the live install it is the `repos`
     # symlink that `make repos_dev` repoints; elsewhere an empty directory. Docker
-    # resolves the symlink when the container is CREATED, so a new snapshot is only
-    # seen after a deploy (or `docker compose up -d --force-recreate`).
+    # re-resolves the symlink at every container start (create, restart, rollback), so a
+    # new snapshot is only seen after a deploy (or `docker compose up -d --force-recreate`).
     - "${LIVEX_REPOS_DIR:?repos directory required}:/repos:ro"
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]

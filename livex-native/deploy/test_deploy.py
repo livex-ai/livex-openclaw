@@ -413,7 +413,7 @@ esac
 
     def snapshot_legacy(r):
         return {n: (tree(r / n) if (r / n).is_dir() else (r / n).read_bytes())
-                for n in sorted(os.listdir(r)) if n not in ("releases", "deploy.lock", "repos", "repos-empty")}
+                for n in sorted(os.listdir(r)) if n not in ("releases", "deploy.lock", "repos", "repos-empty", "repos.mounted")}
 
     def assert_original(r, before, label):
         assert snapshot_legacy(r) == before, label
@@ -672,6 +672,8 @@ esac
             assert res.returncode != 0, (label, res.stdout)
             assert f"Rollback ready on {live_project}:pre-adopt-" in res.stdout, (label, res.stdout)
             assert_original(r, before, f"{label}/{stale}")
+            # The rollback start re-resolved the `repos` symlink: the record follows it.
+            assert (r / "repos.mounted").read_text() == f"{r}/repos-empty\n", label
     print("PASS failed adoption (not ready, copy, rename, link) restores compose.env, records, STATE_DIR, image and compose file exactly")
 
     # Same-sha adoption that fails after readiness: the moved sha tag is put back.

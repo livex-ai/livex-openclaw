@@ -51,12 +51,24 @@ with tempfile.TemporaryDirectory(prefix="livex-repos-test-") as scratch:
 exec /bin/mv "$@"
 """)
     # flock(1) is not on macOS: a shim that takes the same advisory lock (fd 9) with fcntl.
-    fake("flock", """exec python3 -c 'import fcntl,sys
+    fake("flock", """exec python3 -c 'import fcntl,subprocess,sys
+a = sys.argv[2:]
 try:
-    fcntl.flock(int(sys.argv[2]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if a[0].isdigit():
+        fcntl.flock(int(a[0]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        f = open(a[0], "a")
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(subprocess.call(a[1:]))
 except OSError:
     sys.exit(1)' "$@"
 """)
+    # The Gateway container's `stat -c %i /repos`: answers with $base/docker.inode, fails when absent.
+    inode_file = base / "docker.inode"
+    fake("docker", f'''[[ ${{1:-}} == exec ]] || exit 1
+[[ -f "{inode_file}" ]] || exit 1
+cat "{inode_file}"
+''')
     fake("gcloud", f'echo "$@" >>"{gcloud_log}"\nexit 0\n')
 
     # ---- source repositories: a feature branch with dirty and untracked files, a local origin ----
@@ -339,19 +351,23 @@ except OSError:
     assert dest.is_dir() and dest2.is_dir() and (root / "repos-empty").is_dir()
     arc3, sha3, m3 = snapshot("v4", 4)
     dest3 = root / f"repos-{m3}"
-    # Without a valid repos.mounted record nothing is pruned (the mounted snapshot is unknown).
+    # A, B, C before a deploy. The Gateway container is not running / unreadable: nothing is pruned.
+    assert not inode_file.exists()
     assert install(arc3, sha3, manifest).returncode == 0
     assert os.readlink(root / "repos") == str(dest3) and (root / "repos.previous").read_text().strip() == str(dest2)
-    assert dest.is_dir() and "keeping every snapshot" in install(arc3, sha3, manifest).stdout, "no record: keep all"
-    # A, B, C before a deploy: the container still mounts A, so A must survive when C is installed.
-    (root / "repos.mounted").write_text(f"{dest}\n")
+    probe_fail = install(arc3, sha3, manifest)
+    assert dest.is_dir() and "keeping every snapshot" in probe_fail.stdout, "failing probe: keep all"
+    inode_file.write_text("not-a-number\n")
+    assert dest.is_dir() and "keeping every snapshot" in install(arc3, sha3, manifest).stdout, "garbage probe: keep all"
+    # The container still mounts A (neither current nor previous): A survives installing C.
+    inode_file.write_text(f"{os.stat(dest).st_ino}\n")
     assert install(arc3, sha3, manifest).returncode == 0
     assert dest.is_dir() and dest2.is_dir() and dest3.is_dir(), "the mounted snapshot is never pruned"
-    # An invalid record keeps everything too.
+    # A stale or bogus repos.mounted record does not weaken that; it only adds a keep.
     (root / "repos.mounted").write_text("/etc\n")
     assert install(arc3, sha3, manifest).returncode == 0 and dest.is_dir()
-    # The deploy records the new mount (dest3): A is no longer mounted and is pruned.
-    (root / "repos.mounted").write_text(f"{dest3}\n")
+    # The container now mounts C (a failed deploy recreated it on the current target): A goes.
+    inode_file.write_text(f"{os.stat(dest3).st_ino}\n")
     assert install(arc3, sha3, manifest).returncode == 0
     assert not dest.exists(), "snapshots beyond current+previous+mounted are pruned"
     assert dest2.is_dir() and dest3.is_dir() and (root / "repos-empty").is_dir()
@@ -374,7 +390,21 @@ except OSError:
         marked = repos("rollback", LIVEX_REPOS_LOCKED="1", **link_env)
         assert marked.returncode == 0 and os.readlink(root / "repos") == str(dest3), marked.stdout
         assert repos("rollback", LIVEX_REPOS_LOCKED="1", **link_env).returncode == 0 and os.readlink(root / "repos") == str(dest2)
+    # The marker is verified: with nobody holding deploy.lock it is refused.
+    liar = repos("rollback", LIVEX_REPOS_LOCKED="1", **link_env)
+    assert liar.returncode == 1 and "is not held" in liar.stdout and os.readlink(root / "repos") == str(dest2), liar.stdout
     assert git(dest2 / "beta_x", "rev-parse", "HEAD") != git(dest3 / "beta_x", "rev-parse", "HEAD")
+    # Mounted-but-not-current/previous: the container sits on C while repos -> B and previous is C's
+    # successor. Installing D (current D, previous B) must keep C because the live mount is C.
+    arc4, sha4, m4 = snapshot("v5", 5)
+    dest4 = root / f"repos-{m4}"
+    inode_file.write_text(f"{os.stat(dest3).st_ino}\n")
+    assert install(arc4, sha4, manifest).returncode == 0
+    assert dest4.is_dir() and dest2.is_dir() and dest3.is_dir(), "C is mounted: kept although it is neither current nor previous"
+    inode_file.write_text(f"{os.stat(dest4).st_ino}\n")
+    (root / "repos.previous").write_text(f"{dest4}\n")
+    assert install(arc4, sha4, manifest).returncode == 0
+    assert not dest3.exists() and not dest2.exists() and dest4.is_dir(), "once nothing mounts them they are pruned"
     print("PASS install: verified extract, chown 1000, symlink switch, previous kept, prune beyond current+previous, verify detects drift, rollback")
 
     # ---- make repos_dev / repos_dev_dry ----

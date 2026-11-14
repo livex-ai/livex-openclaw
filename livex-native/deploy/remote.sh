@@ -343,6 +343,24 @@ start_previous() {
   fi
 }
 
+# Record which snapshot the running container mounts (Docker re-resolves the `repos`
+# symlink at every container start, so this is rewritten after each start we make).
+# repos.sh install also reads the live mount itself; this record is an extra keep.
+# Best-effort: a missing record never fails a deploy.
+record_repos_mount() {
+  ((live)) || return 0
+  rm -f "$root/repos.mounted"
+  local target
+  target=$(readlink "$repos_dir" 2>/dev/null || true)
+  if [[ -n $target ]] \
+    && printf '%s\n' "$target" >"$root/repos.mounted.tmp.$$" \
+    && mv "$root/repos.mounted.tmp.$$" "$root/repos.mounted"; then
+    return 0
+  fi
+  rm -f "$root/repos.mounted.tmp.$$" "$root/repos.mounted"
+  return 0
+}
+
 previous=""
 [[ -s $root/current ]] && previous=$(<"$root/current")
 if ((adopting)); then
@@ -409,6 +427,7 @@ on_exit() {
       # A same-sha rebuild moved the legacy tag; put it back on the original image.
       if ((adopting)); then docker tag "$adopt_tag" "$legacy_image" >&2 || echo "WARNING: could not restore tag $legacy_image" >&2; fi
       if start_previous "$previous" >&2 && wait_ready "$previous"; then
+        record_repos_mount
         echo "Rollback ready on $previous; $sha was NOT activated." >&2
       else
         rollback_ok=0
@@ -569,21 +588,8 @@ if [[ -f $root/previous.tmp.$$ ]]; then mv "$root/previous.tmp.$$" "$root/previo
 fi
 mv "$root/current.tmp.$$" "$root/current" || exit 1
 activating=0
-# Record which snapshot the new container mounted (Docker resolved the symlink when it
-# created the container, and repos.sh install cannot move it while we hold deploy.lock).
-# repos.sh install never prunes that directory. Best-effort: with no record install
-# prunes nothing.
-if ((live)); then
-  rm -f "$root/repos.mounted"
-  mounted_target=$(readlink "$repos_dir" 2>/dev/null || true)
-  if [[ -n $mounted_target ]] \
-    && printf '%s\n' "$mounted_target" >"$root/repos.mounted.tmp.$$" \
-    && mv "$root/repos.mounted.tmp.$$" "$root/repos.mounted"; then
-    :
-  else
-    rm -f "$root/repos.mounted.tmp.$$" "$root/repos.mounted"
-  fi
-fi
+# The new container is up on $repos_dir's current target: record it.
+record_repos_mount
 clean_activation_tmp
 phase=done
 # Activated: nothing below may turn this into a failed deploy (and on_exit would
