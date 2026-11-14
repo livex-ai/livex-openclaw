@@ -254,3 +254,56 @@ test("store failures reach the console as warnings", async () => {
     cap.restore();
   }
 });
+
+test("two plugin instances share pending records: a tool record in one is committed by the other's reply", async () => {
+  delete globalThis[Symbol.for("livex-investigations-lite.memory-state.v1")];
+  const store = memoryStore();
+  const a = register({ store });
+  const b = register({ store });
+  const runId = "shared-run";
+  const ctx = { channelId: "slack", sessionKey: SESSION, senderId: SENDER, runId, agentId: "debugger" };
+  // Prompt build seen by instance B; the record tool runs in instance A.
+  await b.handlers.get("before_prompt_build")({ prompt: "x" }, ctx);
+  const tool = a.factories.get("investigation_record").factory.create(toolContext());
+  await tool.execute("call-1", {
+    signature: "billing-api | charge card | gateway declined",
+    priority: "medium",
+    resolved: false,
+    title: "billing declines",
+    finding: "Card charges were declined by the gateway.",
+  });
+  // The reply (with a different issue in its envelope) and delivery run in instance B.
+  b.handlers.get("reply_payload_sending")(
+    {
+      kind: "final",
+      channel: "slack",
+      sessionKey: SESSION,
+      runId,
+      payload: {
+        text: [
+          "LIVEX_ALERT_SUMMARY_V2",
+          JSON.stringify({
+            title: "checkout timeouts",
+            signature: "checkout-api | create order | upstream timeout",
+            priority: "high",
+            provisional: false,
+            summary: "Orders timed out upstream.",
+            nextAction: "Check the gateway.",
+            owner: "Unassigned",
+            checkedWindow: "2026-11-14 09:10-09:25 UTC",
+          }),
+          "",
+          "Full report.",
+        ].join("\n"),
+      },
+    },
+    ctx,
+  );
+  await b.handlers.get("message_sent")(
+    { sessionKey: SESSION, success: true, messageId: "1768996900.000100", content: "" },
+    { channelId: "slack", sessionKey: SESSION },
+  );
+  const rows = await store.entries();
+  assert.equal(rows.length, 2, "the tool record from instance A and the envelope case are both committed");
+  delete globalThis[Symbol.for("livex-investigations-lite.memory-state.v1")];
+});

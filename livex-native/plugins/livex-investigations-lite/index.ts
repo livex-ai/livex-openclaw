@@ -37,7 +37,13 @@ export default definePluginEntry({
     // Written to the process console (container stdout) with the plugin prefix, like
     // the gateway's other lines: the host's subsystem logger can filter by level.
     const log = createLog();
-    const memory = createMemory(config, { openStore, log });
+    // One pending map, run map and commit queue per process, shared by every load of
+    // this plugin: on DEV the record tool ran in a different plugin instance than the
+    // reply hooks, so two staged tool records were invisible to the reply and lost.
+    const SHARED = Symbol.for("livex-investigations-lite.memory-state.v1");
+    const holder = globalThis as unknown as Record<symbol, unknown>;
+    holder[SHARED] ??= { pending: new Map(), runs: new Map(), queue: Promise.resolve() };
+    const memory = createMemory(config, { openStore, log, shared: holder[SHARED] as any });
     const hooks = createHooks(config, memory, openStore, log);
 
     api.registerTool(

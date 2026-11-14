@@ -585,12 +585,16 @@ export function toLookupDetails(entries) {
  * Per-process pending map plus serialized store commits. `openStore(authority?)`
  * returns a V2 keyed store; hooks open it without an invocation authority.
  */
-export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG }) {
+export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG, shared } = {}) {
+  // The Gateway can load this plugin more than once in one process (each load gets
+  // its own module copy), and a tool call may run in a different copy than the reply
+  // hooks. `shared` (index.ts keeps it on globalThis) makes every copy use one pending
+  // map, run map and commit queue; without it the state is per instance (tests).
+  const state = shared ?? { pending: new Map(), runs: new Map(), queue: Promise.resolve() };
   // sessionKey -> {records: Map<key, staged>, stagedAt, tagged, stagedRunId}
-  const pending = new Map();
+  const pending = state.pending;
   // sessionKey -> latest runId seen by before_prompt_build (tool contexts carry none).
-  const runs = new Map();
-  let queue = Promise.resolve();
+  const runs = state.runs;
 
   // Every decision is logged once, with a fixed reason and no content.
   const drop = (reason) => log.info(`record dropped: ${reason}`);
@@ -692,7 +696,7 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
     },
 
     discard(sessionKey) {
-      pending.delete(sessionKey);
+      if (pending.delete(sessionKey)) drop("discarded");
     },
 
     /**
@@ -759,7 +763,7 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
       }
       const replyTs = typeof messageId === "string" && SLACK_TS.test(messageId) ? messageId : undefined;
       const records = [...entry.records.values()];
-      const run = queue.then(async () => {
+      const run = state.queue.then(async () => {
         let store;
         try {
           store = openStore();
@@ -785,12 +789,12 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
         }
         return true;
       });
-      queue = run.catch(() => {});
+      state.queue = run.catch(() => {});
       return run;
     },
 
     /** Await in-flight commits (tests and shutdown). */
-    settled: () => queue,
+    settled: () => state.queue,
   };
 }
 
