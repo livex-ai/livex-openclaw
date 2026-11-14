@@ -160,6 +160,7 @@
             "skills_read",
             "message",
             "livex_gcp_logs_read",
+            "livex_gcp_metrics_read",
             "livex_repository_read",
             "investigation_record",
             "investigation_lookup",

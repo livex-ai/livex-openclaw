@@ -201,3 +201,22 @@ If redaction changes a selector, or the URL exceeds the output budget, the
 result includes `logsExplorerLinkUnavailableReason`. Cached results can gain a
 link without another cloud read or a stored-history rewrite. Rows and cursors
 remain intact. Run `node --test evidence-links.test.mjs paging.test.mjs`.
+
+## Cloud Monitoring (`livex_gcp_metrics_read`)
+
+Same caller gate and configuration as the logs tool; add the tool name to the
+agent allowlist. It gets an access token with
+`gcloud auth print-access-token --account=<gcloudAccount>` under the configured
+`CLOUDSDK_CONFIG` and sends GET requests only to `monitoring.googleapis.com`
+(`alerts.get`, `alertPolicies.get/list`, `timeSeries.list`; 20 s timeout, 2 MB
+body cap). The token is never returned or logged. The account needs
+`roles/monitoring.viewer`; a 403 returns `permission-denied` with that hint.
+
+- `mode: "policy"`: `alertPolicy` (policy name or a Cloud Monitoring alert/incident
+  console URL; the alert id is resolved with `projects.alerts.get`) or `policyName`
+  (exact displayName).
+- `mode: "series"`: `alertPolicy`+`conditionIndex` or a raw `filter`, plus UTC
+  `start`/`end` (at most 24 h; end at most 5 minutes ahead), optional
+  `alignmentPeriod` 60-3600 s. At most 20 series and 300 points; oldest points
+  are dropped first and counted. MQL/PromQL conditions return their query text
+  with `unsupported`. Raw filters are aligned with `ALIGN_MEAN`.

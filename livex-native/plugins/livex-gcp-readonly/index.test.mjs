@@ -54,7 +54,7 @@ test("the plugin entry uses bounded log reads when the host lacks V2 state", asy
       registerCommand: (command) => commands.add(command.name),
       registerTool: (factory, { name }) => factories.set(name, factory),
     });
-    return { logs: factories.get("livex_gcp_logs_read"), commands };
+    return { logs: factories.get("livex_gcp_logs_read"), metrics: factories.get("livex_gcp_metrics_read"), commands };
   };
 
   const olderHost = register({
@@ -66,6 +66,8 @@ test("the plugin entry uses bounded log reads when the host lacks V2 state", asy
   const unpaged = olderHost.logs.create(context);
   assert.deepEqual(unpaged.parameters.required, ["start", "end"]);
   assert.equal(olderHost.commands.has("livex-gcp-recover"), false);
+  assert.equal(olderHost.metrics.create({ ...context, requesterSenderId: "U999" }), null);
+  assert.equal(olderHost.metrics.create(context).name, "livex_gcp_metrics_read");
   const result = await unpaged.execute("bounded-read", {
     mode: "discover",
     insertId: "synthetic-entry",

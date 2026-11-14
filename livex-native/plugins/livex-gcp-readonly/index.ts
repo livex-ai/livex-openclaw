@@ -3,6 +3,7 @@ import { runUtf8CommandWithTimeout } from "openclaw/plugin-sdk/process-runtime";
 import { createLogsTool } from "./core.mjs";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createPageLedger, PAGE_CACHE_ENTRIES } from "./page-store.mjs";
+import { createMetricsTool } from "./metrics.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 import { createRecoveryCommand } from "./recovery.mjs";
 import { createRepositoryTool } from "./repository.mjs";
@@ -62,6 +63,13 @@ export default definePluginEntry({
         },
       },
       { name: "livex_gcp_logs_read", optional: true, workspaceAccess: false },
+    );
+    api.registerTool(
+      {
+        contextVersion: 2,
+        create: (context) => createMetricsTool(api.pluginConfig, context, runUtf8CommandWithTimeout),
+      },
+      { name: "livex_gcp_metrics_read", optional: true, workspaceAccess: false },
     );
     api.registerTool(
       {
