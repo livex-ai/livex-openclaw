@@ -350,6 +350,12 @@ function buildNextConfig(fragment, ids) {
   }
   next.plugins ??= {};
   next.plugins.load = { ...next.plugins.load, paths };
+  // The card plugin reads the team-owned priority policy from next to plugins/.
+  // Only when the fragment enables the entry: creating one here would hide a missing guard plugin.
+  const card = next.plugins.entries?.["livex-slack-summary"];
+  if (card) {
+    card.config = { ...card.config, priorityPolicyPath: path.join(pluginRoot, "config", "priority-policy.json") };
+  }
 
   if (stageOnly) {
     // Drop inherited Slack accounts and credentials from staging config.
