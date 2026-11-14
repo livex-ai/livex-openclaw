@@ -846,6 +846,15 @@ function readToolDetails(result) {
   }
 }
 
+/** True when a read lost entries. A "field"-only cut shortened text inside an entry. */
+function readLostEntries(details) {
+  const reasons = Array.isArray(details.truncationReasons) ? details.truncationReasons : [];
+  if (reasons.length > 0) {
+    return reasons.some((reason) => reason !== "field");
+  }
+  return details.truncated === true;
+}
+
 function boundedSet(map, key, limit) {
   let set = map.get(key);
   if (set) {
@@ -966,10 +975,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
       if (details !== undefined) {
         noteRead(sessionKey, {
           ok: true,
-          degraded:
-            details.truncated === true ||
-            details.complete === false ||
-            (Array.isArray(details.truncationReasons) && details.truncationReasons.length > 0),
+          degraded: details.complete === false || readLostEntries(details),
         });
       }
       const project = details?.project;

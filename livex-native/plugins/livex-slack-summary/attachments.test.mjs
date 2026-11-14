@@ -378,7 +378,16 @@ test("logs reads are counted per thread and a capped, incomplete or failed read 
   assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
   call(loaded, { toolName: "livex_repository_read", result: { details: { truncated: true } } });
   assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
-  for (const details of [{ truncated: true }, { complete: false }, { truncationReasons: ["row-limit"] }]) {
+  const fieldOnly = load();
+  call(fieldOnly, { toolName: "livex_gcp_logs_read", result: { details: { truncated: true, truncationReasons: ["field"] } } });
+  assert.deepEqual(readStats(fieldOnly, SESSION), { ok: 1, degraded: false });
+  for (const details of [
+    { truncated: true },
+    { complete: false },
+    { truncationReasons: ["row-limit"] },
+    { truncationReasons: ["result-byte-limit"] },
+    { truncated: true, truncationReasons: ["field", "row-limit"] },
+  ]) {
     const fresh = load();
     call(fresh, { toolName: "livex_gcp_logs_read", result: { details } });
     assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true });
