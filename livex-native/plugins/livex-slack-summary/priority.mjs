@@ -1,7 +1,12 @@
 import fs from "node:fs";
 
+function deepFreeze(o) {
+  for (const v of Object.values(o)) if (v && typeof v === "object") deepFreeze(v);
+  return Object.freeze(o);
+}
+
 // Keep identical in value to config/priority-policy.json (a test pins this).
-export const DEFAULT_POLICY = {
+export const DEFAULT_POLICY = deepFreeze({
   version: 1,
   minSample: 3,
   majority: 0.5,
@@ -19,7 +24,7 @@ export const DEFAULT_POLICY = {
   raise: [
     { id: "known-but-affected", when: { clientEffect: ["yes"], known: ["fixed", "harmless"] }, atLeast: "medium", note: "marked known but users still affected" },
   ],
-};
+});
 
 const WHEN_KEYS = new Set(["clientEffect", "traffic", "broad", "userFacing", "known", "alertSeverity", "sustained"]);
 const PRIORITIES = ["low", "medium", "high"];

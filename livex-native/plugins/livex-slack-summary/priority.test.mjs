@@ -58,7 +58,7 @@ test("unlisted class and service are user-facing", () => {
 
 test("loadPolicy falls back to the default and warns once; it never throws", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "policy-"));
-  const cases = { missing: undefined, notJson: "{", badKey: JSON.stringify({ ...DEFAULT_POLICY, rules: [{ id: "x", when: { mood: ["bad"] }, priority: "low", note: "n" }] }), badPriority: JSON.stringify({ ...DEFAULT_POLICY, rules: [{ id: "x", when: {}, priority: "unknown", note: "n" }] }) };
+  const cases = { missing: undefined, notJson: "{", badKey: JSON.stringify({ ...DEFAULT_POLICY, rules: [{ id: "x", when: { mood: ["bad"] }, priority: "low", note: "n" }] }), badPriority: JSON.stringify({ ...DEFAULT_POLICY, rules: [{ id: "x", when: {}, priority: "unknown", note: "n" }] }), badCoverage: JSON.stringify({ ...DEFAULT_POLICY, rules: DEFAULT_POLICY.rules.filter((r) => r.id !== "no-impact") }), badRaiseAtLeast: JSON.stringify({ ...DEFAULT_POLICY, raise: [{ id: "r", when: { clientEffect: ["yes"] }, atLeast: "urgent", note: "n" }] }), badRaiseKey: JSON.stringify({ ...DEFAULT_POLICY, raise: [{ id: "r", when: { mood: ["bad"] }, atLeast: "medium", note: "n" }] }) };
   for (const [name, text] of Object.entries(cases)) {
     const file = path.join(dir, `${name}.json`);
     if (text !== undefined) fs.writeFileSync(file, text);
@@ -71,4 +71,20 @@ test("loadPolicy falls back to the default and warns once; it never throws", () 
   const custom = { ...DEFAULT_POLICY, minSample: 5 };
   fs.writeFileSync(path.join(dir, "ok.json"), JSON.stringify(custom));
   assert.equal(loadPolicy(path.join(dir, "ok.json"), () => {}).minSample, 5);
+});
+
+test("traffic unknown is rated as live, not test", () => {
+  assert.deepEqual(pick(rate({ sampleAffected: 1, scope: "single", traffic: "unknown" })), ["medium", "live-narrow", "yes"]);
+});
+
+test("an empty sample is unverified and does not divide by zero", () => {
+  assert.deepEqual(pick(rate({ sampleChecked: 0, sampleAffected: 0 })), ["medium", "unverified-user-facing", "unverified"]);
+});
+
+test("the default policy cannot be mutated through a fallback", () => {
+  const first = loadPolicy(undefined, () => {});
+  assert.throws(() => { first.minSample = 99; }, TypeError);
+  assert.throws(() => { first.rules[0].priority = "high"; }, TypeError);
+  assert.equal(loadPolicy(undefined, () => {}).minSample, 3);
+  assert.equal(DEFAULT_POLICY.rules[0].priority, "low");
 });
