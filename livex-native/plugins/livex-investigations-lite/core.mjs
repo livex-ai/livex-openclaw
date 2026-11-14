@@ -328,7 +328,13 @@ export function mergeCase(existing, staged, { now, replyTs, limits }) {
       `${day(at)} recurrence #${total}${gap === null ? "" : `, ${gap}d after ${day(previous.at)}`}`,
     );
   }
-  if (previous && previous.priority !== staged.priority) {
+  // "unrated" is no rating, so a change to or from it is not a priority change.
+  if (
+    previous &&
+    previous.priority !== staged.priority &&
+    previous.priority !== "unrated" &&
+    staged.priority !== "unrated"
+  ) {
     notes.push(`${day(at)} priority ${previous.priority} to ${staged.priority}`);
   }
   if (previous && previous.resolved !== staged.resolved) {
@@ -541,9 +547,9 @@ const rating = (priority, ruleId) =>
     ? { priority, ...(boundedLine(ruleId, 80) ? { ruleId } : {}) }
     : undefined;
 
-/** True when `record` is this run's envelope record for the card's own signature. */
+/** True when `record` is this run's case for the card's own signature. */
 function isCardRecord(record, result, runId) {
-  if (!record.fromEnvelope || result.runId !== runId) return false;
+  if (result.runId !== runId) return false;
   try {
     return normalizeSignature(result.primary?.signature) === record.signature;
   } catch {
@@ -784,8 +790,16 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
     if (!entry.records.has(key) && entry.records.size >= MAX_STAGED_PER_TURN) {
       throw new Error(`At most ${MAX_STAGED_PER_TURN} investigations can be recorded per reply`);
     }
-    // A tool record for the same case wins over an envelope-derived one.
-    if (!(keepExisting && entry.records.has(key))) entry.records.set(key, record);
+    const existing = entry.records.get(key);
+    // For one case, the tool record and the envelope record combine: the envelope's
+    // facts, resolved state and title (what the card showed) and the tool's text.
+    const envelopeRecord = record.fromEnvelope ? record : existing?.fromEnvelope ? existing : undefined;
+    const toolRecord = record.fromEnvelope ? existing : record;
+    if (existing && envelopeRecord && toolRecord && !toolRecord.fromEnvelope) {
+      entry.records.set(key, { ...envelopeRecord, finding: toolRecord.finding, trend: toolRecord.trend });
+    } else if (!(keepExisting && existing)) {
+      entry.records.set(key, record);
+    }
     entry.stagedAt = now();
     log.info(`record staged: source=${source} pending=${entry.records.size}`);
   };

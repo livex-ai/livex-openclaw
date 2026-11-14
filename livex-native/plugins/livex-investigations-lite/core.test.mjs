@@ -1047,5 +1047,46 @@ test("stored V2 occurrences (priority, no facts) still load and render as stored
   await sent(env, { key: other });
   const merged = await env.store.lookup(signatureKey("checkout-api | create-order | upstream-timeout"));
   assert.equal(merged.totalOccurrences, 2);
-  assert.match(storedNotes(merged), /priority critical to unrated/u);
+  assert.doesNotMatch(storedNotes(merged), /priority/u, "a change to unrated is not a priority change");
+  assert.match(storedNotes(merged), /recurrence #2/u);
+});
+
+test("mergeCase writes no priority note when either side is unrated", () => {
+  const staged = (priority) => ({ signature: "a-b | c", title: "t", priority, resolved: false, finding: "f", trend: "", thread: { channel: CHANNEL, threadTs: THREAD } });
+  const opts = (now) => ({ now, replyTs: undefined, limits: config });
+  const first = mergeCase(undefined, staged("unrated"), opts(0));
+  const second = mergeCase(first, staged("high"), opts(1));
+  const third = mergeCase(second, staged("unrated"), opts(2));
+  const fourth = mergeCase(third, staged("low"), opts(3));
+  const fifth = mergeCase(fourth, staged("medium"), opts(4));
+  assert.deepEqual(fifth.notes.map((n) => n.text), ["1970-01-01 priority low to medium"]);
+});
+
+test("a tool record for the card's own signature stores the card's priority, the envelope's facts and the tool's finding", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const primary = { signature: "checkout-api | create order | upstream timeout", priority: "medium", ruleId: "live-narrow" };
+  // compute would rate the tool's facts (sampleAffected 4) high; it must not be used for the card's case.
+  const compute = (facts) => ({ priority: facts.sampleAffected > 1 ? "high" : "low", ruleId: "computed" });
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary, compute }]]) };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    await createRecordTool(config, toolContext(), env.memory).execute(
+      "t",
+      params({ signature: "checkout-api | create order | upstream timeout", sampleAffected: 4, finding: "Tool finding text.", trend: "tool trend" }),
+    );
+    sendFinal(env, { runId: "r1", payload: { text: v3Envelope() } });
+    await sent(env);
+    const rows = await env.store.entries();
+    assert.equal(rows.length, 1);
+    const last = rows[0].value.occurrences.at(-1);
+    assert.equal(last.priority, "medium");
+    assert.equal(last.ruleId, "live-narrow");
+    assert.deepEqual(last.facts, v3Facts, "the envelope's facts, not the tool's");
+    assert.equal(last.finding, "Tool finding text.");
+    assert.equal(rows[0].value.title, "checkout-api upstream timeouts", "the envelope's title");
+    assert.match(storedNotes(rows[0].value), /tool trend/u);
+  } finally {
+    delete globalThis[engine];
+  }
 });
