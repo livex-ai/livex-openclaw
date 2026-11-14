@@ -4,15 +4,21 @@
   "private": true,
   "description": "Render validated LiveX Debugger alert summaries in Slack threads.",
   "type": "module",
-  "files": ["index.ts", "openclaw.plugin.json"],
+  "files": [
+    "index.ts",
+    "core.mjs",
+    "openclaw.plugin.json"
+  ],
   "scripts": {
-    "test": "node --test index.test.mjs"
+    "test": "node --test index.test.mjs interactive.test.mjs amend.test.mjs attachments.test.mjs"
   },
   "peerDependencies": {
     "openclaw": ">=2026.10.5"
   },
   "openclaw": {
-    "extensions": ["./index.ts"],
+    "extensions": [
+      "./index.ts"
+    ],
     "compat": {
       "pluginApi": ">=2026.10.5",
       "minGatewayVersion": "2026.10.5"

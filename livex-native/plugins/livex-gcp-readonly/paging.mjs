@@ -214,7 +214,12 @@ export function createCloudPageReader(config, runCommand) {
 // Pagination is an evidence transport. Native Codex owns investigation planning,
 // completion and history; this adapter does not start another agent or run loop.
 export function createPagedLogsTool(rawConfig, context, runCommand, options) {
-  const legacy = createLogsTool(rawConfig, context, runCommand);
+  // Counting scans by time window with the gcloud reader (800 identity-only rows per read); the
+  // SDK page helper returns at most 50 rows, so it cannot count in bounded process spawns.
+  const legacy = createLogsTool(rawConfig, context, runCommand, {
+    now: options.now,
+    deadlineMs: options.deadlineMs,
+  });
   if (!legacy) {
     return null;
   }
@@ -259,6 +264,8 @@ export function createPagedLogsTool(rawConfig, context, runCommand, options) {
       if (!params || typeof params !== "object" || Array.isArray(params)) {
         throw new Error("Invalid query arguments");
       }
+      // Count is not resumable: it has no cursor, receipt or cache entry.
+      if (params.mode === "count") return legacy.execute(toolCallId, params, signal);
       let cursorState;
       if ("cursor" in params) {
         if (

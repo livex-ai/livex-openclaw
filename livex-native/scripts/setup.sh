@@ -28,7 +28,7 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PLUGIN_IDS=(livex-gcp-readonly livex-slack-summary)
+PLUGIN_IDS=(livex-gcp-readonly livex-slack-summary livex-investigations-lite)
 AGENTS_DIR="$ROOT/agents"
 AGENT_IDS=(debugger)
 FRAGMENT="$ROOT/config/openclaw.fragment.json5"
@@ -120,7 +120,7 @@ cat <<EOF
 #
 # 6. In the Control UI:
 #    - Plugins: confirm codex, slack, livex-gcp-readonly and
-#      livex-slack-summary are enabled; fill any missing livex-gcp-readonly config fields.
+#      livex-slack-summary and livex-investigations-lite are enabled; fill any missing livex-gcp-readonly config fields.
 #    - Agents: open "debugger" (LiveX Debugger) for triage and diagnosis.
 #      Both LiveX tools answer only Slack turns from SLACK_SENDER_ID.
 #      A Control UI chat has no LiveX evidence tools.

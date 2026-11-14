@@ -65,6 +65,10 @@ release=$root/releases/$sha
 deploy=$release/livex-native/deploy
 state=$root/state
 runtime_env=$root/runtime.env
+# Source snapshots mounted read-only at /repos. Live: the `repos` symlink that
+# repos.sh install repoints; every other mode: an empty directory.
+repos_dir=$root/repos-empty
+if ((live)); then repos_dir=$root/repos; fi
 health_url=http://127.0.0.1:$host_port/readyz
 health_timeout=${LIVEX_HEALTH_TIMEOUT:-$default_timeout}
 health_interval=${LIVEX_HEALTH_INTERVAL:-3}
@@ -134,7 +138,7 @@ dc() {
   local image=$1
   shift
   OPENCLAW_IMAGE=$image RUNTIME_ENV_FILE=$runtime_env STATE_DIR=${state_mount:-$state} SDK_STATE_DIR=$root/gcloud \
-    LIVEX_GATEWAY_MEM_LIMIT=$gateway_mem_limit LIVEX_HOST_PORT=$host_port \
+    LIVEX_GATEWAY_MEM_LIMIT=$gateway_mem_limit LIVEX_HOST_PORT=$host_port LIVEX_REPOS_DIR=$repos_dir \
     LIVEX_STAGE_ONLY=$on_dev docker compose --project-name "$project" -f "$deploy/compose.yaml" "$@"
 }
 
@@ -339,6 +343,24 @@ start_previous() {
   fi
 }
 
+# Record which snapshot the running container mounts (Docker re-resolves the `repos`
+# symlink at every container start, so this is rewritten after each start we make).
+# repos.sh install also reads the live mount itself; this record is an extra keep.
+# Best-effort: a missing record never fails a deploy.
+record_repos_mount() {
+  ((live)) || return 0
+  rm -f "$root/repos.mounted"
+  local target
+  target=$(readlink "$repos_dir" 2>/dev/null || true)
+  if [[ -n $target ]] \
+    && printf '%s\n' "$target" >"$root/repos.mounted.tmp.$$" \
+    && mv "$root/repos.mounted.tmp.$$" "$root/repos.mounted"; then
+    return 0
+  fi
+  rm -f "$root/repos.mounted.tmp.$$" "$root/repos.mounted"
+  return 0
+}
+
 previous=""
 [[ -s $root/current ]] && previous=$(<"$root/current")
 if ((adopting)); then
@@ -405,6 +427,7 @@ on_exit() {
       # A same-sha rebuild moved the legacy tag; put it back on the original image.
       if ((adopting)); then docker tag "$adopt_tag" "$legacy_image" >&2 || echo "WARNING: could not restore tag $legacy_image" >&2; fi
       if start_previous "$previous" >&2 && wait_ready "$previous"; then
+        record_repos_mount
         echo "Rollback ready on $previous; $sha was NOT activated." >&2
       else
         rollback_ok=0
@@ -461,6 +484,18 @@ docker build \
   --build-arg "SOURCE_SHA=$sha" \
   -f "$deploy/Dockerfile" -t "$new_image" "$release"
 
+# The /repos bind-mount source must exist and be readable by uid 1000, or Docker would
+# create it as root. An empty directory stands in until the first `make repos_dev`.
+if [[ ! -e $root/repos-empty ]]; then
+  mkdir -p "$root/repos-empty"
+  chmod 0755 "$root/repos-empty"
+  chown 1000:1000 "$root/repos-empty" || [[ $(id -u) != 0 ]] # a non-root run is a test
+fi
+if ((live)) && [[ ! -e $repos_dir ]]; then
+  ln -sfn "$root/repos-empty" "$repos_dir.tmp.$$" && mv -T "$repos_dir.tmp.$$" "$repos_dir" \
+    || { echo "Could not create $repos_dir." >&2; exit 1; }
+fi
+
 if ((live)); then
   # Read-only guard, before anything is stopped: refuse a release that would drop
   # a LiveX agent the live config already serves (apply.mjs, refuseDroppedLivexAgents).
@@ -469,6 +504,33 @@ if ((live)); then
     -e LIVEX_LIVE_GUARD=1 -e LIVEX_CHECK_AGENTS_ONLY=1 -e "LIVEX_UNMANAGED_AGENTS=$unmanaged" -e "LIVEX_HOST_PORT=$host_port" \
     --entrypoint node cli /opt/livex-native/deploy/apply.mjs \
     || { echo "Refusing: the live config serves an agent this release does not ship (see above). The Gateway was not touched." >&2; exit 1; }
+  # Pinned source snapshots (make repos_dev) must be in place before anything is stopped:
+  # read as uid 1000 through the mount the container will get, with the new image's git.
+  repos_manifest=$deploy/../repos/manifest.json
+  if [[ -f $repos_manifest ]]; then
+    ids_total=$(grep -c '"id"' "$repos_manifest" || true)
+    ids_wellformed=$(sed -n -E 's/^ *\{"id": "[A-Za-z0-9][A-Za-z0-9_-]*", "branch": "[A-Za-z0-9._\/-]+", "commit": "([0-9a-f]{40})?"\},?$/x/p' "$repos_manifest" | wc -l)
+    [[ $((ids_total)) == $((ids_wellformed)) ]] \
+      || { echo "Refusing: $repos_manifest is not in the canonical one-entry-per-line form. The Gateway was not touched." >&2; exit 1; }
+    pins=()
+    while read -r pin_id pin_commit; do
+      [[ -z $pin_id ]] || pins+=("$pin_id" "$pin_commit")
+    done < <(sed -n -E 's/^ *\{"id": "([A-Za-z0-9][A-Za-z0-9_-]*)", "branch": "[A-Za-z0-9._\/-]+", "commit": "([0-9a-f]{40})"\},?$/\1 \2/p' "$repos_manifest")
+    if ((${#pins[@]} > 0)); then
+      echo "== check $((${#pins[@]} / 2)) pinned repositories under $repos_dir (read-only)"
+      repos_check='base=$1; shift; bad=0
+while [ "$#" -ge 2 ]; do
+  id=$1; commit=$2; shift 2; d=$base/$id
+  if [ ! -d "$d/.git" ]; then echo "missing: $id"; bad=1
+  elif [ ! -O "$d" ]; then echo "not owned by the runtime user: $id"; bad=1
+  elif ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$d" cat-file -e "$commit^{commit}" 2>/dev/null; then echo "commit $commit not readable: $id"; bad=1
+  fi
+done
+exit $bad'
+      dc "$new_image" run --rm --no-deps -T --entrypoint bash cli -c "$repos_check" repos-check /repos "${pins[@]}" \
+        || { echo "Refusing: the pinned source snapshots in the manifest are not all installed at $repos_dir (run make repos_dev first, then deploy again). The Gateway was not touched." >&2; exit 1; }
+    fi
+  fi
 fi
 echo "== stop gateway, snapshot state, apply config"
 [[ $(docker inspect --format '{{.State.Running}}' "$project-gateway-1" 2>/dev/null) == true ]] && was_running=1
@@ -514,6 +576,7 @@ SDK_STATE_DIR=$root/gcloud
 LIVEX_STAGE_ONLY=$on_dev
 LIVEX_GATEWAY_MEM_LIMIT=$gateway_mem_limit
 LIVEX_HOST_PORT=$host_port
+LIVEX_REPOS_DIR=$repos_dir
 EOF
 saved_link=$(readlink "$root/current-release" 2>/dev/null || true)
 if [[ -f $root/compose.env ]]; then cp -p "$root/compose.env" "$root/compose.env.saved.$$" || exit 1; fi
@@ -525,6 +588,8 @@ if [[ -f $root/previous.tmp.$$ ]]; then mv "$root/previous.tmp.$$" "$root/previo
 fi
 mv "$root/current.tmp.$$" "$root/current" || exit 1
 activating=0
+# The new container is up on $repos_dir's current target: record it.
+record_repos_mount
 clean_activation_tmp
 phase=done
 # Activated: nothing below may turn this into a failed deploy (and on_exit would

@@ -128,6 +128,7 @@ function resultValue(result, retrievedAt) {
     "insertId",
     "insertIds",
     "traceId",
+    "textContains",
   ]) {
     if (result[name] !== undefined) {
       value[name] = clone(result[name]);

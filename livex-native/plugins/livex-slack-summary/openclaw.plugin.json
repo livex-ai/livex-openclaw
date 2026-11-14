@@ -9,6 +9,25 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "buttons": {
+        "type": "boolean",
+        "description": "Set false to post cards without the priority buttons (no click handler, no key file). Defaults to on when allowedChannelId and allowedSenderId are both set."
+      },
+      "allowedChannelId": {
+        "type": "string",
+        "pattern": "^(?:\\*|[CG][A-Z0-9]+)$",
+        "description": "Slack channel ID or * for all channels where the priority buttons work. Same semantics as livex-gcp-readonly. Buttons need both this and allowedSenderId."
+      },
+      "gcpProject": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$",
+        "description": "Optional GCP project id (same value as livex-gcp-readonly). When set, evidence links must belong to this project."
+      },
+      "allowedSenderId": {
+        "type": "string",
+        "description": "Slack user ID allowed to press the priority buttons. Same semantics as livex-gcp-readonly. An unresolved placeholder leaves the cards without buttons."
+      }
+    }
   }
 }

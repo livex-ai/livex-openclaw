@@ -6,11 +6,17 @@
   "contracts": {
     "tools": [
       "livex_gcp_logs_read",
+      "livex_gcp_metrics_read",
       "livex_repository_read"
     ]
   },
   "toolMetadata": {
     "livex_gcp_logs_read": {
+      "optional": true,
+      "sideEffecting": false,
+      "replaySafe": true
+    },
+    "livex_gcp_metrics_read": {
       "optional": true,
       "sideEffecting": false,
       "replaySafe": true

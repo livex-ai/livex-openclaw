@@ -50,7 +50,12 @@ else
   exec /bin/df "$@"
 fi
 """)
-    fake("ln", '[[ -z ${TEST_FAIL_LN:-} ]] || exit 1\nexec /bin/ln "$@"\n')
+    fake("ln", r"""if [[ -n ${TEST_FAIL_LN:-} ]]; then
+  for a in "$@"; do if [[ $a == *current-release* ]]; then exit 1; fi; done
+fi
+exec /bin/ln "$@"
+""")
+    fake("chown", "exit 0\n")
     fake("rm", r"""if [[ -n ${TEST_FAIL_RM:-} ]]; then
   for a in "$@"; do if [[ $a == *"$TEST_FAIL_RM"* ]]; then exit 1; fi; done
 fi
@@ -97,7 +102,16 @@ case "$1" in
         if [[ ${2:-} == --services ]]; then printf '%s\n' ${TEST_SERVICES:-gateway cli}; fi ;;
       port) echo "${TEST_PORT:-127.0.0.1:18790}" ;;
       run)
-        if [[ " $* " == *" LIVEX_CHECK_AGENTS_ONLY=1 "* ]]; then
+        printf '%s\n' "${LIVEX_REPOS_DIR-unset}" >>"$TEST_GUARD_LOG.reposdir"
+        if [[ " $* " == *" --entrypoint bash "* ]]; then
+          # remote.sh's pinned-repository check: run its script on the host against the "mount".
+          args=("$@"); script=""; rest=()
+          for ((k = 0; k < ${#args[@]}; k++)); do
+            if [[ ${args[k]} == -c ]]; then script=${args[k+1]}; rest=("${args[@]:k+4}"); break; fi
+          done
+          printf '%s\n' "${rest[*]}" >>"$TEST_GUARD_LOG.repos"
+          bash -c "$script" repos-check "$LIVEX_REPOS_DIR" ${rest[@]+"${rest[@]}"}
+        elif [[ " $* " == *" LIVEX_CHECK_AGENTS_ONLY=1 "* ]]; then
           echo "$STATE_DIR" >>"$TEST_GUARD_LOG"
           echo "$*" >>"$TEST_GUARD_LOG.check"
           # Models the real guard: every live agent must be shipped or listed as unmanaged.
@@ -399,7 +413,7 @@ esac
 
     def snapshot_legacy(r):
         return {n: (tree(r / n) if (r / n).is_dir() else (r / n).read_bytes())
-                for n in sorted(os.listdir(r)) if n not in ("releases", "deploy.lock")}
+                for n in sorted(os.listdir(r)) if n not in ("releases", "deploy.lock", "repos", "repos-empty", "repos.mounted")}
 
     def assert_original(r, before, label):
         assert snapshot_legacy(r) == before, label
@@ -438,6 +452,7 @@ esac
     (live_root / "state" / "retained").write_text("live state\n")
     Path(str(curl_log) + ".url").write_text("")
     (base / "compose.log").write_text("")
+    (base / "guard.log.reposdir").write_text("")
     log_len = len(log.read_text())
     ok = live(head_sha, live_root)
     assert ok.returncode == 0, ok.stdout
@@ -458,7 +473,84 @@ esac
     assert "livex-openclaw-stage" not in new_log and "livex-openclaw-dev-gateway-1" not in new_log
     assert (live_root / "state" / "apply-result").read_text().strip() == new_live_image
     assert active.read_text().strip() == new_live_image
+    # The /repos mount source: an empty directory behind the `repos` symlink until the first install.
+    assert f"LIVEX_REPOS_DIR={live_root}/repos\n" in env_text
+    assert os.readlink(live_root / "repos") == str(live_root / "repos-empty")
+    assert list((live_root / "repos-empty").iterdir()) == []
+    assert (live_root / "repos.mounted").read_text() == f"{live_root}/repos-empty\n", "deploy records the mounted snapshot for repos.sh prune"
+    assert set((base / "guard.log.reposdir").read_text().split()) == {f"{live_root}/repos"}
+    assert "${LIVEX_REPOS_DIR:?" in (deploy / "compose.yaml").read_text() and ":/repos:ro" in (deploy / "compose.yaml").read_text()
     print("PASS live happy path: project, root, port 18790, Slack not skipped, housekeeping, no stage/PR#1 names")
+
+    # --- pinned source snapshots: checked as uid 1000 through the mount BEFORE anything is stopped ---
+    def write_manifest(root, sha, rows):
+        d = root / "releases" / sha / "livex-native" / "repos"
+        d.mkdir(parents=True, exist_ok=True)
+        body = ",\n".join(f'  {{"id": "{i}", "branch": "main", "commit": "{c}"}}' for i, c in rows)
+        (d / "manifest.json").write_text("[\n" + body + "\n]\n")
+
+    def make_repo(path):
+        path.mkdir(parents=True)
+        sp.run(["git", "init", "-q", str(path)], check=True)
+        sp.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        return sp.run(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, stdout=sp.PIPE, check=True).stdout.strip()
+
+    def start_live(name):
+        r = make_adopted(name, (cur_sha, head_sha))
+        (r / "current").write_text(cur_image + "\n")
+        active.write_text(cur_image + "\n")
+        Path(str(active) + ".state").write_text("seed\n")
+        (r / "state" / "retained").write_text("live state\n")
+        return r
+
+    # In this block `sp` is subprocess (the make test further down imports it too).
+    import subprocess as sp
+    pins_root = start_live("live-pins")
+    snap_commit = make_repo(pins_root / "snapshots" / "alpha")
+    write_manifest(pins_root, head_sha, [("alpha", snap_commit), ("beta", "")])
+    (base / "guard.log.repos").write_text("")
+    log_len = len(log.read_text())
+    refused = live(head_sha, pins_root)  # `repos` points at the empty directory: alpha is missing
+    assert refused.returncode == 1 and "run make repos_dev first" in refused.stdout and "Gateway was not touched" in refused.stdout, refused.stdout
+    assert "missing: alpha" in refused.stdout, refused.stdout
+    assert not any(" stop " in c for c in log.read_text()[log_len:].splitlines()), "nothing may be stopped"
+    assert active.read_text().strip() == cur_image and (pins_root / "current").read_text().strip() == cur_image
+    assert (pins_root / "state" / "retained").read_text() == "live state\n" and not (pins_root / "state" / "apply-result").exists()
+    assert (base / "guard.log.repos").read_text().split() == ["alpha", snap_commit], "only pinned entries are checked"
+    # An installed snapshot (repos -> a real directory) passes.
+    os.remove(pins_root / "repos")
+    os.symlink(pins_root / "snapshots", pins_root / "repos")
+    passed = live(head_sha, pins_root)
+    assert passed.returncode == 0 and f"DEPLOYED {head_sha} LIVE" in passed.stdout, passed.stdout
+    assert os.readlink(pins_root / "repos") == str(pins_root / "snapshots"), "an installed snapshot is never replaced"
+    assert f"LIVEX_REPOS_DIR={pins_root}/repos\n" in (pins_root / "compose.env").read_text()
+    # A pinned commit the snapshot does not hold refuses too.
+    bad_root = start_live("live-pins-bad")
+    make_repo(bad_root / "snapshots" / "alpha")
+    os.symlink(bad_root / "snapshots", bad_root / "repos")
+    write_manifest(bad_root, head_sha, [("alpha", "1" * 40)])
+    log_len = len(log.read_text())
+    bad = live(head_sha, bad_root)
+    assert bad.returncode == 1 and "not readable: alpha" in bad.stdout and "repos_dev first" in bad.stdout, bad.stdout
+    assert not any(" stop " in c for c in log.read_text()[log_len:].splitlines())
+    # A hand-made manifest that is not canonical is refused, not half-read.
+    odd_root = start_live("live-pins-odd")
+    (odd_root / "releases" / head_sha / "livex-native" / "repos").mkdir(parents=True)
+    (odd_root / "releases" / head_sha / "livex-native" / "repos" / "manifest.json").write_text('[{"id": "a", "branch": "main", "commit": ""}]\n')
+    odd = live(head_sha, odd_root)
+    assert odd.returncode == 1 and "canonical" in odd.stdout, odd.stdout
+    # No pins (empty commits) or no manifest: no check at all.
+    none_root = start_live("live-pins-none")
+    write_manifest(none_root, head_sha, [("alpha", "")])
+    (base / "guard.log.repos").write_text("")
+    assert live(head_sha, none_root).returncode == 0
+    assert (base / "guard.log.repos").read_text() == ""
+    # Stage and test modes mount an empty directory under their root.
+    stage_ok = run(head_sha, root=make_root("stage-repos", (prior_sha, head_sha)))
+    assert stage_ok.returncode == 0, stage_ok.stdout
+    assert (base / "stage-repos" / "repos-empty").is_dir() and not (base / "stage-repos" / "repos").exists()
+    assert f"LIVEX_REPOS_DIR={base}/stage-repos/repos-empty\n" in (base / "stage-repos" / "compose.env").read_text()
+    print("PASS pinned repositories: refused before any stop when missing, passes when present, empty mount elsewhere")
 
     # --- one-time adoption of the hand-made layout ---
     legacy = make_legacy("legacy-ok")
@@ -580,6 +672,8 @@ esac
             assert res.returncode != 0, (label, res.stdout)
             assert f"Rollback ready on {live_project}:pre-adopt-" in res.stdout, (label, res.stdout)
             assert_original(r, before, f"{label}/{stale}")
+            # The rollback start re-resolved the `repos` symlink: the record follows it.
+            assert (r / "repos.mounted").read_text() == f"{r}/repos-empty\n", label
     print("PASS failed adoption (not ready, copy, rename, link) restores compose.env, records, STATE_DIR, image and compose file exactly")
 
     # Same-sha adoption that fails after readiness: the moved sha tag is put back.

@@ -48,7 +48,7 @@ void test("tab-delimited error profile reaches Cloud Logging with fixed scope an
   const filter = calls[0][3];
   assert.equal(
     filter,
-    'logName =~ "^projects/example-prd/logs/" AND resource.type="k8s_container" AND resource.labels.cluster_name="prd-cluster" AND resource.labels.location="us-central1" AND resource.labels.namespace_name="sample-worker" AND resource.labels.container_name="sample-worker" AND timestamp>="2026-10-20T18:40:00.000Z" AND timestamp<="2026-10-20T19:00:00.000Z" AND ((jsonPayload:* AND severity>=ERROR) OR textPayload =~ "^[^\\\\t]+\\\\t(ERROR|DPANIC|PANIC|FATAL)\\\\t")',
+    'logName =~ "^projects/example-prd/logs/" AND resource.type="k8s_container" AND resource.labels.cluster_name="prd-cluster" AND resource.labels.location="us-central1" AND resource.labels.namespace_name="sample-worker" AND resource.labels.container_name="sample-worker" AND timestamp>="2026-10-20T18:40:00.000Z" AND timestamp<="2026-10-20T19:00:00.000Z" AND ((jsonPayload:* AND severity>=ERROR) OR textPayload =~ "^[^\\t]+\\t(ERROR|DPANIC|PANIC|FATAL)\\t")',
   );
   assert.equal(new URL(result.details.logsExplorerUrl).searchParams.get("query"), filter);
   assert.equal(result.details.errorProfile, "tab-delimited");

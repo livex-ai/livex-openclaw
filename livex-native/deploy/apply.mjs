@@ -10,7 +10,8 @@
 //
 // Test overrides (defaults are the container paths):
 //   LIVEX_NATIVE_DIR, OPENCLAW_STATE_DIR, OPENCLAW_CONFIG_PATH, LIVEX_JSON5_FROM,
-//   LIVEX_OPENCLAW_CMD (the openclaw CLI as "cmd arg ..."), LIVEX_SLACK_TARBALL.
+//   LIVEX_OPENCLAW_CMD (the openclaw CLI as "cmd arg ..."), LIVEX_SLACK_TARBALL,
+//   LIVEX_REPOS_MANIFEST (default: $LIVEX_NATIVE_DIR/repos/manifest.json).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -46,7 +47,7 @@ if (process.env.LIVEX_UNMANAGED_AGENTS && process.env.LIVEX_LIVE_GUARD !== "1") 
 const unmanagedAgents = parseUnmanagedAgents(process.env.LIVEX_UNMANAGED_AGENTS);
 
 const GCP_PLUGIN = "livex-gcp-readonly";
-const managedPluginIds = [GCP_PLUGIN, "livex-slack-summary"];
+const managedPluginIds = [GCP_PLUGIN, "livex-slack-summary", "livex-investigations-lite"];
 const GATEWAY_PORT = 18789;
 // Host-side port the Control UI tunnel uses (remote.sh passes it; 18790 on the live
 // install). Defaults to the container port.
@@ -66,7 +67,8 @@ const priorOncallWildcard = {
 // `bindings` is handled separately: see mergeFragmentBindings.
 const UNION_ARRAYS = new Set(["plugins.allow", "plugins.load.paths"]);
 // Arrays an operator may fill in on the VM; a non-empty existing value is kept.
-const KEEP_IF_SET = new Set([`plugins.entries.${GCP_PLUGIN}.config.repositories`]);
+const REPOSITORIES_KEY = `plugins.entries.${GCP_PLUGIN}.config.repositories`;
+const KEEP_IF_SET = new Set([REPOSITORIES_KEY]);
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -104,6 +106,33 @@ function mergeFragmentBindings(current, fragment) {
   return [...kept, ...clone(shipped)];
 }
 
+// Source snapshots (repos/manifest.json, written by `make repos_pin`). Entries with a
+// 40-hex commit become `{ id, path: "/repos/<id>", commit }`. With at least one pin the
+// list is MANAGED: it replaces whatever the VM has. With none, the VM's list is kept.
+function pinnedRepositories() {
+  const file = process.env.LIVEX_REPOS_MANIFEST ?? path.join(nativeDir, "repos", "manifest.json");
+  if (!fs.existsSync(file)) return [];
+  const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!Array.isArray(entries) || entries.length > 64) {
+    throw new Error(`${file} must be a JSON array of at most 64 entries.`);
+  }
+  const seen = new Set();
+  const pinned = [];
+  for (const entry of entries) {
+    const ok =
+      isObject(entry) &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(entry.id ?? "") &&
+      typeof entry.branch === "string" &&
+      /^([0-9a-f]{40})?$/.test(entry.commit ?? "x");
+    if (!ok) throw new Error(`${file}: every entry needs a valid id, a branch and a commit that is empty or 40 hex.`);
+    if (seen.has(entry.id)) throw new Error(`${file}: duplicate id ${entry.id}.`);
+    seen.add(entry.id);
+    if (entry.commit) pinned.push({ id: entry.id, path: `/repos/${entry.id}`, commit: entry.commit });
+  }
+  return pinned;
+}
+let renderedRepositories = { pinned: [], replaced: undefined };
+
 function readJson5(file) {
   return json5.parse(fs.readFileSync(file, "utf8"));
 }
@@ -114,14 +143,36 @@ function writeConfigAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// remote.sh runs apply in a fresh container right after stopping the Gateway. OpenClaw
+// refuses CLI config reads while the stopped Gateway's owner heartbeat is still fresh
+// (up to 90 s), because a different PID namespace cannot verify the owner. Wait it out.
+const ownerWaitMs = Number(process.env.LIVEX_OWNER_WAIT_MS ?? 150_000);
+const ownerPollMs = Number(process.env.LIVEX_OWNER_POLL_MS ?? 5_000);
+const OWNER_BUSY = /cannot verify Gateway ownership/;
+
 function runCli(args) {
   const [cmd, ...head] = openclawCmd;
-  return spawnSync(cmd, [...head, ...args], { encoding: "utf8", env: process.env });
+  const deadline = Date.now() + ownerWaitMs;
+  for (let announced = false; ; ) {
+    const result = spawnSync(cmd, [...head, ...args], { encoding: "utf8", env: process.env });
+    const busy = result.status !== 0 && OWNER_BUSY.test(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+    if (!busy || Date.now() >= deadline) return result;
+    if (!announced) {
+      console.log("openclaw: the stopped Gateway's owner heartbeat is still fresh; waiting for it to expire");
+      announced = true;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ownerPollMs);
+  }
+}
+
+function cliFailed(what, result) {
+  process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+  return new Error(`${what} failed (exit ${result.status})`);
 }
 
 function listedPlugins() {
   const result = runCli(["plugins", "list", "--json"]);
-  if (result.status !== 0) throw new Error("`plugins list --json` failed");
+  if (result.status !== 0) throw cliFailed("`plugins list --json`", result);
   const start = result.stdout.indexOf("{");
   const parsed = JSON.parse(result.stdout.slice(start));
   return new Map((parsed.plugins ?? []).map((plugin) => [plugin.id, plugin]));
@@ -129,7 +180,7 @@ function listedPlugins() {
 
 function inspectSlack() {
   const inspected = runCli(["plugins", "inspect", "slack", "--json"]);
-  if (inspected.status !== 0) throw new Error("`plugins inspect slack --json` failed");
+  if (inspected.status !== 0) throw cliFailed("`plugins inspect slack --json`", inspected);
   return JSON.parse(inspected.stdout.slice(inspected.stdout.indexOf("{")));
 }
 
@@ -279,6 +330,17 @@ function buildNextConfig(fragment, ids) {
 
   for (const id of ids) next.agents.entries[id].workspace = workspaceFor(id);
 
+  const pinnedRepos = pinnedRepositories();
+  if (pinnedRepos.length > 0) {
+    const had = current.plugins?.entries?.[GCP_PLUGIN]?.config?.repositories;
+    next.plugins ??= {};
+    next.plugins.entries ??= {};
+    next.plugins.entries[GCP_PLUGIN] ??= {};
+    next.plugins.entries[GCP_PLUGIN].config ??= {};
+    next.plugins.entries[GCP_PLUGIN].config.repositories = pinnedRepos;
+    renderedRepositories = { pinned: pinnedRepos, replaced: Array.isArray(had) ? had.length : 0 };
+  }
+
   // Keep one load path per managed plugin from this release.
   const paths = (next.plugins?.load?.paths ?? []).filter(
     (p) => !managedPluginIds.some((id) => p.endsWith(`/plugins/${id}`)),
@@ -303,7 +365,35 @@ function buildNextConfig(fragment, ids) {
   } else {
     console.log("slack tokens: SLACK_BOT_TOKEN/SLACK_APP_TOKEN not both set; token config skipped");
   }
+  refuseUnguardedMessageEdit(next);
   return next;
+}
+
+// The debugger may edit only its own summary card because the livex-slack-summary
+// before_tool_call guard blocks every other edit. Allowing message "edit" without that
+// guard loaded would let it edit any message the bot can, so refuse before writing.
+const EDIT_GUARD_PLUGIN = "livex-slack-summary";
+function refuseUnguardedMessageEdit(next) {
+  const scopes = [
+    ["tools", next.tools],
+    ["agents.defaults", next.agents?.defaults?.tools],
+    ...Object.entries(next.agents?.entries ?? {}).map(([id, entry]) => [`agents.entries.${id}`, entry?.tools]),
+  ];
+  const editors = scopes
+    .filter(([, tools]) => {
+      const allow = tools?.message?.actions?.allow;
+      return Array.isArray(allow) && allow.some((action) => String(action).trim().toLowerCase() === "edit");
+    })
+    .map(([where]) => where);
+  if (editors.length === 0) return;
+  const entry = next.plugins?.entries?.[EDIT_GUARD_PLUGIN];
+  const allowed = Array.isArray(next.plugins?.allow) && next.plugins.allow.includes(EDIT_GUARD_PLUGIN);
+  if (entry && typeof entry === "object" && entry.enabled !== false && allowed) return;
+  throw new Error(
+    `message action "edit" is allowed for ${editors.join(", ")} but the ${EDIT_GUARD_PLUGIN} plugin that restricts edits ` +
+      `to the agent's own summary card is not ${allowed ? "enabled in plugins.entries" : "in plugins.allow"}. ` +
+      `Enable it (plugins.allow and plugins.entries["${EDIT_GUARD_PLUGIN}"].enabled) or remove "edit" from tools.message.actions.allow.`,
+  );
 }
 
 function applyConfig(fragment, ids) {
@@ -447,6 +537,13 @@ function printPreview(live, next) {
   );
   for (const p of shared.slice(0, PREVIEW_CAP)) console.log(`  ${p}`);
   if (shared.length > PREVIEW_CAP) console.log(`  ... and ${shared.length - PREVIEW_CAP} more`);
+  if (renderedRepositories.pinned.length > 0) {
+    const { pinned, replaced } = renderedRepositories;
+    console.log(
+      `preview: repositories: ${pinned.length} pinned from the manifest (replaces the ${replaced} the live config lists)`,
+    );
+    for (const repo of pinned.slice(0, PREVIEW_CAP)) console.log(`  ${repo.id} @ ${repo.commit.slice(0, 12)}`);
+  }
   console.log("preview: end (read-only; nothing was written; plugin installs that apply runs first are not reflected)");
 }
 

@@ -50,7 +50,7 @@ function priorOncall(workspace) {
   };
 }
 
-function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
+function fixture(t, { includeOncall = false, stockSlack = false, patchFragment, ownerBusyTimes = 0 } = {}) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "livex-apply-"));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const configPath = path.join(state, "openclaw.json");
@@ -70,6 +70,13 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
     const args = process.argv.slice(2).join(" ");
     const version = ${JSON.stringify(pinnedSlack)};
     const installRecord = ${JSON.stringify(installRecord)};
+    const busyFile = ${JSON.stringify(path.join(state, "owner-busy-count"))};
+    const busySoFar = fs.existsSync(busyFile) ? Number(fs.readFileSync(busyFile, "utf8")) : 0;
+    if (busySoFar < ${ownerBusyTimes}) {
+      fs.writeFileSync(busyFile, String(busySoFar + 1));
+      console.error("Failed to read config: cannot verify Gateway ownership from this process (different PID namespace)");
+      process.exit(1);
+    }
     if (args === "plugins list --json") {
       console.log(JSON.stringify({ plugins: [{ id: "codex" }, { id: "slack", version }] }));
     } else if (args === "plugins inspect slack --json") {
@@ -89,15 +96,18 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
   );
 
   let releaseDir = nativeDir;
-  if (includeOncall) {
+  if (includeOncall || patchFragment) {
     releaseDir = path.join(state, "release");
     fs.mkdirSync(path.join(releaseDir, "config"), { recursive: true });
     fs.symlinkSync(path.join(nativeDir, "agents"), path.join(releaseDir, "agents"));
     const fragment = json5.parse(
       fs.readFileSync(path.join(nativeDir, "config", "openclaw.fragment.json5"), "utf8"),
     );
-    fragment.agents.entries.oncall = { name: "LiveX OnCall" };
-    fragment.bindings.push(slackRoute("oncall", "C0OPTIN"));
+    if (includeOncall) {
+      fragment.agents.entries.oncall = { name: "LiveX OnCall" };
+      fragment.bindings.push(slackRoute("oncall", "C0OPTIN"));
+    }
+    patchFragment?.(fragment);
     fs.writeFileSync(
       path.join(releaseDir, "config", "openclaw.fragment.json5"),
       JSON.stringify(fragment),
@@ -110,6 +120,8 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
     OPENCLAW_CONFIG_PATH: configPath,
     LIVEX_JSON5_FROM: json5From,
     LIVEX_RELEASE_SHA: "regression",
+    // The shipped manifest pins real repositories; keep unrelated tests independent of it.
+    LIVEX_REPOS_MANIFEST: path.join(state, "no-repos-manifest.json"),
     LIVEX_OPENCLAW_CMD: "fake-openclaw",
     PATH: [state, path.dirname(process.execPath), process.env.PATH ?? ""].join(path.delimiter),
     SLACK_PLUGIN_SPEC: slackSpec,
@@ -130,6 +142,20 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
   };
   return { state, configPath, oncallWorkspace, run, read, seed, applyTwice };
 }
+
+test("waits for a stopped Gateway's fresh owner heartbeat, then gives up with the CLI error", (t) => {
+  const waits = fixture(t, { ownerBusyTimes: 2 });
+  const ok = waits.run({ LIVEX_OWNER_WAIT_MS: "5000", LIVEX_OWNER_POLL_MS: "10" });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /owner heartbeat is still fresh; waiting/);
+
+  const stuck = fixture(t, { ownerBusyTimes: 1000 });
+  const failed = stuck.run({ LIVEX_OWNER_WAIT_MS: "50", LIVEX_OWNER_POLL_MS: "10" });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /cannot verify Gateway ownership/);
+  assert.match(failed.stderr, /`plugins list --json` failed \(exit 1\)/);
+  assert.equal(fs.existsSync(stuck.configPath), false, "nothing written when the CLI never becomes available");
+});
 
 test("replaces same-version stock Slack with the release archive once", (t) => {
   const { run } = fixture(t, { stockSlack: true });
@@ -170,9 +196,23 @@ test("fresh install registers the Debugger route and enables its Slack summary",
   assert.deepEqual(config.bindings, [slackRoute("debugger")]);
   assert.ok(config.plugins.allow.includes("livex-slack-summary"));
   assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
+  assert.deepEqual(config.plugins.entries["livex-slack-summary"].config, {
+    buttons: false,
+    allowedChannelId: "*",
+    allowedSenderId: "${SLACK_SENDER_ID}",
+  });
+  assert.ok(config.agents.entries.debugger.tools.message.actions.allow.includes("edit"));
+  // No Monitoring read role on the service account: the metrics tool stays off the allowlist.
+  assert.ok(!config.agents.entries.debugger.tools.allow.includes("livex_gcp_metrics_read"));
+  assert.ok(config.plugins.allow.includes("livex-investigations-lite"));
+  const lite = config.plugins.entries["livex-investigations-lite"];
+  assert.equal(lite.enabled, true);
+  assert.equal(lite.hooks.allowConversationAccess, true);
+  assert.equal(lite.hooks.allowPromptInjection, true);
   assert.deepEqual(config.plugins.load.paths, [
     path.join(nativeDir, "plugins", "livex-gcp-readonly"),
     path.join(nativeDir, "plugins", "livex-slack-summary"),
+    path.join(nativeDir, "plugins", "livex-investigations-lite"),
   ]);
 });
 
@@ -235,6 +275,7 @@ test("upgrade retires the stock wildcard while preserving OnCall references, ope
     operatorPlugin,
     path.join(nativeDir, "plugins", "livex-gcp-readonly"),
     path.join(nativeDir, "plugins", "livex-slack-summary"),
+    path.join(nativeDir, "plugins", "livex-investigations-lite"),
   ]);
   assert.deepEqual(next.agents.entries.oncall, config.agents.entries.oncall);
   assert.deepEqual(next.agents.entries.other, config.agents.entries.other);
@@ -600,7 +641,7 @@ test("a malformed LIVEX_HOST_PORT is rejected", (t) => {
 test("LIVEX_PLUGIN_ROOT sets the plugin load paths for a standalone preview", (t) => {
   const { run, read, seed } = liveLike(t);
   const config = JSON.parse(read());
-  config.plugins = { load: { paths: ["/opt/livex-native/plugins/livex-gcp-readonly", "/opt/livex-native/plugins/livex-slack-summary"] } };
+  config.plugins = { load: { paths: ["/opt/livex-native/plugins/livex-gcp-readonly", "/opt/livex-native/plugins/livex-slack-summary", "/opt/livex-native/plugins/livex-investigations-lite"] } };
   seed(config);
   const preview = run({
     LIVEX_LIVE_GUARD: "1",
@@ -626,4 +667,132 @@ test("preview masks credentials by value and never prints object contents", (t) 
   for (const leak of ["LEAKME1", "LEAKME2", "LEAKME3", "LEAKME4"]) {
     assert.ok(!result.stdout.includes(leak) && !result.stderr.includes(leak), `preview leaked ${leak}`);
   }
+});
+
+const GCP_PLUGIN_ID = "livex-gcp-readonly";
+const repositoriesOf = (config) => config.plugins.entries[GCP_PLUGIN_ID].config.repositories;
+const pin = (n) => String(n).repeat(40);
+
+function writeManifest(dir, rows) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "manifest.json");
+  const body = rows.map(([id, commit]) => `  {"id": "${id}", "branch": "main", "commit": "${commit}"}`).join(",\n");
+  fs.writeFileSync(file, `[\n${body}\n]\n`);
+  return file;
+}
+
+test("pinned manifest entries replace the VM's stale repositories list, unpinned ones are skipped", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", pin(1)], ["beta", ""], ["gamma_2", pin(2)]]);
+  seed({
+    plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: [{ id: "stale", path: "/repos/stale", commit: pin(9) }] } } } },
+  });
+  const first = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(first.status, 0, first.stderr);
+  const config = JSON.parse(read());
+  assert.deepEqual(repositoriesOf(config), [
+    { id: "alpha", path: "/repos/alpha", commit: pin(1) },
+    { id: "gamma_2", path: "/repos/gamma_2", commit: pin(2) },
+  ]);
+  const second = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), repositoriesOf(config));
+});
+
+test("a manifest without pins keeps the VM's repositories list", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", ""], ["beta", ""]]);
+  const mine = [{ id: "hand", path: "/repos/hand", commit: pin(7) }];
+  seed({ plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: mine } } } } });
+  const result = run({ LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), mine);
+  // No manifest at all behaves the same.
+  const none = run({ LIVEX_REPOS_MANIFEST: path.join(state, "absent.json") });
+  assert.equal(none.status, 0, none.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), mine);
+});
+
+test("the manifest shipped in the release dir is the default source", (t) => {
+  const { state, run, read } = fixture(t);
+  const release = path.join(state, "release-dir");
+  fs.mkdirSync(path.join(release, "config"), { recursive: true });
+  fs.symlinkSync(path.join(nativeDir, "agents"), path.join(release, "agents"));
+  fs.copyFileSync(
+    path.join(nativeDir, "config", "openclaw.fragment.json5"),
+    path.join(release, "config", "openclaw.fragment.json5"),
+  );
+  writeManifest(path.join(release, "repos"), [["alpha", pin(3)]]);
+  const result = run({ LIVEX_NATIVE_DIR: release, LIVEX_PLUGIN_ROOT: nativeDir, LIVEX_REPOS_MANIFEST: undefined });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(repositoriesOf(JSON.parse(read())), [{ id: "alpha", path: "/repos/alpha", commit: pin(3) }]);
+});
+
+test("the change preview shows the managed repositories list and writes nothing", (t) => {
+  const { state, run, read, seed, configPath } = fixture(t);
+  const manifest = writeManifest(state, [["alpha", pin(1)], ["beta", pin(2)]]);
+  seed({ plugins: { entries: { [GCP_PLUGIN_ID]: { config: { repositories: [{ id: "old", path: "/repos/old", commit: pin(9) }] } } } } });
+  const before = read();
+  const result = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_REPOS_MANIFEST: manifest });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /preview: repositories: 2 pinned from the manifest \(replaces the 1 the live config lists\)/);
+  assert.match(result.stdout, /^  alpha @ 111111111111$/m);
+  assert.match(result.stdout, /~ plugins\.entries\.livex-gcp-readonly\.config\.repositories: \[1 items #[0-9a-f]{8}\] -> \[2 items #[0-9a-f]{8}\]/);
+  assert.equal(fs.readFileSync(configPath, "utf8"), before);
+});
+
+test("a malformed manifest stops apply before anything is written", (t) => {
+  const { state, run, read, seed } = fixture(t);
+  seed({ agents: {} });
+  const before = read();
+  for (const rows of [[["alpha", "abc"]], [["alpha", pin(1)], ["alpha", pin(2)]], [["bad id", pin(1)]]]) {
+    const manifest = writeManifest(state, rows);
+    const check = run({ LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1", LIVEX_REPOS_MANIFEST: manifest });
+    assert.notEqual(check.status, 0, "pre-stop check refuses");
+    const apply = run({ LIVEX_REPOS_MANIFEST: manifest });
+    assert.notEqual(apply.status, 0);
+    assert.match(apply.stderr, /manifest\.json/);
+    assert.equal(read(), before);
+  }
+});
+
+test("message action edit needs the livex-slack-summary guard enabled and allowed; the check-only preview refuses too", (t) => {
+  // The shipped fragment allows edit and enables the guard, so a normal apply passes.
+  const shipped = fixture(t);
+  const ok = shipped.run();
+  assert.equal(ok.status, 0, ok.stderr);
+  const edit = JSON.parse(shipped.read()).agents.entries.debugger.tools.message.actions.allow;
+  assert.ok(edit.includes("edit"));
+
+  const cases = {
+    "plugin not in plugins.allow": (f) => {
+      f.plugins.allow = f.plugins.allow.filter((id) => id !== "livex-slack-summary");
+    },
+    "plugin entry disabled": (f) => {
+      f.plugins.entries["livex-slack-summary"].enabled = false;
+    },
+    "plugin entry missing": (f) => {
+      delete f.plugins.entries["livex-slack-summary"];
+    },
+  };
+  for (const [name, patchFragment] of Object.entries(cases)) {
+    const bad = fixture(t, { patchFragment });
+    for (const extra of [{}, { LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1" }]) {
+      const result = bad.run(extra);
+      assert.notEqual(result.status, 0, `${name} ${JSON.stringify(extra)}`);
+      assert.match(result.stderr, /message action "edit" is allowed for .*livex-slack-summary/s, name);
+      assert.equal(fs.existsSync(bad.configPath), false, `${name}: nothing was written`);
+    }
+  }
+
+  // Without edit in any allow list the guard plugin is not required.
+  const noEdit = fixture(t, {
+    patchFragment: (f) => {
+      f.agents.entries.debugger.tools.message.actions.allow = ["read", "reactions"];
+      f.plugins.allow = f.plugins.allow.filter((id) => id !== "livex-slack-summary");
+      delete f.plugins.entries["livex-slack-summary"];
+    },
+  });
+  const passes = noEdit.run();
+  assert.equal(passes.status, 0, passes.stderr);
 });

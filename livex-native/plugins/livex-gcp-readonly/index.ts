@@ -3,6 +3,7 @@ import { runUtf8CommandWithTimeout } from "openclaw/plugin-sdk/process-runtime";
 import { createLogsTool } from "./core.mjs";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createPageLedger, PAGE_CACHE_ENTRIES } from "./page-store.mjs";
+import { createMetricsTool } from "./metrics.mjs";
 import { createPagedLogsTool } from "./paging.mjs";
 import { createRecoveryCommand } from "./recovery.mjs";
 import { createRepositoryTool } from "./repository.mjs";
@@ -15,6 +16,15 @@ export default definePluginEntry({
   register(api) {
     // Stock 2026.10.5 can read logs without the V2 store that paging and recovery require.
     const supportsPaging = typeof api.runtime.state.openKeyedStoreV2 === "function";
+    if (!supportsPaging && api.pluginConfig?.paging?.enabled === true) {
+      // The page ledger needs one atomic multi-key transaction (store.createOperation, V2 only).
+      // The V1 keyed store (and its withCurrent view) only has single-key operations.
+      console.warn(
+        `${manifest.id}: paging.enabled is true but paging is unavailable: this OpenClaw host has no ` +
+          "api.runtime.state.openKeyedStoreV2 (atomic multi-key page operation); log reads return at most " +
+          "50 rows with no cursor and the recovery command is not registered",
+      );
+    }
     if (supportsPaging) {
       api.registerCommand(
         createRecoveryCommand(
@@ -62,6 +72,13 @@ export default definePluginEntry({
         },
       },
       { name: "livex_gcp_logs_read", optional: true, workspaceAccess: false },
+    );
+    api.registerTool(
+      {
+        contextVersion: 2,
+        create: (context) => createMetricsTool(api.pluginConfig, context, runUtf8CommandWithTimeout),
+      },
+      { name: "livex_gcp_metrics_read", optional: true, workspaceAccess: false },
     );
     api.registerTool(
       {

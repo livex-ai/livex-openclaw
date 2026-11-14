@@ -100,3 +100,57 @@ test("a near-full cached receipt keeps its rows and cursor instead of overflowin
   assert.equal(linked.nextCursor, details.nextCursor);
   assert.equal(JSON.stringify(details), before);
 });
+
+const rowsResult = (rows) => ({ ...success, stdout: JSON.stringify(rows) });
+const readRows = async (rows, limit = 50) => {
+  const tool = createLogsTool(config, context, async () => rowsResult(rows));
+  const { details } = await tool.execute("rows", { ...query, insertIds: undefined, insertId: "x", limit });
+  return details;
+};
+
+test("each entry gets an entryUrl for exactly that insertId with +-1s timestamp bounds", async () => {
+  const details = await readRows([
+    { insertId: 'a"b\\c', timestamp: "2026-11-14T09:12:05.250Z", severity: "ERROR", textPayload: "boom" },
+  ]);
+  const url = new URL(details.entries[0].entryUrl);
+  assert.equal(url.origin + url.pathname, "https://console.cloud.google.com/logs/query");
+  assert.deepEqual([...url.searchParams.keys()], ["project", "query"]);
+  assert.equal(url.searchParams.get("project"), "example-prd");
+  assert.equal(
+    url.searchParams.get("query"),
+    'insertId="a\\"b\\\\c" AND timestamp>="2026-11-14T09:12:04.250Z" AND timestamp<="2026-11-14T09:12:06.250Z"',
+  );
+  assert.ok(details.entries[0].entryUrl.includes("%22"));
+  assert.ok(!details.entries[0].entryUrl.includes('"'));
+  assert.equal(details.entryUrlsOmitted, undefined);
+});
+
+test("entryUrl is omitted when the insertId or timestamp is missing, invalid or redacted", async () => {
+  const details = await readRows([
+    { insertId: "token=PRIVATE_ID_SECRET", timestamp: "2026-11-14T09:12:05Z" },
+    { insertId: "ok1" },
+    { insertId: "ok2", timestamp: "not-a-date" },
+    { timestamp: "2026-11-14T09:12:05Z" },
+    { insertId: "x".repeat(2000), timestamp: "2026-11-14T09:12:05Z" },
+  ]);
+  assert.equal(details.entries.length, 5);
+  for (const entry of details.entries) assert.equal(entry.entryUrl, undefined);
+  assert.ok(!JSON.stringify(details).includes("PRIVATE_ID_SECRET"));
+});
+
+test("byte-limit pressure drops entryUrls from the oldest entries first and flags the count", async () => {
+  const rows = Array.from({ length: 14 }, (_, i) => ({
+    insertId: "id" + i,
+    timestamp: `2026-11-14T09:12:${String(50 - i).padStart(2, "0")}Z`, // id0 newest
+    severity: "ERROR",
+    textPayload: "m".repeat(1900),
+  }));
+  const details = await readRows(rows);
+  assert.equal(details.entries.length, 14);
+  assert.ok(Buffer.byteLength(JSON.stringify(details)) <= 30 * 1024);
+  assert.equal(details.entryUrlsOmitted, 7);
+  assert.deepEqual(
+    details.entries.filter((e) => e.entryUrl).map((e) => e.insertId),
+    ["id0", "id1", "id2", "id3", "id4", "id5", "id6"],
+  );
+});

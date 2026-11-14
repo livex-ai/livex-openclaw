@@ -1,0 +1,91 @@
+{
+  "id": "livex-investigations-lite",
+  "name": "LiveX investigation memory",
+  "description": "Remembers past alert investigations per issue signature and shows them to the debugger on recurrence. Records are saved only after Slack confirms the reply was delivered.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": ["investigation_record", "investigation_lookup"]
+  },
+  "toolMetadata": {
+    "investigation_record": {
+      "optional": true,
+      "sideEffecting": false,
+      "replaySafe": true
+    },
+    "investigation_lookup": {
+      "optional": true,
+      "sideEffecting": false,
+      "replaySafe": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["allowedChannelId", "allowedSenderId"],
+    "properties": {
+      "agents": {
+        "type": "array",
+        "default": ["debugger"],
+        "minItems": 1,
+        "maxItems": 8,
+        "uniqueItems": true,
+        "description": "Agent ids whose Slack thread sessions use investigation memory.",
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      },
+      "allowedChannelId": {
+        "type": "string",
+        "pattern": "^(?:\\*|[CG][A-Z0-9]+)$",
+        "description": "Slack channel ID or * for all accessible public/private channels. Same semantics as livex-gcp-readonly."
+      },
+      "allowedSenderId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Slack user ID allowed to use the tools. Same semantics as livex-gcp-readonly."
+      },
+      "maxCases": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 5000,
+        "default": 500,
+        "description": "Maximum stored cases; the host store evicts its oldest entry beyond this."
+      },
+      "maxOccurrencesPerCase": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 10
+      },
+      "maxNotesPerCase": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10,
+        "default": 5
+      },
+      "pendingTtlMinutes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "default": 30,
+        "description": "How long a staged record waits for Slack delivery confirmation."
+      },
+      "seenBeforeMaxCases": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5,
+        "default": 3
+      },
+      "seenBeforeMaxChars": {
+        "type": "integer",
+        "minimum": 400,
+        "maximum": 4000,
+        "default": 1200
+      }
+    }
+  }
+}
