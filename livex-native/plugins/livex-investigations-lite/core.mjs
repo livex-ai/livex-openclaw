@@ -281,6 +281,138 @@ export function mergeCase(existing, staged, { now, replyTs, limits }) {
   };
 }
 
+// ------------------------------------------------------------- envelope
+
+export const SUMMARY_MARKER_V2 = "LIVEX_ALERT_SUMMARY_V2";
+const ENVELOPE_KEYS = new Set([
+  "title",
+  "signature",
+  "priority",
+  "provisional",
+  "resolved",
+  "summary",
+  "nextAction",
+  "owner",
+  "checkedWindow",
+  "evidenceUrl",
+]);
+const ENVELOPE_REQUIRED = ["title", "signature", "priority", "provisional", "summary", "nextAction", "owner", "checkedWindow"];
+
+function boundedLine(value, max) {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= max &&
+    !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
+  );
+}
+
+/**
+ * Strict read of the `LIVEX_ALERT_SUMMARY_V2\n{json}\n\nreport` envelope into
+ * the fields the memory needs, or null when anything is off (nothing is
+ * recorded then). Only the exact first-line marker counts; a V1 marker or a
+ * misplaced marker never matches.
+ */
+export function parseSummaryEnvelope(text) {
+  return readSummaryEnvelope(text).record ?? null;
+}
+
+function isHttpsUrl(value) {
+  if (typeof value !== "string" || !value.startsWith("https://")) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Like parseSummaryEnvelope but explains a rejection: {record} on success,
+ * {reason} (never any content) for a V2-marked envelope that is unusable, and
+ * {} when the text is not a V2 envelope at all.
+ */
+export function readSummaryEnvelope(raw) {
+  // Same acceptance as livex-slack-summary's classifyEnvelope: leading whitespace is
+  // ignored, the JSON line is at most 4096 characters, and evidenceUrl is absent, null
+  // or a parseable https URL. A case is recorded only for a summary that renders a card.
+  const text = typeof raw === "string" ? raw.trimStart() : raw;
+  if (typeof text !== "string" || !text.startsWith(`${SUMMARY_MARKER_V2}\n`) && !text.startsWith(`${SUMMARY_MARKER_V2}\r\n`)) {
+    return {};
+  }
+  const match = /^([^\r\n]+)\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
+  if (!match || match[1] !== SUMMARY_MARKER_V2) return { reason: "invalid envelope: bad layout" };
+  let value;
+  try {
+    value = JSON.parse(match[2]);
+  } catch {
+    return { reason: "invalid envelope: JSON not parseable" };
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { reason: "invalid envelope: JSON is not an object" };
+  }
+  if (!Object.keys(value).every((key) => ENVELOPE_KEYS.has(key))) {
+    return { reason: "invalid envelope: unknown key" };
+  }
+  if (!ENVELOPE_REQUIRED.every((key) => key in value)) return { reason: "invalid envelope: missing key" };
+  const checks = {
+    title: boundedLine(value.title, MAX_TITLE_CHARS),
+    signature: boundedLine(value.signature, MAX_SIGNATURE_CHARS),
+    priority: PRIORITIES.includes(value.priority),
+    provisional: typeof value.provisional === "boolean",
+    resolved: value.resolved === undefined || typeof value.resolved === "boolean",
+    summary: boundedLine(value.summary, 600),
+    nextAction: boundedLine(value.nextAction, 300),
+    owner: boundedLine(value.owner, 80),
+    checkedWindow: boundedLine(value.checkedWindow, 80),
+    evidenceUrl: value.evidenceUrl === undefined || value.evidenceUrl === null || isHttpsUrl(value.evidenceUrl),
+  };
+  const bad = Object.keys(checks).find((key) => !checks[key]);
+  if (bad) return { reason: `invalid envelope: invalid field ${bad}` };
+  return {
+    record: {
+      signature: value.signature,
+      title: value.title,
+      priority: value.priority,
+      resolved: value.resolved === true,
+      finding: value.summary,
+    },
+  };
+}
+
+/** Wrap a plugin logger; messages carry the plugin id, operation and error text only. */
+export function createLog(logger, pluginId = "livex-investigations-lite") {
+  const call = (level, message) => {
+    try {
+      const fn = logger?.[level];
+      if (typeof fn === "function") fn.call(logger, message);
+      else console[level](message);
+    } catch {
+      // Logging must never affect a reply.
+    }
+  };
+  return {
+    warn(operation, error) {
+      const text = sanitizeLine(error instanceof Error ? error.message : error, 200);
+      call("warn", `[${pluginId}] store ${operation} failed: ${text || "unknown error"}`);
+    },
+    // A fixed reason string only; callers must never pass content.
+    reject(reason) {
+      call("warn", `[${pluginId}] summary envelope not recorded: ${reason}`);
+    },
+    info(message) {
+      call("info", `[${pluginId}] ${message}`);
+    },
+  };
+}
+
+const NOOP_LOG = { warn() {}, info() {}, reject() {} };
+
+function markLogged(error) {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  wrapped.livexLogged = true;
+  return wrapped;
+}
+
 // -------------------------------------------------------------- matching
 
 function score(caseValue, queryTokens) {
@@ -446,7 +578,7 @@ export function toLookupDetails(entries) {
  * Per-process pending map plus serialized store commits. `openStore(authority?)`
  * returns a V2 keyed store; hooks open it without an invocation authority.
  */
-export function createMemory(config, { openStore, now = Date.now }) {
+export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG }) {
   // sessionKey -> {records: Map<key, staged>, stagedAt, tagged, stagedRunId}
   const pending = new Map();
   // sessionKey -> latest runId seen by before_prompt_build (tool contexts carry none).
@@ -478,7 +610,7 @@ export function createMemory(config, { openStore, now = Date.now }) {
       if (runs.size > MAX_PENDING_SESSIONS) runs.delete(runs.keys().next().value);
     },
 
-    stage(sessionKey, record) {
+    stage(sessionKey, record, { keepExisting = false } = {}) {
       sweep();
       const runId = runs.get(sessionKey);
       let entry = pending.get(sessionKey);
@@ -495,7 +627,8 @@ export function createMemory(config, { openStore, now = Date.now }) {
       if (!entry.records.has(key) && entry.records.size >= MAX_STAGED_PER_TURN) {
         throw new Error(`At most ${MAX_STAGED_PER_TURN} investigations can be recorded per reply`);
       }
-      entry.records.set(key, record);
+      // A tool record for the same case wins over an envelope-derived one.
+      if (!(keepExisting && entry.records.has(key))) entry.records.set(key, record);
       entry.stagedAt = now();
     },
 
@@ -532,16 +665,28 @@ export function createMemory(config, { openStore, now = Date.now }) {
       const replyTs = typeof messageId === "string" && SLACK_TS.test(messageId) ? messageId : undefined;
       const records = [...entry.records.values()];
       const run = queue.then(async () => {
-        const store = openStore();
+        let store;
+        try {
+          store = openStore();
+        } catch (error) {
+          log.warn("open", error);
+          throw markLogged(error);
+        }
         for (const record of records) {
           const key = signatureKey(record.signature);
-          const existing = await store.lookup(key);
-          const merged = mergeCase(existing, record, {
-            now: now(),
-            replyTs,
-            limits: config,
-          });
-          await store.register(key, merged);
+          try {
+            const existing = await store.lookup(key);
+            const merged = mergeCase(existing, record, {
+              now: now(),
+              replyTs,
+              limits: config,
+            });
+            await store.register(key, merged);
+            log.info(`case committed sig=${key.slice(4, 12)} occurrences=${merged.totalOccurrences}`);
+          } catch (error) {
+            log.warn("commit", error);
+            throw markLogged(error);
+          }
         }
         return true;
       });
@@ -604,7 +749,7 @@ export function createRecordTool(config, context, memory) {
   };
 }
 
-export function createLookupTool(config, context, openStore) {
+export function createLookupTool(config, context, openStore, log = NOOP_LOG) {
   const session = authorizeToolContext(config, context);
   if (!session) return null;
   return {
@@ -626,8 +771,20 @@ export function createLookupTool(config, context, openStore) {
       const signature = typeof params?.signature === "string" ? params.signature : undefined;
       const query = typeof params?.query === "string" ? params.query : undefined;
       if (!signature?.trim() && !query?.trim()) throw new Error("Provide signature or query");
-      const store = openStore({ assertCurrent: context.assertInvocationCurrent });
-      const cases = toLookupDetails(await findCases(store, { signature, query, channel: session.channel }));
+      let store;
+      try {
+        store = openStore({ assertCurrent: context.assertInvocationCurrent });
+      } catch (error) {
+        log.warn("open", error);
+        throw error;
+      }
+      let cases;
+      try {
+        cases = toLookupDetails(await findCases(store, { signature, query, channel: session.channel }));
+      } catch (error) {
+        log.warn("read", error);
+        throw error;
+      }
       context.assertInvocationCurrent();
       const details = {
         cases,
@@ -641,7 +798,7 @@ export function createLookupTool(config, context, openStore) {
 // ----------------------------------------------------------------- hooks
 
 /** Hook handlers; every one swallows its own failures so replies are never affected. */
-export function createHooks(config, memory, openStore) {
+export function createHooks(config, memory, openStore, log = NOOP_LOG) {
   return {
     async beforePromptBuild(event, ctx) {
       try {
@@ -651,11 +808,24 @@ export function createHooks(config, memory, openStore) {
         const session = authorizeHookContext(config, ctx?.sessionKey, ctx, { requireSender: true });
         if (!session) return undefined;
         const text = String(event?.currentUserMessage ?? event?.prompt ?? "").slice(0, MAX_QUERY_CHARS);
-        const found = await findCases(
-          openStore(),
-          { query: text, channel: session.channel },
-          config.seenBeforeMaxCases,
-        );
+        let store;
+        try {
+          store = openStore();
+        } catch (error) {
+          log.warn("open", error);
+          return undefined;
+        }
+        let found;
+        try {
+          found = await findCases(
+            store,
+            { query: text, channel: session.channel },
+            config.seenBeforeMaxCases,
+          );
+        } catch (error) {
+          log.warn("read", error);
+          return undefined;
+        }
         const block = renderSeenBefore(found, {
           maxCases: config.seenBeforeMaxCases,
           maxChars: config.seenBeforeMaxChars,
@@ -669,15 +839,28 @@ export function createHooks(config, memory, openStore) {
     replyPayloadSending(event, ctx) {
       try {
         const payload = event?.payload;
+        let session;
         if (
           event?.kind !== "final" ||
           event.channel !== "slack" ||
-          !authorizeHookContext(config, event.sessionKey, ctx) ||
+          !(session = authorizeHookContext(config, event.sessionKey, ctx)) ||
           payload?.isReasoning ||
           payload?.isCommentary ||
           payload?.isStatusNotice
         ) {
           return undefined;
+        }
+        // Stage from the V2 summary envelope first. This hook runs before the
+        // card hook rewrites the payload and never touches the payload itself.
+        const envelope = readSummaryEnvelope(payload?.text);
+        if (envelope.reason) log.reject(envelope.reason);
+        if (envelope.record) {
+          try {
+            memory.stage(event.sessionKey, buildStagedRecord(envelope.record, session), { keepExisting: true });
+          } catch (error) {
+            // An unusable envelope records nothing; tool records are unaffected.
+            log.reject(/too generic/u.test(error?.message) ? "signature too generic" : "record rejected");
+          }
         }
         memory.tag(event.sessionKey, event.runId ?? ctx?.runId);
       } catch {
@@ -695,8 +878,9 @@ export function createHooks(config, memory, openStore) {
           messageId: event.messageId,
           runId: event.runId ?? ctx?.runId,
         });
-      } catch {
-        // A failed save is invisible to the reply by design.
+      } catch (error) {
+        // A failed save is invisible to the reply by design, but never silent.
+        if (!error?.livexLogged) log.warn("commit", error);
       }
     },
   };

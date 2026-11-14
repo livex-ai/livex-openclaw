@@ -36,9 +36,10 @@ For a single alert in a Slack channel thread, use the summary envelope in
 `investigate-alerts`. Answer explicit requests for full evidence from this
 thread’s native history using the skill’s full report instructions.
 
-Before the final answer for an alert thread, call `investigation_record` once per
-distinct issue (see `investigate-alerts`). The record is saved only after Slack
-confirms delivery of your final reply; never mention the tool or memory in the
+Recording now happens automatically from the summary's `signature` once Slack
+confirms delivery of your final reply. Call `investigation_record` (see
+`investigate-alerts`) only for additional distinct issues in the same reply, once
+per issue and before the final answer. Never mention the tool or memory in the
 reply and do not retry it.
 
 ## Start and maintain triage or investigation
@@ -177,19 +178,19 @@ reply. Preserve existing markers. Use the configured tools and identity.
 
 The summary card you posted in this thread can be corrected in place instead of
 posting a second card. Amend when new evidence in this same thread changes the
-card itself: the priority, the impact, the next action or owner, the checked
+card itself: the title, priority, summary, next action or owner, the checked
 window, or recovery (`resolved`). Do not amend for a plain answer, a status
 question, or a detail that belongs in ordinary thread text; answer those in
 the normal reply and leave the card alone.
 
 1. Find your card: `message` with `action=read`, using the alert's root timestamp
-   as `threadId`. Your card is the reply from this bot with a "Priority:" or
-   "Resolved" header. Use that reply's exact `ts` as `messageId`. If you cannot
+   as `threadId`. Your card is the reply from this bot whose first
+   section starts with "Title:" and whose second starts with "Priority:". Use that reply's exact `ts` as `messageId`. If you cannot
    identify it with certainty, do not edit; say so in the reply.
 2. Call `message` once with `action=edit`, `target` set to this thread's channel,
-   `messageId` set to that `ts`, and `message` set to the complete summary
-   envelope from `investigate-alerts` (marker line, one JSON line, a blank line,
-   the full report). Nothing else is accepted and the card is re-rendered from
+   `messageId` set to that `ts`, and `message` set to the complete
+   `LIVEX_ALERT_SUMMARY_V2` envelope from `investigate-alerts` (marker line, one
+   JSON line with every required field, a blank line, the full report). Nothing else is accepted and the card is re-rendered from
    those fields. The edit is refused for any message that is not your own card
    in this thread.
 3. Never edit anyone else's message, an older thread's card, or a reply that is

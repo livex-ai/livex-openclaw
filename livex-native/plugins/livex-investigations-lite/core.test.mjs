@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createHooks,
+  createLog,
   createLookupTool,
   createMemory,
   createRecordTool,
   findCases,
   mergeCase,
   normalizeSignature,
+  parseSummaryEnvelope,
   parseSession,
   renderSeenBefore,
   sanitizeLine,
@@ -618,4 +620,203 @@ test("L-b: notes and title written in another channel never reach a lookup or th
   await env.store.register("legacy", { ...stored, notes: ["legacy note"] });
   const legacy = JSON.stringify((await lookup.execute("l", { signature: sig })).details);
   assert.ok(!legacy.includes("legacy note"));
+});
+
+// ------------------------------------------------------------ V2 envelope
+
+const summary = (over = {}) => ({
+  title: "Checkout order timeouts",
+  signature: "checkout-api | create order | upstream timeout",
+  priority: "high",
+  provisional: false,
+  resolved: false,
+  summary: "Payment provider timed out for 4 minutes.",
+  nextAction: "Page the payments owner.",
+  owner: "payments",
+  checkedWindow: "last 30 minutes",
+  ...over,
+});
+const envelope = (obj = summary(), marker = "LIVEX_ALERT_SUMMARY_V2") =>
+  `${marker}\n${typeof obj === "string" ? obj : JSON.stringify(obj)}\n\nFull report with evidence.`;
+
+function loggerEnv() {
+  const lines = [];
+  const logger = { warn: (m) => lines.push(["warn", m]), info: (m) => lines.push(["info", m]) };
+  const log = createLog(logger);
+  const store = memoryStore({ maxEntries: config.maxCases });
+  const openStore = () => store;
+  const memory = createMemory(config, { openStore, now: () => Date.parse("2026-11-10T12:00:00Z"), log });
+  return { store, memory, lines, hooks: createHooks(config, memory, openStore, log) };
+}
+
+test("envelope auto-record: staged on send, committed only after delivery, payload untouched", async () => {
+  const env = loggerEnv();
+  await startTurn(env, SESSION, "run-1");
+  const payload = { text: envelope() };
+  const before = JSON.stringify(payload);
+  const result = env.hooks.replyPayloadSending(
+    { kind: "final", channel: "slack", sessionKey: SESSION, runId: "run-1", payload },
+    hookCtx(SESSION, { senderId: SENDER, runId: "run-1" }),
+  );
+  assert.equal(result, undefined);
+  assert.equal(JSON.stringify(payload), before);
+  assert.equal(env.store.rows.size, 0);
+  await sent(env);
+  assert.equal(env.store.rows.size, 1);
+  const [{ value }] = await env.store.entries();
+  assert.equal(value.signature, normalizeSignature("checkout-api | create order | upstream timeout"));
+  assert.equal(value.title, "Checkout order timeouts");
+  assert.equal(value.occurrences[0].priority, "high");
+  assert.equal(value.occurrences[0].resolved, false);
+  assert.equal(value.occurrences[0].finding, "Payment provider timed out for 4 minutes.");
+  assert.deepEqual(value.notes, []);
+  const info = env.lines.filter(([l]) => l === "info");
+  assert.equal(info.length, 1);
+  assert.match(info[0][1], /case committed sig=[0-9a-f]{8} occurrences=1$/u);
+  assert.ok(!info[0][1].includes("checkout"));
+});
+
+test("envelope resolved:true maps directly", async () => {
+  const env = loggerEnv();
+  await startTurn(env, SESSION, "run-1");
+  sendFinal(env, { payload: { text: envelope(summary({ resolved: true, priority: "low" })) } });
+  await sent(env);
+  const [{ value }] = await env.store.entries();
+  assert.equal(value.occurrences[0].resolved, true);
+  assert.equal(value.occurrences[0].priority, "low");
+});
+
+test("invalid envelopes and a V1 marker record nothing", async () => {
+  const bad = [
+    envelope(summary(), "LIVEX_ALERT_SUMMARY_V1"),
+    envelope("{not json}"),
+    envelope({ ...summary(), title: undefined }),
+    envelope(summary({ priority: "urgent" })),
+    envelope(summary({ provisional: "no" })),
+    envelope(summary({ resolved: "yes" })),
+    envelope(summary({ signature: "x".repeat(161) })),
+    envelope(summary({ summary: "" })),
+    envelope(summary({ signature: "1234 | 5678" })),
+    envelope({ ...summary(), extra: 1 }),
+    `x${envelope()}`,
+    `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify(summary())}`,
+    "plain reply",
+  ];
+  for (const text of bad) {
+    const env = loggerEnv();
+    await startTurn(env, SESSION, "run-1");
+    sendFinal(env, { payload: { text } });
+    await sent(env);
+    assert.equal(env.store.rows.size, 0, text.slice(0, 40));
+  }
+  assert.equal(parseSummaryEnvelope(envelope()).finding, "Payment provider timed out for 4 minutes.");
+});
+
+test("a tool record and the envelope merge; same signature keeps the tool finding", async () => {
+  const env = loggerEnv();
+  await startTurn(env, SESSION, "run-1");
+  const tool = createRecordTool(config, toolContext(), env.memory);
+  await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full on worker." }));
+  await tool.execute("t", params({ finding: "Tool finding wins." }));
+  sendFinal(env, { payload: { text: envelope() } });
+  await sent(env);
+  const rows = await env.store.entries();
+  assert.equal(rows.length, 2);
+  const shared = rows.find((r) => r.value.signature.startsWith("checkout"));
+  assert.equal(shared.value.occurrences[0].finding, "Tool finding wins.");
+  assert.equal(shared.value.occurrences[0].priority, "high");
+});
+
+test("a failed final drops the envelope record and an other-sender envelope is ignored", async () => {
+  const env = loggerEnv();
+  await startTurn(env, SESSION, "run-1");
+  sendFinal(env, { payload: { text: envelope() } });
+  await sent(env, { success: false });
+  assert.equal(env.store.rows.size, 0);
+  await startTurn(env, SESSION, "run-2");
+  sendFinal(env, { runId: "run-2", senderId: "U0OTHER", payload: { text: envelope() } });
+  await sent(env);
+  assert.equal(env.store.rows.size, 0);
+});
+
+test("store failures are logged (operation and message only) and never throw", async () => {
+  const lines = [];
+  const log = createLog({ warn: (m) => lines.push(m), info: (m) => lines.push(m) });
+  const secret = "customer@example.com";
+  // open failure at commit, then at read
+  const memory = createMemory(config, {
+    openStore() {
+      throw new Error(`db down ${secret}`);
+    },
+    log,
+  });
+  const hooks = createHooks(config, memory, () => {
+    throw new Error("db down");
+  }, log);
+  await hooks.beforePromptBuild({ prompt: "x" }, turn(SESSION, "r"));
+  sendFinalFor(hooks, "r", envelope());
+  await hooks.messageSent({ success: true, sessionKey: SESSION, messageId: "1768996900.000200" }, hookCtx());
+  await memory.settled();
+  // read failure
+  const store = { lookup: async () => { throw new Error("read boom"); }, register: async () => {}, entries: async () => { throw new Error("read boom"); } };
+  const hooks2 = createHooks(config, createMemory(config, { openStore: () => store, log }), () => store, log);
+  assert.equal(await hooks2.beforePromptBuild({ prompt: "checkout api create order upstream timeout" }, turn(SESSION, "r")), undefined);
+  // commit failure
+  const failing = { lookup: async () => undefined, register: async () => { throw new Error("write boom"); }, entries: async () => [] };
+  const memory3 = createMemory(config, { openStore: () => failing, log });
+  const hooks3 = createHooks(config, memory3, () => failing, log);
+  await hooks3.beforePromptBuild({ prompt: "x" }, turn(SESSION, "r"));
+  sendFinalFor(hooks3, "r", envelope());
+  await hooks3.messageSent({ success: true, sessionKey: SESSION, messageId: "1768996900.000200" }, hookCtx());
+  await memory3.settled();
+  assert.ok(lines.some((l) => /store open failed: db down/u.test(l)));
+  assert.ok(lines.some((l) => /store read failed: read boom/u.test(l)));
+  assert.ok(lines.some((l) => /store commit failed: write boom/u.test(l)));
+  assert.ok(lines.every((l) => l.startsWith("[livex-investigations-lite] ")));
+  assert.ok(!lines.some((l) => /checkout|Payment provider/u.test(l)));
+});
+
+function sendFinalFor(hooks, runId, text) {
+  hooks.replyPayloadSending(
+    { kind: "final", channel: "slack", sessionKey: SESSION, runId, payload: { text } },
+    hookCtx(SESSION, { senderId: SENDER, runId }),
+  );
+}
+
+test("createLog falls back to console when the logger lacks the method", () => {
+  const seen = [];
+  const original = console.warn;
+  console.warn = (m) => seen.push(m);
+  try {
+    createLog(undefined).warn("open", new Error("x"));
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(seen, ["[livex-investigations-lite] store open failed: x"]);
+});
+
+test("rejected V2 envelopes log only a reason, never content", async () => {
+  const cases = [
+    [envelope(summary({ signature: "1234 | 5678" })), /signature too generic/u],
+    [envelope({ ...summary(), title: undefined }), /invalid envelope: missing key/u],
+    [envelope("{not json}"), /JSON not parseable/u],
+    [envelope(summary({ priority: "urgent" })), /invalid field priority/u],
+    [envelope({ ...summary(), extra: 1 }), /unknown key/u],
+  ];
+  for (const [text, reason] of cases) {
+    const env = loggerEnv();
+    await startTurn(env, SESSION, "run-1");
+    sendFinal(env, { payload: { text } });
+    const warns = env.lines.filter(([l]) => l === "warn").map(([, m]) => m);
+    assert.equal(warns.length, 1, text.slice(0, 50));
+    assert.match(warns[0], /^\[livex-investigations-lite\] summary envelope not recorded: /u);
+    assert.match(warns[0], reason);
+    assert.ok(!/checkout|Payment|payments|1234|urgent|extra/u.test(warns[0].replace(/invalid field priority|unknown key/gu, "")));
+  }
+  // Non-V2 text (plain reply, V1 marker) stays silent.
+  const env = loggerEnv();
+  await startTurn(env, SESSION, "run-1");
+  sendFinal(env, { payload: { text: envelope(summary(), "LIVEX_ALERT_SUMMARY_V1") } });
+  sendFinal(env, { payload: { text: "plain" } });
+  assert.equal(env.lines.length, 0);
 });

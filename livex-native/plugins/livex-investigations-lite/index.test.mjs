@@ -13,10 +13,11 @@ const sdk = registerHooks({
 });
 const { default: entry } = await import("./index.ts").finally(() => sdk.deregister());
 
-function register(state) {
+function register(state, extra = {}) {
   const factories = new Map();
   const handlers = new Map();
   const opened = [];
+  const hookOpts = new Map();
   entry.register({
     pluginConfig: baseConfig,
     runtime: {
@@ -33,9 +34,13 @@ function register(state) {
       },
     },
     registerTool: (factory, opts) => factories.set(opts.name, { factory, opts }),
-    on: (name, handler) => handlers.set(name, handler),
+    on: (name, handler, opts) => {
+      handlers.set(name, handler);
+      hookOpts.set(name, opts);
+    },
+    ...extra,
   });
-  return { factories, handlers, opened };
+  return { factories, handlers, opened, hookOpts };
 }
 
 test("the entry stays inert on a host without the V2 keyed store", () => {
@@ -90,4 +95,38 @@ test("the entry registers gated tools and the three hooks end to end", async () 
   const withAuthority = opened.filter((o) => o.authority);
   assert.ok(withAuthority.length >= 1, "tool reads bind the invocation authority");
   assert.deepEqual(opened[0].options, { namespace: "cases", maxEntries: 500, overflowPolicy: "evict-oldest" });
+});
+
+test("reply_payload_sending runs first (priority 100), the store is never opened during register", () => {
+  const store = memoryStore();
+  const { hookOpts, opened } = register({ store });
+  assert.equal(hookOpts.get("reply_payload_sending").priority, 100);
+  assert.equal(hookOpts.get("before_prompt_build")?.priority, undefined);
+  assert.equal(opened.length, 0, "openKeyedStoreV2 throws during register(); it must be opened lazily");
+});
+
+test("envelope auto-record through the entry, store failures reach api.logger", async () => {
+  const lines = [];
+  const logger = { warn: (m) => lines.push(["warn", m]), info: (m) => lines.push(["info", m]) };
+  const store = memoryStore();
+  const { handlers } = register({ store }, { logger });
+  const ctx = { channelId: "slack", sessionKey: SESSION, agentId: "debugger", senderId: SENDER, runId: "r" };
+  await handlers.get("before_prompt_build")({ prompt: "x" }, ctx);
+  const payload = {
+    text: `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ title: "T", signature: "checkout-api | create order | upstream timeout", priority: "high", provisional: false, summary: "Provider timed out.", nextAction: "Page owner.", owner: "payments", checkedWindow: "30m" })}\n\nfull`,
+  };
+  const out = handlers.get("reply_payload_sending")({ kind: "final", channel: "slack", sessionKey: SESSION, runId: "r", payload }, ctx);
+  assert.equal(out, undefined);
+  await handlers.get("message_sent")({ success: true, sessionKey: SESSION, messageId: "1768996900.000200" }, { channelId: "slack", sessionKey: SESSION });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.rows.size, 1);
+  assert.ok(lines.some(([l, m]) => l === "info" && /case committed sig=[0-9a-f]{8} occurrences=1/u.test(m)));
+
+  const broken = [];
+  const bad = register(
+    { store: { lookup: async () => { throw new Error("nope"); }, register: async () => {}, entries: async () => { throw new Error("nope"); } } },
+    { logger: { warn: (m) => broken.push(m), info() {} } },
+  );
+  await bad.handlers.get("before_prompt_build")({ prompt: "checkout api create order upstream timeout" }, ctx);
+  assert.deepEqual(broken, ["[livex-investigations-lite] store read failed: nope"]);
 });

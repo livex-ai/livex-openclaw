@@ -1,3 +1,5 @@
+> Note: parts of this proposal predate the V2 card (Title / Priority / Next action / Summary / Evidence sections), the file-based signing key and the no-`respond` refusal rule; section 0 and `README.md` describe the current behavior.
+
 # Wiring proposal for step 4 (priority buttons and report amendments)
 
 For the coordinator. Nothing below is applied: this plugin's own files are the only
@@ -18,9 +20,9 @@ live smoke test in section 6 is the real confirmation.
 | Part | Status |
 | --- | --- |
 | (a) Buttons on the card (High / Medium / Low / Resolved), sender- and channel-gated, edited in place | Feasible, implemented. |
-| (a) Click state survives | Feasible. State rides in the button value (deflated, base64url) with an HMAC tag bound to channel and thread, re-validated on click. The key is persisted via `openKeyedStoreV2` (namespace `hmac-key`); without the store a per-process key makes older cards fail closed after a restart. A card too large for a 2000-char value falls back to a bounded in-memory reference (lost on gateway restart; the click then says the controls expired). |
+| (a) Click state survives | Feasible. State rides in the button value (deflated, base64url) with an HMAC tag bound to channel and thread, re-validated on click. The key is a 32-byte file at `<stateDir>/plugins/livex-slack-summary/button-key` (mode 0600), created atomically and read synchronously at `register()`, so every plugin instance in the gateway and every restart share it. No state dir, or a corrupt key file, disables the buttons. A card too large for a 2000-char value is posted without buttons and the plugin logs a warning. A refused or invalid click never touches the card: the handler makes no `respond.reply`/`followUp` call (both post to Slack's `response_url` and replace the whole message) and only logs a warning. |
 | (b) Agent amends its own card instead of posting a duplicate | Feasible, implemented, with a restriction below. |
-| (b) Amendment is rendered by the identical code as the first reply | **Not byte-identical.** The `message` tool's Slack `edit` accepts only `message` text and a portable `presentation`, never raw blocks (`extensions/slack/src/message-action-dispatch.ts:218-257`; schema `src/agents/tools/message-tool-schema.ts:139-148,282-287`). The guard therefore renders the same card *fields* through the stock presentation renderer. Same headline, same four sections, same evidence link and same buttons; the differences are cosmetic (see "Residual differences"). Producing identical raw blocks would need a core patch or direct Slack API access from the plugin, so it was not done. |
+| (b) Amendment is rendered by the identical code as the first reply | **Not byte-identical.** The `message` tool's Slack `edit` accepts only `message` text and a portable `presentation`, never raw blocks (`extensions/slack/src/message-action-dispatch.ts:218-257`; schema `src/agents/tools/message-tool-schema.ts:139-148,282-287`). The guard therefore renders the same card *fields* through the stock presentation renderer. Same sections in the same order, same evidence link and same buttons; the differences are cosmetic (see "Residual differences"). Producing identical raw blocks would need a core patch or direct Slack API access from the plugin, so it was not done. |
 | (b) Ownership record survives a gateway restart | **No.** The set of card timestamps lives in memory. After a restart the card cannot be amended (the guard blocks with a reason) and the agent must say so in text. A durable record would need `api.runtime.state.openKeyedStoreV2` (as `livex-investigations-lite` uses); not built to keep this step small. |
 | A person's click is visible to the agent | **No.** A plugin handler's result is ignored for block actions (`interactions.block-actions.ts:544` returns only `matched && handled`; `systemEvent` is used only by the modal path, `docs/channels/slack/rich-messages.md:146-161`). Instead the plugin remembers the person's choice in memory and applies it to any later amendment of the same card (human choice outranks the agent). Lost on restart. |
 
@@ -266,7 +268,7 @@ reactions" sentence.
   session's thread: not a human's message, not another agent's, not another thread's card, not
   an ordinary reply, not a message from before the last gateway restart. Every refusal returns
   a reason as the tool result.
-- The edit content must be the same `LIVEX_ALERT_SUMMARY_V1` envelope; everything else is
+- The edit content must be the same `LIVEX_ALERT_SUMMARY_V2` envelope; everything else is
   refused. The full report after the blank line is dropped, as in the first reply.
 - Other `message` actions (`read`, `reactions`, ...) are untouched by the guard; they remain
   governed by `message.actions.allow`. Other agents' sessions are not touched at all. A
@@ -302,6 +304,6 @@ reactions" sentence.
 `node --test index.test.mjs interactive.test.mjs amend.test.mjs` from this plugin's directory
 (also `npm test`). Rendering and validation behavior from before this step is covered
 unchanged by `index.test.mjs`; the new files cover buttons, the sender and channel gates,
-priority and Resolved re-renders, tampered and oversized values, the reference-store
-fallback, allowed and blocked amendments, a human choice outranking a later amendment, and
+priority and Resolved re-renders, tampered and oversized values, the shared key file
+(two instances, restart, corrupt, concurrent creation, mode 0600), no `respond` call on any refusal, allowed and blocked amendments, a human choice outranking a later amendment, and
 that no hook throws.

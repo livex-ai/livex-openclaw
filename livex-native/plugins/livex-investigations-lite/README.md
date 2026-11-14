@@ -6,8 +6,10 @@ on public plugin APIs: no core patches, no files on disk, no second agent.
 
 ## What it does
 
-1. **Remember.** After the debugger finishes an alert thread it stages a short
-   case note with `investigation_record`. The note is saved only after Slack
+1. **Remember.** The debugger's final reply carries a `LIVEX_ALERT_SUMMARY_V2`
+   envelope; the plugin stages a case from it automatically (see below), so the
+   model does not have to call anything. `investigation_record` remains for
+   additional distinct issues. Either way the note is saved only after Slack
    confirms the final reply was delivered.
 2. **Recall.** When an alert thread starts, a `before_prompt_build` hook looks for
    stored cases matching the incoming alert text and prepends a short
@@ -67,12 +69,55 @@ case matches when at least 2 of its signature tokens, and at least 60% of them,
 appear in the query/alert text. Ties sort by newest `lastSeen`, then key. This is
 a recall hint, not proof of identity: the agent must verify against current evidence.
 
+## Auto-record from the summary envelope
+
+The final reply starts with `LIVEX_ALERT_SUMMARY_V2`, one JSON line, a blank line
+and the report. The `reply_payload_sending` hook is registered with
+`priority: 100` (hooks sort higher first, `src/plugins/hooks.ts:178-188`;
+`api.on(name, handler, { priority })` per `PluginHookRegistrationOptions`,
+`src/plugins/hook-types.ts:204-208`), so it reads the payload before
+`livex-slack-summary` turns it into a card. It never modifies the payload and
+always returns `undefined`.
+
+Parsing is strict: the first line must be exactly the V2 marker (a V1 marker or a
+misplaced marker records nothing), the second line must be a JSON object with only
+the known keys `title`, `signature`, `priority`, `provisional`, `resolved`
+(optional), `summary`, `nextAction`, `owner`, `checkedWindow`, `evidenceUrl`
+(optional), all required ones present and within their length bounds. Anything
+else records nothing. Mapping: `signature` to the case signature (then normalized
+like the tool's), `priority` and `resolved` directly (`resolved` defaults to
+false), `finding` = `summary` (bounded to 240 chars), `title` = `title`, no trend.
+Records already staged by `investigation_record` in the same run are kept; on a
+shared signature the tool's record wins. The usual tag-and-commit-on-`message_sent`
+flow then saves it.
+
+## Failure visibility
+
+A V2-marked envelope that cannot be recorded logs one warning with only a fixed
+reason (`summary envelope not recorded: invalid envelope: missing key`, `...: signature too generic`, and so on; field names at most, never values). Text without the V2 marker stays silent.
+
+Every store open, read or commit failure is logged with `api.logger.warn`
+(`console.warn` if the host gives no logger): `[livex-investigations-lite] store
+<open|read|commit> failed: <error message>`, no stored content. A commit logs at
+info: `case committed sig=<8 hex> occurrences=<n>`. Hooks still never throw into a
+reply.
+
+The store is opened lazily inside hooks and tools, never in `register()`:
+`openKeyedStoreV2` calls `assertRuntimeCurrent` at open
+(`src/plugin-state/plugin-state-store.ts:432`; wiring at
+`src/plugins/registry-runtime.ts:114-124,187-190`), which throws during `register()`
+because the record is not yet active. During hook dispatch the loaded record is in
+the active registry, so `isPluginRecordActive` is true
+(`src/plugins/registry-lifecycle.ts:400-410,494`) and no authority argument is
+needed; tool reads additionally pass the invocation authority.
+
 ## Publish-after-delivery (best effort)
 
 | Step | Hook / tool | Effect |
 | --- | --- | --- |
 | observe | `before_prompt_build` | Records the turn's `runId` per session (before any sender gate); a different `runId` than the one that staged a pending entry discards it |
 | stage | `investigation_record` | In-memory pending entry keyed by the thread's session key, stamped with the session's current `runId` |
+| envelope | `reply_payload_sending` (`kind: "final"`, Slack), priority 100 | Parses the V2 summary envelope and stages a record bound to the session's current `runId` (see Auto-record) |
 | tag | `reply_payload_sending` (`kind: "final"`, Slack) | Tags the entry only when the event `runId` equals the staging `runId` (and `senderId`, when present, is the allowed sender); never alters the payload |
 | commit | `message_sent` with `success: true` | Writes the case; records `messageId` as the reply ts when it is a Slack ts |
 
@@ -142,5 +187,5 @@ conversation access and prompt injection (see `WIRING.md`).
 
 ## Tests
 
-`node --test *.test.mjs` (no network, no host; a fake keyed store and a stubbed
+`node --test core.test.mjs index.test.mjs` (no network, no host; a fake keyed store and a stubbed
 SDK entry module). Host-level proof against a real Gateway is a separate step.

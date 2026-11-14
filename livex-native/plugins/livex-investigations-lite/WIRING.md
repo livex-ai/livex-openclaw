@@ -99,6 +99,14 @@ paragraph:
 
 ## 6. agents/debugger/skills/investigate-alerts/SKILL.md
 
+Recording is automatic: the plugin reads the `LIVEX_ALERT_SUMMARY_V2` envelope
+(`title`, `signature`, `priority`, `resolved`, `summary`) from the final reply, so
+the envelope `signature` must be `service | operation | error class` in plain words
+without ids or numbers. `investigation_record` is only for additional distinct
+issues in the same reply. The livex-slack-summary plugin must keep its
+`reply_payload_sending` priority below 100 (default 0) so this hook sees the raw
+envelope first.
+
 New subsection at the end of "Case ownership and completion" (before "## Deeper
 investigation"; this file is being edited by another worker, so merge with theirs):
 

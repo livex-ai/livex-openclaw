@@ -1,13 +1,25 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { deflateRawSync } from "node:zlib";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
-import { loadOrCreateKey } from "./core.mjs";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, fakeClick, fakeStore, labelsOf, load, loadWithStore, postCard, summary } from "./test-helpers.mjs";
+import { deflateRawSync } from "node:zlib";
+import { loadSigningKey } from "./core.mjs";
+import { CHANNEL, SENDER, THREAD, baseConfig, buttonsOf, fakeClick, labelsOf, load, newStateDir, postCard, summary } from "./test-helpers.mjs";
 
 const blocksOf = (result) => result.payload.channelData.slack.blocks;
 const pick = (blocks, label) => buttonsOf(blocks).find((button) => button.text.text === label).value;
 const tokenOf = (value) => value.split(":").slice(2).join(":");
+const priorityOf = (blocks) => blocks[1].text.text;
+const keyPath = (stateDir) => join(stateDir, "plugins", "livex-slack-summary", "button-key");
+
+/** A click that must leave the card exactly as it is: no edit and no respond call of any kind. */
+const refused = async (loaded, click) => {
+  assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true });
+  assert.deepEqual(click.calls.edits, []);
+  assert.deepEqual(click.calls.replies, []);
+};
 
 test("a configured card carries priority buttons and registers one Slack handler", () => {
   const loaded = load();
@@ -17,8 +29,8 @@ test("a configured card carries priority buttons and registers one Slack handler
   assert.equal(typeof loaded.interactive.handler, "function");
 
   const blocks = blocksOf(postCard(loaded));
-  assert.equal(blocks.length, 6);
-  assert.equal(blocks[0].text.text, "\u{1F7E1} Priority: Medium (provisional)");
+  assert.equal(blocks.length, 7);
+  assert.equal(priorityOf(blocks), "*Priority:* \u{1F7E1} Medium (provisional)");
   // Medium is provisional, so confirming it stays available.
   assert.deepEqual(labelsOf(blocks), ["High", "Medium", "Low", "Resolved"]);
   const buttons = buttonsOf(blocks);
@@ -38,29 +50,24 @@ test("buttons are absent without both gates, outside the allowed channel, and th
   for (const config of configs) {
     const loaded = load(config);
     assert.equal(loaded.registrations.length, 0, JSON.stringify(config));
-    assert.equal(blocksOf(postCard(loaded)).length, 5);
+    assert.equal(blocksOf(postCard(loaded)).length, 6);
   }
   const wrongChannel = load({ allowedChannelId: "C0OTHER9", allowedSenderId: SENDER });
-  assert.equal(blocksOf(postCard(wrongChannel)).length, 5);
-  assert.equal(blocksOf(postCard(load({ allowedChannelId: "*", allowedSenderId: SENDER }))).length, 6);
+  assert.equal(blocksOf(postCard(wrongChannel)).length, 6);
+  assert.equal(blocksOf(postCard(load({ allowedChannelId: "*", allowedSenderId: SENDER }))).length, 7);
 });
 
-test("a click from anyone but the allowed sender is refused and changes nothing", async () => {
+test("a click from anyone but the allowed sender is refused, changes nothing and logs a warning", async () => {
   const loaded = load();
   const value = pick(blocksOf(postCard(loaded)), "High");
   for (const sender of ["U0OTHER", null, "", SENDER.toLowerCase()]) {
-    const click = fakeClick({ value, sender });
-    assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true });
-    assert.deepEqual(click.calls.edits, []);
-    assert.equal(click.calls.replies.length, 1);
-    assert.equal(click.calls.replies[0].responseType, "ephemeral");
+    await refused(loaded, fakeClick({ value, sender }));
   }
+  assert.equal(loaded.warnings.length, 4);
   // The channel gate refuses a click from another channel too.
   const strict = load({ allowedChannelId: CHANNEL, allowedSenderId: SENDER });
-  const click = fakeClick({ value, conversationId: "C0ELSEWHERE" });
-  await strict.interactive.handler(click.ctx);
-  assert.deepEqual(click.calls.edits, []);
-  assert.equal(click.calls.replies.length, 1);
+  await refused(strict, fakeClick({ value, conversationId: "C0ELSEWHERE" }));
+  assert.equal(strict.warnings.length, 1);
 });
 
 test("a priority click edits the card in place with the new priority and refreshed buttons", async () => {
@@ -71,16 +78,18 @@ test("a priority click edits the card in place with the new priority and refresh
   assert.deepEqual(click.calls.replies, []);
   assert.equal(click.calls.edits.length, 1);
   const edited = click.calls.edits[0];
-  assert.equal(edited.text, "\u{1F534} Priority: High");
-  assert.equal(edited.blocks[0].text.text, "\u{1F534} Priority: High");
-  // Body, evidence link and hint are untouched.
-  assert.deepEqual(edited.blocks.slice(1, 5), blocks.slice(1, 5));
+  assert.equal(edited.text, "\u{1F534} checkout-api upstream timeouts");
+  assert.equal(priorityOf(edited.blocks), "*Priority:* \u{1F534} High");
+  // Everything but the priority line and the buttons is untouched.
+  assert.deepEqual(edited.blocks.slice(2, 6), blocks.slice(2, 6));
+  assert.deepEqual(edited.blocks[0], blocks[0]);
   assert.deepEqual(labelsOf(edited.blocks), ["Medium", "Low", "Resolved"]);
+  assert.deepEqual(loaded.warnings, []);
 
   // The refreshed buttons carry the new state: a second click works from the edit.
   const second = fakeClick({ value: pick(edited.blocks, "Low") });
   await loaded.interactive.handler(second.ctx);
-  assert.equal(second.calls.edits[0].blocks[0].text.text, "⚪ Priority: Low");
+  assert.equal(priorityOf(second.calls.edits[0].blocks), "*Priority:* ⚪ Low");
 });
 
 test("Resolved closes the card, keeps the priority it had, and a priority click reopens it", async () => {
@@ -90,19 +99,20 @@ test("Resolved closes the card, keeps the priority it had, and a priority click 
   const click = fakeClick({ value: pick(blocks, "Resolved") });
   await loaded.interactive.handler(click.ctx);
   const resolved = click.calls.edits[0];
-  assert.equal(resolved.blocks[0].text.text, "\u{1F7E2} Resolved · was High");
+  assert.equal(priorityOf(resolved.blocks), "*Priority:* \u{1F7E2} Resolved · was High");
+  assert.equal(resolved.text, "\u{1F7E2} checkout-api upstream timeouts");
   assert.deepEqual(labelsOf(resolved.blocks), ["High", "Medium", "Low"]);
 
   const reopen = fakeClick({ value: pick(resolved.blocks, "Medium") });
   await loaded.interactive.handler(reopen.ctx);
-  assert.equal(reopen.calls.edits[0].blocks[0].text.text, "\u{1F7E1} Priority: Medium");
+  assert.equal(priorityOf(reopen.calls.edits[0].blocks), "*Priority:* \u{1F7E1} Medium");
 });
 
-test("a tampered, malformed or oversized value fails closed with an ephemeral notice", async () => {
+test("a tampered, malformed or oversized value is refused with no respond call", async () => {
   const loaded = load();
   const good = pick(blocksOf(postCard(loaded)), "High");
   const row = (patch) => {
-    const base = ["medium", 1, 0, "impact", "next", "owner", "window", null];
+    const base = ["medium", 1, 0, "title", "summary", "next", "owner", "window", null];
     return `i${deflateRawSync(Buffer.from(JSON.stringify(patch(base)))).toString("base64url")}`;
   };
   const tokens = [
@@ -112,17 +122,17 @@ test("a tampered, malformed or oversized value fails closed with an ephemeral no
     "i" + "A".repeat(3000),
     "r" + "unknown_reference",
     "i!!!not-base64!!!",
-    row((r) => r.slice(0, 7)),
+    row((r) => r.slice(0, 8)),
     row((r) => [...r, "extra"]),
     row((r) => ["urgent", ...r.slice(1)]),
     row((r) => [r[0], 2, ...r.slice(2)]),
     row((r) => [r[0], "1", ...r.slice(2)]),
     row((r) => [r[0], r[1], null, ...r.slice(3)]),
-    row((r) => [...r.slice(0, 3), "x".repeat(241), ...r.slice(4)]),
+    row((r) => [...r.slice(0, 4), "x".repeat(601), ...r.slice(5)]),
     row((r) => [...r.slice(0, 3), "line\nbreak", ...r.slice(4)]),
-    row((r) => [...r.slice(0, 7), "https://evil.example/logs"]),
-    row((r) => [...r.slice(0, 7), "http://console.cloud.google.com/logs"]),
-    row((r) => [...r.slice(0, 7), 42]),
+    row((r) => [...r.slice(0, 8), "https://evil.example/logs"]),
+    row((r) => [...r.slice(0, 8), "http://console.cloud.google.com/logs"]),
+    row((r) => [...r.slice(0, 8), 42]),
     // A bomb inflates far past the 8 KiB state cap.
     `i${deflateRawSync(Buffer.alloc(200_000, 65)).toString("base64url")}`,
   ];
@@ -134,69 +144,89 @@ test("a tampered, malformed or oversized value fails closed with an ephemeral no
     "livex-priority:high",
   ];
   for (const value of values) {
-    const click = fakeClick({ value });
-    assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true }, value.slice(0, 60));
-    assert.equal(click.calls.edits.length, 0, `edited for ${value.slice(0, 90)}`);
-    assert.equal(click.calls.replies.length, 1, value.slice(0, 60));
-    assert.equal(click.calls.replies[0].responseType, "ephemeral");
+    await refused(loaded, fakeClick({ value }));
   }
   for (const odd of [{ kind: "select" }, { messageTs: null }]) {
-    const click = fakeClick({ value: good, ...odd });
-    await loaded.interactive.handler(click.ctx);
-    assert.deepEqual(click.calls.edits, []);
+    await refused(loaded, fakeClick({ value: good, ...odd }));
   }
+  assert.equal(loaded.warnings.length, values.length + 2);
 });
 
-test("a card too large for a button value keeps working through the bounded reference store", async () => {
-  const loaded = load();
-  // High-entropy text over a 79-character alphabet that stays valid in model fields and URLs:
-  // about 6.3 bits per character, so the 2,000+ card characters cannot deflate below the limit.
+// High-entropy text over a 79-character alphabet that stays valid in model fields and URLs:
+// about 6.3 bits per character, so a maximal card cannot deflate below the button limit.
+function noiseOf(seed, length) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$'()*+,;=:@/";
   let noise = "";
-  for (let block = Buffer.from("seed"); noise.length < 2000; ) {
+  for (let block = Buffer.from(seed); noise.length < length; ) {
     block = createHash("sha512").update(block).digest();
     noise += [...block].map((byte) => alphabet[byte % alphabet.length]).join("");
   }
-  const evidenceUrl = `https://console.cloud.google.com/logs/query;query=${noise.slice(0, 1550)}`;
-  const blocks = blocksOf(postCard(loaded, { fields: { ...summary, evidenceUrl, impact: noise.slice(1550, 1790), nextAction: noise.slice(1790, 1910), checkedWindow: noise.slice(1910, 1974) } }));
-  const buttons = buttonsOf(blocks);
-  assert.ok(buttons.length > 0);
-  for (const button of buttons) {
-    assert.ok(button.value.length <= 2000, String(button.value.length));
-  }
-  assert.match(buttons[0].value, /^livex-priority:high:r[A-Za-z0-9_-]+$/u);
-  const click = fakeClick({ value: pick(blocks, "High") });
-  await loaded.interactive.handler(click.ctx);
-  assert.equal(click.calls.edits.length, 1);
-  assert.match(click.calls.edits[0].blocks[4].elements[0].text, /^<https:\/\/console\.cloud\.google\.com\/logs\/query;query=[^|]+\|View evidence>$/u);
+  return noise;
+}
+const maximalFields = (noise) => ({
+  ...summary,
+  title: noise.slice(0, 120),
+  summary: noise.slice(120, 720),
+  nextAction: noise.slice(720, 1020),
+  owner: noise.slice(1020, 1100),
+  checkedWindow: noise.slice(1100, 1180),
+  evidenceUrl: `https://console.cloud.google.com/logs/query;query=${noise.slice(1180, 2680)}`,
 });
 
-test("a Slack edit failure is reported to the clicker and never thrown", async () => {
+test("a card too large for a button value renders without buttons and logs", () => {
+  const loaded = load();
+  const blocks = blocksOf(postCard(loaded, { fields: maximalFields(noiseOf("seed", 2700)) }));
+  assert.deepEqual(buttonsOf(blocks), []);
+  assert.equal(blocks.length, 6);
+  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query;query=/u);
+  assert.equal(loaded.warnings.length, 1);
+  assert.match(loaded.warnings[0], /too large/u);
+  // A card whose state does fit keeps its buttons.
+  assert.equal(buttonsOf(blocksOf(postCard(loaded))).length, 4);
+});
+
+test("a Slack edit failure never throws, never replies, and logs", async () => {
   const loaded = load();
   const click = fakeClick({ value: pick(blocksOf(postCard(loaded)), "High") });
   click.ctx.respond.editMessage = async () => {
     throw new Error("slack down");
   };
   assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true });
-  assert.equal(click.calls.replies.length, 1);
-  click.ctx.respond.reply = async () => {
-    throw new Error("response_url expired");
-  };
-  assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true });
+  assert.deepEqual(click.calls.replies, []);
+  assert.equal(loaded.warnings.length, 1);
   assert.deepEqual(await loaded.interactive.handler(undefined), { handled: true });
   assert.deepEqual(await loaded.interactive.handler({}), { handled: true });
 });
 
-const refused = async (loaded, click) => {
-  assert.deepEqual(await loaded.interactive.handler(click.ctx), { handled: true });
-  assert.deepEqual(click.calls.edits, []);
-  assert.equal(click.calls.replies.length, 1);
-  assert.equal(click.calls.replies[0].responseType, "ephemeral");
-};
+test("warnings reach console.warn without a logger and never contain the token or the key", async () => {
+  const original = console.warn;
+  const logged = [];
+  console.warn = (...args) => void logged.push(args.join(" "));
+  try {
+    const loaded = load(baseConfig, { logger: false });
+    const value = pick(blocksOf(postCard(loaded)), "High");
+    await refused(loaded, fakeClick({ value, sender: "U0OTHER" }));
+    await refused(loaded, fakeClick({ value: `${value.slice(0, -3)}AAA` }));
+    assert.equal(logged.length, 2);
+    const key = readFileSync(keyPath(loaded.stateDir), "utf8");
+    for (const line of logged) {
+      assert.ok(!line.includes(tokenOf(value)) && !line.includes(key) && !line.includes("livex-priority:"));
+    }
+    // A corrupt key file is reported the same way, without its contents.
+    const stateDir = newStateDir();
+    load(baseConfig, { stateDir });
+    writeFileSync(keyPath(stateDir), "secret-looking-garbage");
+    load(baseConfig, { stateDir, logger: false });
+    assert.equal(logged.length, 3);
+    assert.ok(!logged[2].includes("secret-looking-garbage"));
+  } finally {
+    console.warn = original;
+  }
+});
 
 test("a well-formed but unsigned token is refused", async () => {
   const loaded = load();
-  const forged = `i${deflateRawSync(Buffer.from(JSON.stringify(["high", 0, 0, "impact", "next", "owner", "window", null]))).toString("base64url")}`;
+  const forged = `i${deflateRawSync(Buffer.from(JSON.stringify(["high", 0, 0, "title", "summary", "next", "owner", "window", null]))).toString("base64url")}`;
   for (const token of [forged, `${forged}${"A".repeat(22)}`]) {
     await refused(loaded, fakeClick({ value: `livex-priority:high:${token}` }));
   }
@@ -236,92 +266,130 @@ test("a real token replayed onto another thread or channel, or with a tampered t
   assert.equal(viaCtx.calls.edits.length, 1);
 });
 
-test("a reference token is bound to its card's channel and thread", async () => {
-  const loaded = load({ allowedChannelId: "*", allowedSenderId: SENDER });
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$'()*+,;=:@/";
-  let noise = "";
-  for (let block = Buffer.from("bind"); noise.length < 2000; ) {
-    block = createHash("sha512").update(block).digest();
-    noise += [...block].map((byte) => alphabet[byte % alphabet.length]).join("");
-  }
-  const fields = { ...summary, evidenceUrl: `https://console.cloud.google.com/logs/query;query=${noise.slice(0, 1550)}`, impact: noise.slice(1550, 1790), nextAction: noise.slice(1790, 1910), checkedWindow: noise.slice(1910, 1974) };
-  const value = pick(blocksOf(postCard(loaded, { fields })), "High");
-  assert.match(value, /^livex-priority:high:r/u);
-  await refused(loaded, fakeClick({ value, threadTs: "1768996800.999999" }));
-  await refused(loaded, fakeClick({ value, conversationId: "C0ELSEWHERE" }));
-  const ok = fakeClick({ value });
-  await loaded.interactive.handler(ok.ctx);
-  assert.equal(ok.calls.edits.length, 1);
+test("two plugin instances on one state dir sign and verify each other's tokens", async () => {
+  const stateDir = newStateDir();
+  const a = load(baseConfig, { stateDir });
+  const b = load(baseConfig, { stateDir });
+  const fromA = pick(blocksOf(postCard(a)), "High");
+  const fromB = pick(blocksOf(postCard(b)), "Low");
+  const clickB = fakeClick({ value: fromA });
+  await b.interactive.handler(clickB.ctx);
+  assert.equal(clickB.calls.edits.length, 1);
+  const clickA = fakeClick({ value: fromB });
+  await a.interactive.handler(clickA.ctx);
+  assert.equal(clickA.calls.edits.length, 1);
+  assert.deepEqual([...a.warnings, ...b.warnings], []);
+  // A different state dir is a different key: its tokens fail closed.
+  await refused(load(baseConfig), fakeClick({ value: fromA }));
 });
 
-test("the signing key is persisted, so buttons survive a restart; without the store they fail closed", async () => {
-  const store = fakeStore();
-  const before = await loadWithStore(store);
-  assert.equal(store.opened.namespace, "hmac-key");
-  assert.equal(store.rows.size, 1);
-  const stored = store.rows.get("key").key;
-  assert.equal(Buffer.from(stored, "base64url").length, 32);
+test("a restart (a new instance) verifies old tokens, and the key file is created once", async () => {
+  const stateDir = newStateDir();
+  const before = load(baseConfig, { stateDir });
   const value = pick(blocksOf(postCard(before)), "High");
-
-  const after = await loadWithStore(store); // the "restarted" gateway reads the same row
-  assert.equal(store.rows.size, 1);
-  assert.equal(store.rows.get("key").key, stored);
+  const stored = readFileSync(keyPath(stateDir), "utf8");
+  assert.equal(Buffer.from(stored, "base64url").length, 32);
+  const after = load(baseConfig, { stateDir });
+  assert.equal(readFileSync(keyPath(stateDir), "utf8"), stored);
   const click = fakeClick({ value });
   await after.interactive.handler(click.ctx);
   assert.equal(click.calls.edits.length, 1);
+});
 
-  // A card rendered by the restarted gateway is signed with the same key.
-  const fresh = pick(blocksOf(postCard(after)), "Low");
-  const again = fakeClick({ value: fresh });
-  await before.interactive.handler(again.ctx);
-  assert.equal(again.calls.edits.length, 1);
+test("the key file is mode 0600 in a 0700 directory", () => {
+  const stateDir = newStateDir();
+  load(baseConfig, { stateDir });
+  assert.equal(statSync(keyPath(stateDir)).mode & 0o777, 0o600);
+  assert.equal(statSync(join(stateDir, "plugins", "livex-slack-summary")).mode & 0o777, 0o700);
+});
 
-  // No keyed store, or a failing one: a per-process key, so older cards fail closed after a restart.
-  for (const unavailable of [undefined, fakeStore({ failing: true })]) {
-    const first = await loadWithStore(unavailable);
-    const second = await loadWithStore(unavailable);
-    await refused(second, fakeClick({ value: pick(blocksOf(postCard(first)), "High") }));
-    const own = fakeClick({ value: pick(blocksOf(postCard(second)), "High") });
-    await second.interactive.handler(own.ctx);
-    assert.equal(own.calls.edits.length, 1);
+test("a corrupt key file disables buttons, is not overwritten, and logs", () => {
+  const corrupt = ["", "short", `${"A".repeat(42)}B`, "!".repeat(43), Buffer.alloc(31).toString("base64url"), Buffer.alloc(33).toString("base64url")];
+  for (const content of corrupt) {
+    const stateDir = newStateDir();
+    load(baseConfig, { stateDir });
+    writeFileSync(keyPath(stateDir), content);
+    const loaded = load(baseConfig, { stateDir });
+    assert.equal(loaded.registrations.length, 0, JSON.stringify(content));
+    assert.equal(buttonsOf(blocksOf(postCard(loaded))).length, 0);
+    assert.equal(readFileSync(keyPath(stateDir), "utf8"), content);
+    assert.equal(loaded.warnings.length, 1);
+    assert.match(loaded.warnings[0], /buttons disabled/u);
   }
 });
 
-test("hooks wait for the key to load, then run synchronously", async () => {
-  const store = fakeStore();
-  const loaded = load(baseConfig, store);
-  // The reply hook never waits; the confirmation hook waits only while the key loads.
-  const first = postCard(loaded);
-  assert.equal(blocksOf(first).length, 6);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(typeof loaded.hooks.get("message_sent")({}, {}), "undefined");
+test("buttons are disabled and logged when no state dir resolves or the dir is unusable", () => {
+  const original = process.env.OPENCLAW_STATE_DIR;
+  try {
+    delete process.env.OPENCLAW_STATE_DIR;
+    const throwing = () => {
+      throw new Error("no");
+    };
+    for (const runtime of [{}, { state: {} }, { state: { resolveStateDir: () => "" } }, { state: { resolveStateDir: throwing } }]) {
+      const loaded = load(baseConfig, { runtime });
+      assert.equal(loaded.registrations.length, 0);
+      assert.equal(buttonsOf(blocksOf(postCard(loaded))).length, 0);
+      assert.equal(loaded.warnings.length, 1);
+    }
+    // OPENCLAW_STATE_DIR is the fallback when the runtime cannot resolve one.
+    const envDir = newStateDir();
+    process.env.OPENCLAW_STATE_DIR = envDir;
+    const viaEnv = load(baseConfig, { runtime: {} });
+    assert.equal(viaEnv.registrations.length, 1);
+    assert.equal(statSync(keyPath(envDir)).mode & 0o777, 0o600);
+  } finally {
+    if (original === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = original;
+  }
+  // A state dir whose plugin directory cannot be created (a file is in the way).
+  const stateDir = newStateDir();
+  writeFileSync(join(stateDir, "plugins"), "not a directory");
+  const blocked = load(baseConfig, { stateDir });
+  assert.equal(blocked.registrations.length, 0);
+  assert.equal(blocked.warnings.length, 1);
 });
 
-test("a store whose lookup never settles does not hold back the reply hook or leak the envelope", async () => {
-  const store = fakeStore({ hang: true });
-  const loaded = load(baseConfig, store);
-  // The reply hook is not gated on the key: a synchronous, rendered card.
-  const result = postCard(loaded);
-  assert.equal(typeof result.then, "undefined");
-  const blocks = blocksOf(result);
-  assert.equal(blocks.length, 6);
-  assert.doesNotMatch(JSON.stringify(result), /private IDs|LIVEX_ALERT_SUMMARY_V1/u);
-  // A click waits at most about two seconds, then proceeds with the interim key,
-  // which signed this card, so it works.
-  const started = Date.now();
-  const click = fakeClick({ value: pick(blocks, "High") });
-  await loaded.interactive.handler(click.ctx);
-  assert.ok(Date.now() - started < 4000);
-  assert.equal(click.calls.edits.length, 1);
+test("without buttons configured no key file is created", () => {
+  const stateDir = newStateDir();
+  load({}, { stateDir });
+  assert.throws(() => statSync(keyPath(stateDir)), { code: "ENOENT" });
 });
 
-test("two loaders racing on one store end with the same key", async () => {
-  const store = fakeStore();
-  const [a, b] = await Promise.all([loadOrCreateKey(store), loadOrCreateKey(store)]);
-  assert.equal(a.length, 32);
-  assert.deepEqual(a, b);
-  assert.equal(store.rows.size, 1);
-  assert.equal(store.rows.get("key").key, a.toString("base64url"));
-  // A store that cannot create the key yields none, and the caller keeps its interim key.
-  assert.equal(await loadOrCreateKey(fakeStore({ failing: true })), undefined);
+const coreUrl = new URL("./core.mjs", import.meta.url).href;
+const runChild = (code, ...args) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code, ...args], { stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.on("error", reject);
+    child.on("close", () => resolve(out));
+  });
+
+test("concurrent creation from separate processes ends with the same key", async () => {
+  const stateDir = newStateDir();
+  const code = `import { loadSigningKey } from ${JSON.stringify(coreUrl)};
+const r = loadSigningKey(process.argv[1]); process.stdout.write(r.key ? r.key.toString("base64url") : "ERR:" + r.error);`;
+  const results = await Promise.all(Array.from({ length: 8 }, () => runChild(code, stateDir)));
+  assert.equal(new Set(results).size, 1, results.join(","));
+  assert.equal(results[0], readFileSync(keyPath(stateDir), "utf8"));
+  assert.equal(Buffer.from(results[0], "base64url").length, 32);
+  // Two instances in one process agree too.
+  const dir = newStateDir();
+  assert.deepEqual(loadSigningKey(dir).key, loadSigningKey(dir).key);
+});
+
+test("a reader that finds a half-written key file waits for the writer instead of calling it corrupt", async () => {
+  const stateDir = newStateDir();
+  const full = Buffer.alloc(32, 7).toString("base64url");
+  loadSigningKey(stateDir);
+  writeFileSync(keyPath(stateDir), full.slice(0, 10));
+  // The writer finishes in another process while this one blocks inside loadSigningKey.
+  const writer = runChild(
+    `await new Promise((r) => setTimeout(r, 60)); (await import("node:fs")).writeFileSync(process.argv[1], process.argv[2]);`,
+    keyPath(stateDir),
+    full,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(loadSigningKey(stateDir, { raceWaitMs: 1500 }).key?.toString("base64url"), full);
+  await writer;
 });

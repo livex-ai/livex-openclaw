@@ -157,8 +157,11 @@ create another tracking system or widen the invocation's access or write scope.
    exists, stop that attempt's retries and report the tooling blocker. Do not
    evade the guard by changing arguments, add tools, or infer service severity.
 
-7. **Investigation memory.** After the decision and before the final reply, call
-   `investigation_record` once per distinct issue with:
+7. **Investigation memory.** Recording now happens automatically from the summary
+   envelope's `signature`, `priority`, `resolved` and `summary` once Slack confirms
+   delivery of your final reply. Call `investigation_record` only for additional
+   distinct issues in the same reply, after the decision and before the final reply,
+   once per extra issue with:
    - `signature`: `service | operation | error class` in plain words, no ids,
      numbers, timestamps or request ids (for example
      `checkout-api | create order | upstream timeout`). Reuse the signature shown
@@ -199,40 +202,53 @@ current conversation's normal reply.
 ### Default summary
 
 For one alert in a Slack channel thread handled by the `debugger` agent, return
-this envelope as the entire final answer. Line 1 is the exact marker. Line 2 is one JSON object with the
-seven required fields below plus the optional `resolved`. Then a blank line and the full evidence report. Do not add
-code fences, attachments, reply directives, or any text before the marker.
+this envelope as the entire final answer. Line 1 is the exact marker
+`LIVEX_ALERT_SUMMARY_V2`; earlier versions are rejected. Line 2 is one JSON object
+with exactly the keys below. Then a blank line and the full evidence report. Do not
+add code fences, attachments, reply directives, or any text before the marker.
+Unknown keys invalidate the card.
 
 ```text
-LIVEX_ALERT_SUMMARY_V1
-{"priority":"unknown","provisional":false,"impact":"Observed outcome and the uncertainty that matters.","nextAction":"One concrete next check.","owner":"Unassigned","checkedWindow":"YYYY-MM-DD HH:MM–HH:MM UTC (fresh)","evidenceUrl":null,"resolved":false}
+LIVEX_ALERT_SUMMARY_V2
+{"title":"checkout-api upstream timeouts","signature":"checkout-api | create order | upstream timeout","priority":"high","provisional":false,"resolved":false,"summary":"Order creation failed with upstream timeouts for about six minutes; retries recovered most requests and a small number of customers saw errors.","nextAction":"Confirm the payments gateway latency fix is deployed and watch the next window.","owner":"Payments on-call","checkedWindow":"2026-11-14 09:10–09:25 UTC (fresh)","evidenceUrl":"https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project=livex-dev"}
 
 Full evidence report goes here.
 ```
 
-- Use `critical`, `high`, `medium`, `low`, or `unknown` only. Keep priority
-  unknown if the evidence or severity mapping is missing. Set `provisional` for
-  a tentative assigned priority.
-- `resolved` is an optional boolean (default false; omit or use false when
-  unsure). Set `true` only when evidence shows the same failing operation
-  recovered after the failure window (a later successful outcome for that
-  operation, not just a quiet log or a retry in flight). The card then shows a
-  green "Resolved" badge in place of the priority colour marker and keeps the
-  priority in text ("Resolved · was High"). Keep `priority` as the severity of
-  the original failure. Non-boolean values invalidate the card. The card marks
-  priority with a leading emoji: red for critical/high, yellow for medium, white
-  for low/unknown.
-- Use single-line plain strings. Maximum lengths in characters are 240 for
-  `impact`, 120 for `nextAction`, 50 for `owner`, and 64 for `checkedWindow`.
-  Include UTC bounds and whether the evidence is fresh or saved. Use
-  `Unassigned` when ownership is unverified. Use only a Logs Explorer link
-  (`console.cloud.google.com`) returned by the evidence tool in `evidenceUrl`,
-  else null. The Gateway drops any other host from the card.
+Fields (single-line plain strings; maximum lengths are in characters):
+
+- `title` (1-120): what is happening, in a short noun phrase. No ids.
+- `signature` (1-160): `service | operation | error class` in plain words, no ids,
+  numbers, timestamps or request ids (for example
+  `checkout-api | create order | upstream timeout`). Reuse the signature shown in a
+  prior-case block or lookup when it is the same failure. The Gateway records the
+  investigation from this value automatically; it is not shown on the card.
+- `priority`: `critical`, `high`, `medium`, `low`, or `unknown` only. Keep it
+  `unknown` if the evidence or severity mapping is missing.
+- `provisional`: boolean. `true` for a tentative assigned priority.
+- `resolved` (optional boolean, default false; omit or use false when unsure): `true`
+  only when evidence shows the same failing operation recovered after the failure
+  window (a later successful outcome for that operation, not just a quiet log or a
+  retry in flight). The card then shows a green "Resolved · was <Priority>" line.
+  Keep `priority` as the severity of the original failure. Non-boolean values
+  invalidate the card.
+- `summary` (1-600): the decisive customer impact and the material uncertainty.
+- `nextAction` (1-300): one concrete next check or action.
+- `owner` (1-80): `Unassigned` when ownership is unverified.
+- `checkedWindow` (1-80): UTC bounds and whether the evidence is fresh or saved.
+- `evidenceUrl` (optional): only a Logs Explorer link (`console.cloud.google.com`)
+  returned by the evidence tool; omit it or use null otherwise. The Gateway drops any
+  other host from the card.
+
+The card shows, in order: Title, Priority (red for critical/high, yellow for medium,
+white for low/unknown, green when resolved), Next action with the owner, Summary, and
+Evidence (the Logs link and the checked window).
+
 - Put decisive customer impact, material uncertainty and the next action in the
   card fields. Keep identifiers, query diagnostics, secondary hypotheses and
   additional sources in the full report after the blank line. The Gateway sends
   the card and retains the authored report in this thread’s native session.
-- When new evidence in the same thread changes the card (priority, impact,
+- When new evidence in the same thread changes the card (title, priority, summary,
   next action, owner, checked window, or recovery), amend your earlier card
   with `message` `action=edit` and this same envelope in `message` instead of
   returning a second envelope; see "Amending your summary card" in the agent

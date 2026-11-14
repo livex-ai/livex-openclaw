@@ -2,14 +2,18 @@
 // LiveX Debugger Slack summary card. No host, network or Slack access here: the
 // entry (index.ts) wires these functions to the plugin hooks.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { join } from "node:path";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 
-export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V1";
+export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V2";
+// Any versioned marker identifies an envelope; only the current version is accepted.
+const MARKER_PATTERN = "LIVEX_ALERT_SUMMARY_V[0-9]+";
 export const INTERACTIVE_NAMESPACE = "livex-priority";
 export const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
 export const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
 
-const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${SUMMARY_MARKER}[ \\t]*(?=\\r?\\n|$)`, "u");
+const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${MARKER_PATTERN}[ \\t]*(?=\\r?\\n|$)`, "u");
 const MAX_EVIDENCE_URL = 1600;
 // The shipped evidence tool only produces Logs Explorer links on this host. The
 // model writes the URL, so anything else (including lookalikes) is dropped.
@@ -40,15 +44,16 @@ const PRIORITY_MARKERS = new Map([
 ]);
 const RESOLVED_MARKER = "\u{1F7E2}";
 const REQUIRED_KEYS = [
+  "title",
+  "signature",
   "priority",
   "provisional",
-  "impact",
+  "summary",
   "nextAction",
   "owner",
   "checkedWindow",
-  "evidenceUrl",
 ];
-const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "resolved"]);
+const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "resolved", "evidenceUrl"]);
 
 // Buttons a human may press. High/Medium/Low reset the priority, Resolved closes it.
 const CHOICES = new Map([
@@ -115,10 +120,11 @@ function validCard(card) {
     PRIORITY_LABELS.has(card.priority) &&
     typeof card.provisional === "boolean" &&
     typeof card.resolved === "boolean" &&
-    isBoundedLine(card.impact, 240) &&
-    isBoundedLine(card.nextAction, 120) &&
-    isBoundedLine(card.owner, 50) &&
-    isBoundedLine(card.checkedWindow, 64) &&
+    isBoundedLine(card.title, 120) &&
+    isBoundedLine(card.summary, 600) &&
+    isBoundedLine(card.nextAction, 300) &&
+    isBoundedLine(card.owner, 80) &&
+    isBoundedLine(card.checkedWindow, 80) &&
     (card.evidenceHref === null ||
       (typeof card.evidenceHref === "string" &&
         readEvidenceHref(card.evidenceHref) === card.evidenceHref))
@@ -143,23 +149,37 @@ export function readSummary(text) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  const { priority, provisional, impact, nextAction, owner, checkedWindow, evidenceUrl, resolved } =
-    value;
-  const href = readEvidenceHref(evidenceUrl);
+  const {
+    title,
+    signature,
+    priority,
+    provisional,
+    summary,
+    nextAction,
+    owner,
+    checkedWindow,
+    evidenceUrl,
+    resolved,
+  } = value;
+  // evidenceUrl is optional: absent and null both mean "no link".
+  const href = evidenceUrl === undefined ? null : readEvidenceHref(evidenceUrl);
   if (
     !Object.keys(value).every((key) => ALLOWED_KEYS.has(key)) ||
     !REQUIRED_KEYS.every((key) => key in value) ||
     typeof priority !== "string" ||
+    !isBoundedLine(signature, 160) ||
     (resolved !== undefined && typeof resolved !== "boolean") ||
     href === undefined
   ) {
     return undefined;
   }
   const card = {
+    title,
+    signature,
     priority,
     provisional,
     resolved: resolved === true,
-    impact,
+    summary,
     nextAction,
     owner,
     checkedWindow,
@@ -182,21 +202,59 @@ export function classifyEnvelope(rawText) {
 
 // ------------------------------------------------------------------ rendering
 
+const ZWJ = "‍";
+
+/**
+ * Model text for Slack mrkdwn: entity-escaped, then every character Slack would act
+ * on (`://` auto-links, `@` and `#` mentions, emphasis, code) is split with a
+ * zero-width joiner. The evidence link is the only live link and comes from the
+ * allowlisted evidence field alone.
+ */
+function neutralize(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("://", `:${ZWJ}//`)
+    .replace(/[@#*_~`]/gu, (char) => `${char}${ZWJ}`);
+}
+
 function priorityText(card) {
   const label = PRIORITY_LABELS.get(card.priority);
   return card.provisional && card.priority !== "unknown" ? `${label} (provisional)` : label;
 }
 
-export function headlineOf(card) {
-  return card.resolved
-    ? `${RESOLVED_MARKER} Resolved · was ${priorityText(card)}`
-    : `${PRIORITY_MARKERS.get(card.priority)} Priority: ${priorityText(card)}`;
+function markerOf(card) {
+  return card.resolved ? RESOLVED_MARKER : PRIORITY_MARKERS.get(card.priority);
 }
 
-function evidenceLinkOf(card) {
-  return card.evidenceHref
-    ? `<${card.evidenceHref.replaceAll("&", "&amp;")}|View evidence>`
-    : undefined;
+/** Fallback text of the message: the marker emoji and the title. */
+export function headlineOf(card) {
+  return `${markerOf(card)} ${neutralize(card.title)}`;
+}
+
+function priorityLine(card) {
+  return card.resolved
+    ? `*Priority:* ${RESOLVED_MARKER} Resolved · was ${priorityText(card)}`
+    : `*Priority:* ${markerOf(card)} ${priorityText(card)}`;
+}
+
+function evidenceLine(card) {
+  const link = card.evidenceHref
+    ? `<${card.evidenceHref.replaceAll("&", "&amp;")}|Logs>`
+    : "No verified evidence link";
+  return `*Evidence:* ${link} · Checked window: ${neutralize(card.checkedWindow)}`;
+}
+
+/** The card's mrkdwn sections in display order (shared by the blocks and the presentation). */
+function sectionTexts(card) {
+  return [
+    `*Title:* ${neutralize(card.title)}`,
+    priorityLine(card),
+    `*Next action:* ${neutralize(card.nextAction)} (Owner: ${neutralize(card.owner)})`,
+    `*Summary:* ${neutralize(card.summary)}`,
+    evidenceLine(card),
+  ];
 }
 
 function plainText(text) {
@@ -204,7 +262,7 @@ function plainText(text) {
 }
 
 function section(text) {
-  return { type: "section", text: plainText(text) };
+  return { type: "section", text: { type: "mrkdwn", text, verbatim: true } };
 }
 
 /** What a button press does to a card. */
@@ -237,19 +295,9 @@ function buttonValue(choice, token) {
 
 /** Native Slack blocks for the card (the shape the initial reply is sent in). */
 export function renderBlocks(card, controls) {
-  const evidenceLink = evidenceLinkOf(card);
   const blocks = [
-    { type: "header", text: plainText(headlineOf(card)) },
-    section(`Impact: ${card.impact}`),
-    section(`Next action: ${card.nextAction}\nOwner: ${card.owner}`),
-    section(`Evidence: ${card.checkedWindow}`),
-    {
-      type: "context",
-      elements: [
-        ...(evidenceLink ? [{ type: "mrkdwn", text: evidenceLink, verbatim: true }] : []),
-        plainText(FULL_EVIDENCE_HINT),
-      ],
-    },
+    ...sectionTexts(card).map(section),
+    { type: "context", elements: [plainText(FULL_EVIDENCE_HINT)] },
   ];
   if (controls?.length) {
     blocks.push({
@@ -270,43 +318,20 @@ export function renderBlocks(card, controls) {
   return blocks;
 }
 
-const ZWJ = "\u200D";
-
-/**
- * Model text for a presentation: entity-escaped, then every character Slack would
- * act on (`://` auto-links, `@` and `#` mentions, emphasis, code) is split with a
- * zero-width joiner. The evidence link is the only live link and comes from the
- * allowlisted evidence field alone.
- */
-function neutralize(text) {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("://", `:${ZWJ}//`)
-    .replace(/[@#*_~`]/gu, (char) => `${char}${ZWJ}`);
-}
-
 /**
  * The same card as a message-tool presentation. The Slack `edit` action accepts
  * only `message` text and a portable `presentation`, never raw blocks
  * (extensions/slack/src/message-action-dispatch.ts:218-257), so an amendment is
- * re-rendered by the stock presentation renderer. Model fields go in `context`
- * blocks, which stock renders as verbatim mrkdwn (blocks-render.ts:285): no
- * auto-linking or mention parsing. Emphasis is neutralized above.
+ * re-rendered by the stock presentation renderer. There is no presentation title
+ * (it would add a header block). Stock renders a `text` block as a mrkdwn section
+ * without `verbatim`, so every model field is neutralized above: no auto-linking,
+ * mention parsing or emphasis survives. The hint is a `context` block.
  */
 export function renderPresentation(card, controls) {
-  const evidenceLink = evidenceLinkOf(card);
   return {
-    title: headlineOf(card),
     blocks: [
-      { type: "context", text: neutralize(`Impact: ${card.impact}`) },
-      { type: "context", text: neutralize(`Next action: ${card.nextAction}\nOwner: ${card.owner}`) },
-      { type: "context", text: neutralize(`Evidence: ${card.checkedWindow}`) },
-      {
-        type: "context",
-        text: evidenceLink ? `${evidenceLink} \u00B7 ${FULL_EVIDENCE_HINT}` : FULL_EVIDENCE_HINT,
-      },
+      ...sectionTexts(card).map((text) => ({ type: "text", text })),
+      { type: "context", text: FULL_EVIDENCE_HINT },
       ...(controls?.length
         ? [
             {
@@ -325,27 +350,6 @@ export function renderPresentation(card, controls) {
 
 // ------------------------------------------------------- button state (token)
 
-/** Bounded in-memory overflow for a card whose state does not fit a button value. */
-function createReferenceStore(limit) {
-  const rows = new Map();
-  return {
-    put(card, bind) {
-      const id = randomBytes(9).toString("base64url");
-      rows.set(id, { card, channelId: bind.channelId, threadTs: bind.threadTs });
-      while (rows.size > limit) {
-        rows.delete(rows.keys().next().value);
-      }
-      return id;
-    },
-    get(id, bind) {
-      const row = rows.get(id);
-      return row && row.channelId === bind.channelId && row.threadTs === bind.threadTs
-        ? row.card
-        : undefined;
-    },
-  };
-}
-
 const TAG_BYTES = 16;
 const TAG_CHARS = 22; // 16 bytes in unpadded base64url
 
@@ -359,43 +363,40 @@ function tagFor(key, body, bind) {
 
 /**
  * A token is `i<deflated state>` plus an HMAC tag bound to the card's channel and
- * thread, or `r<id>` for a bounded in-memory overflow bound the same way.
+ * thread. Returns undefined when it would not fit a button value. The signature is
+ * not part of the state: nothing re-renders it.
  */
-function encodeState(card, refs, bind, key) {
+export function encodeState(card, bind, key) {
   const row = [
     card.priority,
     card.provisional ? 1 : 0,
     card.resolved ? 1 : 0,
-    card.impact,
+    card.title,
+    card.summary,
     card.nextAction,
     card.owner,
     card.checkedWindow,
     card.evidenceHref,
   ];
   const body = `i${deflateRawSync(Buffer.from(JSON.stringify(row), "utf8"), { level: 9 }).toString("base64url")}`;
-  return body.length + TAG_CHARS <= MAX_TOKEN_CHARS
-    ? `${body}${tagFor(key, body, bind)}`
-    : `r${refs.put(card, bind)}`;
+  return body.length + TAG_CHARS <= MAX_TOKEN_CHARS ? `${body}${tagFor(key, body, bind)}` : undefined;
 }
 
 /** Fails closed: a token that is unsigned, signed for another channel or thread, or invalid is undefined. */
-export function decodeState(token, refs, bind, key) {
+export function decodeState(token, bind, key) {
   try {
     if (
       typeof token !== "string" ||
       token.length < 2 ||
       token.length > MAX_TOKEN_CHARS ||
       !bind?.channelId ||
-      !bind?.threadTs
+      !bind?.threadTs ||
+      !Buffer.isBuffer(key)
     ) {
       return undefined;
     }
     if (!/^[A-Za-z0-9_-]+$/u.test(token.slice(1))) {
       return undefined;
-    }
-    if (token[0] === "r") {
-      const stored = refs.get(token.slice(1), bind);
-      return stored && validCard(stored) ? { ...stored } : undefined;
     }
     if (token[0] !== "i" || token.length <= TAG_CHARS + 1) {
       return undefined;
@@ -412,10 +413,11 @@ export function decodeState(token, refs, bind, key) {
       maxOutputLength: MAX_STATE_BYTES,
     }).toString("utf8");
     const row = JSON.parse(json);
-    if (!Array.isArray(row) || row.length !== 8) {
+    if (!Array.isArray(row) || row.length !== 9) {
       return undefined;
     }
-    const [priority, provisional, resolved, impact, nextAction, owner, checkedWindow, href] = row;
+    const [priority, provisional, resolved, title, summary, nextAction, owner, checkedWindow, href] =
+      row;
     if (![0, 1].includes(provisional) || ![0, 1].includes(resolved)) {
       return undefined;
     }
@@ -423,7 +425,8 @@ export function decodeState(token, refs, bind, key) {
       priority,
       provisional: provisional === 1,
       resolved: resolved === 1,
-      impact,
+      title,
+      summary,
       nextAction,
       owner,
       checkedWindow,
@@ -435,30 +438,82 @@ export function decodeState(token, refs, bind, key) {
   }
 }
 
-export const KEY_STORE_OPTIONS = { namespace: "hmac-key", maxEntries: 2, overflowPolicy: "evict-oldest" };
+// ------------------------------------------------------------ signing key file
+
+const KEY_FILE_CHARS = 43; // 32 bytes in unpadded base64url
+const KEY_RACE_WAIT_MS = 250;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** The 32-byte key in `text`, or undefined when it is anything but one canonical key. */
+function parseKey(text) {
+  const trimmed = text.trim();
+  if (!/^[A-Za-z0-9_-]+$/u.test(trimmed) || trimmed.length !== KEY_FILE_CHARS) {
+    return undefined;
+  }
+  const key = Buffer.from(trimmed, "base64url");
+  return key.length === 32 && key.toString("base64url") === trimmed ? key : undefined;
+}
 
 /**
- * The signing key must outlive a restart so old cards keep working. Returns the
- * persisted 32-byte key, creating and storing one on first use; undefined when the
- * store fails (the caller keeps its per-process key and old cards then fail closed).
+ * Loads the button signing key from `<stateDir>/plugins/livex-slack-summary/button-key`,
+ * creating it on first use. Synchronous, so every plugin instance in the gateway and every
+ * restart sees the same key. Returns `{ key }`, or `{ error }` (no key material) when the
+ * state dir is missing, the file cannot be created or read, or it is corrupt; a corrupt file
+ * is never overwritten.
  */
-export async function loadOrCreateKey(store) {
+export function loadSigningKey(stateDir, { raceWaitMs = KEY_RACE_WAIT_MS } = {}) {
+  if (typeof stateDir !== "string" || stateDir.trim() === "") {
+    return { error: "no state directory resolved" };
+  }
+  const dir = join(stateDir, "plugins", "livex-slack-summary");
+  const path = join(dir, "button-key");
   try {
-    const existing = await store.lookup("key");
-    const raw = typeof existing?.key === "string" ? Buffer.from(existing.key, "base64url") : null;
-    if (raw?.length === 32) {
-      return raw;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    let fd;
+    try {
+      fd = openSync(path, "wx", 0o600);
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
     }
-    const fresh = randomBytes(32);
-    // Atomic first write: a concurrent loader that lost the race reads the winner's key.
-    if (await store.registerIfAbsent("key", { key: fresh.toString("base64url") })) {
-      return fresh;
+    if (fd !== undefined) {
+      try {
+        const key = randomBytes(32);
+        writeSync(fd, key.toString("base64url"));
+        fsyncSync(fd);
+        closeSync(fd);
+        return { key };
+      } catch (error) {
+        // Never leave a half-written file behind to be mistaken for a corrupt key.
+        try {
+          closeSync(fd);
+        } catch {}
+        try {
+          unlinkSync(path);
+        } catch {}
+        throw error;
+      }
     }
-    const winner = await store.lookup("key");
-    const stored = typeof winner?.key === "string" ? Buffer.from(winner.key, "base64url") : null;
-    return stored?.length === 32 ? stored : undefined;
-  } catch {
-    return undefined;
+    // Another instance created the file. Give a concurrent writer time to finish
+    // writing; a complete but invalid file is corrupt at once.
+    const deadline = Date.now() + raceWaitMs;
+    for (;;) {
+      const text = readFileSync(path, "utf8");
+      const key = parseKey(text);
+      if (key) {
+        return { key };
+      }
+      if (text.trim().length >= KEY_FILE_CHARS || Date.now() >= deadline) {
+        return { error: "button key file is corrupt (expected 32 bytes); not overwriting it" };
+      }
+      sleepSync(10);
+    }
+  } catch (error) {
+    return { error: `button key file unavailable (${error?.code ?? "error"})` };
   }
 }
 
@@ -531,11 +586,14 @@ function boundedSet(map, key, limit) {
   return set;
 }
 
-export function createPlugin(rawConfig, { now = Date.now } = {}) {
-  const config = readConfig(rawConfig);
-  // Per-process until the persisted key loads (see loadOrCreateKey).
-  let key = randomBytes(32);
-  const refs = createReferenceStore(200);
+/**
+ * `key` is the 32-byte signing key from loadSigningKey. Without one, buttons are disabled:
+ * cards render without controls and no click handler is needed. `warn` receives
+ * diagnostics (never token or key contents).
+ */
+export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} } = {}) {
+  const gates = readConfig(rawConfig);
+  const config = { ...gates, buttons: gates.buttons && Buffer.isBuffer(key) && key.length === 32 };
   // sessionKey -> ts values of cards this plugin rendered and Slack confirmed.
   const cards = new Map();
   // sessionKey -> cards rendered but not yet confirmed by message_sent.
@@ -544,7 +602,12 @@ export function createPlugin(rawConfig, { now = Date.now } = {}) {
   const overrides = new Map();
 
   function controlsFor(card, bind) {
-    const token = encodeState(card, refs, bind, key);
+    const token = encodeState(card, bind, key);
+    if (token === undefined) {
+      // The card's state does not fit a button value: post it without controls.
+      warn("livex-slack-summary: card too large for button state; rendering without buttons");
+      return undefined;
+    }
     return availableChoices(card).map((choice) => ({
       choice,
       label: CHOICES.get(choice),
@@ -749,29 +812,33 @@ export function createPlugin(rawConfig, { now = Date.now } = {}) {
   }
 
   // ------------------------------------------------------------------ interactive
+  /**
+   * A refused or invalid click never touches the message. respond.reply and respond.followUp
+   * post to Slack's response_url, which replaces the original card, so they are not used at all.
+   */
   async function interactive(ctx) {
-    const reply = async (text) => {
+    const refuse = (reason) => {
       try {
-        await ctx?.respond?.reply?.({ text, responseType: "ephemeral" });
+        warn(`livex-slack-summary: button click refused: ${reason}`);
       } catch {
-        // Feedback is best effort.
+        // Logging is best effort.
       }
       return { handled: true };
     };
     try {
       if (!config.buttons) {
-        return await reply("These controls are not enabled.");
+        return refuse("controls not enabled");
       }
       if (ctx.senderId !== config.senderId) {
-        return await reply("Only the configured responder can change this card.");
+        return refuse("sender is not the configured responder");
       }
       const channelId = readChannelId(String(ctx.conversationId ?? "").trim());
       if (!channelId || !channelAllowed(config, channelId)) {
-        return await reply("These controls are not enabled in this channel.");
+        return refuse("channel not enabled");
       }
       const interaction = ctx.interaction;
       if (interaction?.kind !== "button" || typeof interaction.messageTs !== "string") {
-        return await reply("This control could not be read.");
+        return refuse("control could not be read");
       }
       const payload = typeof interaction.payload === "string" ? interaction.payload : "";
       const separator = payload.indexOf(":");
@@ -781,12 +848,10 @@ export function createPlugin(rawConfig, { now = Date.now } = {}) {
         threadTs: String(interaction.threadTs ?? ctx.threadId ?? ""),
       };
       const card = CHOICES.has(choice)
-        ? decodeState(payload.slice(separator + 1), refs, bind, key)
+        ? decodeState(payload.slice(separator + 1), bind, key)
         : undefined;
       if (!card) {
-        return await reply(
-          "This card's controls are invalid or expired. Mention the bot in the thread for an updated card.",
-        );
+        return refuse("invalid, expired or foreign token");
       }
       const next = applyChoice(card, choice);
       await ctx.respond.editMessage({
@@ -805,9 +870,9 @@ export function createPlugin(rawConfig, { now = Date.now } = {}) {
       }
       return { handled: true };
     } catch {
-      return await reply("Could not update the card. Try again.");
+      return refuse("card could not be updated");
     }
   }
 
-  return { config, setKey: (next) => void (key = next), replyPayloadSending, messageSent, beforeToolCall, interactive };
+  return { config, replyPayloadSending, messageSent, beforeToolCall, interactive };
 }

@@ -1,6 +1,7 @@
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   createHooks,
+  createLog,
   createLookupTool,
   createMemory,
   createRecordTool,
@@ -23,8 +24,12 @@ export default definePluginEntry({
     const options = storeOptions(config);
     const openStore = (authority?: { assertCurrent: () => void }) =>
       api.runtime.state.openKeyedStoreV2(options, authority);
-    const memory = createMemory(config, { openStore });
-    const hooks = createHooks(config, memory, openStore);
+    // The store is opened lazily (hooks and tools), never here: during register()
+    // the plugin record is not yet active, so openKeyedStoreV2 would throw
+    // (src/plugins/registry-runtime.ts:114-124). Failures are logged, not hidden.
+    const log = createLog(api.logger);
+    const memory = createMemory(config, { openStore, log });
+    const hooks = createHooks(config, memory, openStore, log);
 
     api.registerTool(
       {
@@ -37,15 +42,22 @@ export default definePluginEntry({
       {
         contextVersion: 2,
         create: (context) =>
-          createLookupTool(config, context, (authority?: { assertCurrent: () => void }) =>
-            openStore(authority),
+          createLookupTool(
+            config,
+            context,
+            (authority?: { assertCurrent: () => void }) => openStore(authority),
+            log,
           ),
       },
       { name: "investigation_lookup", optional: true, workspaceAccess: false },
     );
 
     api.on("before_prompt_build", (event, ctx) => hooks.beforePromptBuild(event, ctx));
-    api.on("reply_payload_sending", (event, ctx) => hooks.replyPayloadSending(event, ctx));
+    // Priority 100 runs before the summary-card hook (default 0), which rewrites
+    // the payload: this hook must see the raw envelope. It never modifies it.
+    api.on("reply_payload_sending", (event, ctx) => hooks.replyPayloadSending(event, ctx), {
+      priority: 100,
+    });
     api.on("message_sent", (event, ctx) => hooks.messageSent(event, ctx));
   },
 });
