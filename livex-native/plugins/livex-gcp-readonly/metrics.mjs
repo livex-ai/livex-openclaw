@@ -1,4 +1,5 @@
 import { redact, validateConfig } from "./core.mjs";
+import { logNotOffered, toolGateRefusal } from "./tool-gate.mjs";
 
 // Read-only Cloud Monitoring evidence. GET only: alerts.get, alertPolicies.get/list
 // and timeSeries.list on monitoring.googleapis.com. Uses only what the logs tool
@@ -245,14 +246,11 @@ async function defaultHttp(url, { token, signal }) {
 export function createMetricsTool(rawConfig, context, runCommand, options = {}) {
   const config = validateConfig(rawConfig);
   // Same caller gate as livex_gcp_logs_read.
-  if (
-    context?.messageChannel !== "slack" ||
-    !/^[CG][A-Z0-9]+$/.test(context?.nativeChannelId ?? "") ||
-    (config.allowedChannelId !== "*" && context.nativeChannelId !== config.allowedChannelId) ||
-    context.requesterSenderId !== config.allowedSenderId ||
-    typeof context.assertInvocationCurrent !== "function"
-  )
+  const refusal = toolGateRefusal(config, context);
+  if (refusal) {
+    logNotOffered("livex_gcp_metrics_read", refusal, options);
     return null;
+  }
   const http = options.http ?? defaultHttp;
   const now = options.now ?? (() => Date.now());
   const project = config.project;

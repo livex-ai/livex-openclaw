@@ -180,7 +180,13 @@ test("unrecognized helper failures stay generic and successful pages retain thei
     filter.startsWith('logName =~ "^projects/example-prd/logs/" AND resource.type="k8s_container"'),
   );
   assert.ok(filter.includes('resource.labels.namespace_name="service"'));
-  assert.ok(filter.includes('textPayload =~ "^[^\\\\t]+\\\\t(ERROR|DPANIC|PANIC|FATAL)\\\\t"'));
+  // One backslash before each t, exactly as the alert's metric filter; argv is not re-escaped.
+  assert.ok(
+    filter.includes(
+      String.raw`((jsonPayload:* AND severity>=ERROR) OR textPayload =~ "^[^\t]+\t(ERROR|DPANIC|PANIC|FATAL)\t")`,
+    ),
+  );
+  assert.ok(!filter.includes(String.raw`\\t`));
   assert.equal(invocation.argv[invocation.argv.indexOf("--project") + 1], "example-prd");
   assert.equal(invocation.argv[invocation.argv.indexOf("--account") + 1], "reader@example.test");
 });

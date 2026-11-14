@@ -219,7 +219,7 @@ test("an amendment must use the same summary envelope; anything else is blocked 
     "```\n" + envelope() + "\n```",
     envelope({ ...summary, priority: "urgent" }),
     envelope({ ...summary, resolved: "yes" }),
-    envelope({ ...summary, evidenceUrl: "http://console.cloud.google.com/logs" }),
+    envelope({ ...summary, evidenceUrl: 42 }),
     envelope({ ...summary, extra: 1 }),
     `LIVEX_ALERT_SUMMARY_V1\n${JSON.stringify(summary)}\n\nfull`,
     `LIVEX_ALERT_SUMMARY_V2\n{not json}\n\nfull`,

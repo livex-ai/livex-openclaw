@@ -22,7 +22,13 @@ marker version (including V1) renders the short notice instead.
 - **Evidence link.** Accepted only on `console.cloud.google.com`, path `/logs/query`, and only
   when the `query` parameter contains `insertId=` or both `timestamp>=` and `timestamp<=`. Any
   other link (including a generic `resource.type=...` query) is dropped and the card shows
-  "No verified evidence link"; the card still posts.
+  "No verified evidence link"; the card still posts. A link longer than 1600 characters
+  (`&` counted as `&amp;`) is dropped the same way, as is any other link that cannot be
+  verified; only a malformed envelope rejects the card. The log tool omits a
+  `logsExplorerUrl` over the same limit (`MAX_EVIDENCE_URL` here, `MAX_CARD_EVIDENCE_URL`
+  there). A replaced card, and a failure in any hook, logs one `livex-slack-summary:` line
+  with a fixed reason (for example `invalid field owner`, `unknown key`, `bad layout`) and
+  no content.
 - **Priority buttons.** With `allowedSenderId` and `allowedChannelId` configured, the card
   carries High, Medium, Low and Resolved buttons. Only the configured sender can use them; the
   card is edited in place (`respond.editMessage`). A refused or invalid click never alters the

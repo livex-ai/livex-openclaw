@@ -49,7 +49,7 @@ export default definePluginEntry({
     api.registerTool(
       {
         contextVersion: 2,
-        create: (context) => createRecordTool(config, context, memory),
+        create: (context) => createRecordTool(config, context, memory, log),
       },
       { name: "investigation_record", optional: true, workspaceAccess: false },
     );

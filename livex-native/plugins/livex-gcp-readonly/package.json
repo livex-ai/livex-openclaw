@@ -11,6 +11,7 @@
     "paging.mjs",
     "recovery.mjs",
     "repository.mjs",
+    "tool-gate.mjs",
     "page-store.mjs",
     "page-store-operation.mjs",
     "page-store-operation-api.ts",

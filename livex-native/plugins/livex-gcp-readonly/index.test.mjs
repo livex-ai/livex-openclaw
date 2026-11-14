@@ -57,11 +57,27 @@ test("the plugin entry uses bounded log reads when the host lacks V2 state", asy
     return { logs: factories.get("livex_gcp_logs_read"), metrics: factories.get("livex_gcp_metrics_read"), commands };
   };
 
-  const olderHost = register({
-    openKeyedStore() {
-      assert.fail("The older state API cannot back durable paging");
-    },
-  });
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (message) => void warned.push(String(message));
+  let olderHost;
+  try {
+    olderHost = register({
+      openKeyedStore() {
+        assert.fail("The older state API cannot back durable paging");
+      },
+    });
+    // Disabled paging needs no warning; configured-but-unavailable paging warns exactly once.
+    const noPaging = pluginConfig.paging;
+    delete pluginConfig.paging;
+    register({ openKeyedStore() {} });
+    pluginConfig.paging = noPaging;
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /^livex-gcp-readonly: paging\.enabled is true but paging is unavailable: .*openKeyedStoreV2/u);
+  assert.doesNotMatch(warned[0], /example-prd|reader@example|sdk/u);
   assert.equal(olderHost.logs.create({ ...context, requesterSenderId: "U999" }), null);
   const unpaged = olderHost.logs.create(context);
   assert.deepEqual(unpaged.parameters.required, ["start", "end"]);
@@ -76,9 +92,12 @@ test("the plugin entry uses bounded log reads when the host lacks V2 state", asy
   });
   assert.deepEqual(result.details.entries, []);
 
+  console.warn = (message) => void warned.push(String(message));
   const currentHost = register({
     openKeyedStoreV2: () => transactionMemoryStore(),
   });
+  console.warn = realWarn;
+  assert.equal(warned.length, 1, "V2 hosts do not warn");
   const paged = currentHost.logs.create(context);
   assert.equal(currentHost.commands.has("livex-gcp-recover"), true);
   await assert.rejects(

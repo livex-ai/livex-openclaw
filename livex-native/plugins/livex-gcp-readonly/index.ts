@@ -16,6 +16,15 @@ export default definePluginEntry({
   register(api) {
     // Stock 2026.10.5 can read logs without the V2 store that paging and recovery require.
     const supportsPaging = typeof api.runtime.state.openKeyedStoreV2 === "function";
+    if (!supportsPaging && api.pluginConfig?.paging?.enabled === true) {
+      // The page ledger needs one atomic multi-key transaction (store.createOperation, V2 only).
+      // The V1 keyed store (and its withCurrent view) only has single-key operations.
+      console.warn(
+        `${manifest.id}: paging.enabled is true but paging is unavailable: this OpenClaw host has no ` +
+          "api.runtime.state.openKeyedStoreV2 (atomic multi-key page operation); log reads return at most " +
+          "50 rows with no cursor and the recovery command is not registered",
+      );
+    }
     if (supportsPaging) {
       api.registerCommand(
         createRecoveryCommand(

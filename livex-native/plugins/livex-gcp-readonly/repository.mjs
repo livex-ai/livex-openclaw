@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { redact } from "./core.mjs";
+import { logNotOffered, toolGateRefusal } from "./tool-gate.mjs";
 
 const MAX_FILE = 64 * 1024;
 const MAX_OUTPUT = 256 * 1024;
@@ -142,21 +143,18 @@ function checkedArgs(params) {
   return { ...params, path: params.path ?? "", limit, startLine, offset };
 }
 
-export function createRepositoryTool(config, context, runCommand) {
+export function createRepositoryTool(config, context, runCommand, options = {}) {
   if (
     !config ||
     !/^(?:\*|[CG][A-Z0-9]+)$/.test(config.allowedChannelId ?? "") ||
     !/^[A-Z][A-Z0-9]+$/.test(config.allowedSenderId ?? "")
   )
     throw Error("Invalid repository caller policy");
-  if (
-    context?.messageChannel !== "slack" ||
-    !/^[CG][A-Z0-9]+$/.test(context?.nativeChannelId ?? "") ||
-    (config.allowedChannelId !== "*" && context.nativeChannelId !== config.allowedChannelId) ||
-    context.requesterSenderId !== config.allowedSenderId ||
-    typeof context.assertInvocationCurrent !== "function"
-  )
+  const refusal = toolGateRefusal(config, context);
+  if (refusal) {
+    logNotOffered("livex_repository_read", refusal, options);
     return null;
+  }
   const bindings = repositories(config);
   return {
     name: "livex_repository_read",

@@ -18,6 +18,9 @@ const sdkHook = registerHooks({
   },
 });
 const { default: entry } = await import("./index.ts").finally(() => sdkHook.deregister());
+// The plugin has no host logger here, so it falls back to console.warn: collect it.
+const logged = [];
+console.warn = (message) => void logged.push(String(message));
 const hooks = new Map();
 let interactive;
 entry.register({
@@ -179,11 +182,7 @@ test("malformed marked output cannot pass through JSON, diagnostics, or unsafe U
     envelope({ ...summary, resolved: "true" }),
     envelope({ ...summary, resolved: 1 }),
     envelope({ ...summary, resolved: null }),
-    envelope({ ...summary, evidenceUrl: "http://console.example.test/logs" }),
-    envelope({ ...summary, evidenceUrl: "https://user:password@console.example.test/logs" }),
-    envelope({ ...summary, evidenceUrl: "https://console.cloud.google.com/logs|unsafe>" }),
-    envelope({ ...summary, evidenceUrl: `https://console.cloud.google.com/${"x".repeat(1600)}` }),
-    envelope({ ...summary, evidenceUrl: `https://console.cloud.google.com/?x${"&x".repeat(400)}` }),
+    envelope({ ...summary, evidenceUrl: 42 }),
   ];
   for (const text of cases) {
     assert.deepEqual(render({ ...event, payload: { ...route, text, spokenText: evidence } }), {
@@ -195,6 +194,33 @@ test("malformed marked output cannot pass through JSON, diagnostics, or unsafe U
   }
 });
 
+test("an over-long evidence link is dropped and the card still posts", () => {
+  const long = `https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22a%22${"%20OR%20insertId%3D%22b%22".repeat(80)}`;
+  assert.ok(long.length > 2000);
+  logged.length = 0;
+  const slack = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl: long }) } })
+    .payload.channelData.slack;
+  assert.match(flat(slack)[4].text.text, /^\*Evidence:\* No verified evidence link · /u);
+  assert.deepEqual(logged, []);
+});
+
+test("an invalid card logs one fixed reason line with no card content", () => {
+  const cases = [
+    [envelope({ ...summary, owner: "SECRET-OWNER".repeat(20) }), "invalid field owner"],
+    [envelope({ ...summary, extra: "SECRET-KEY-VALUE" }), "unknown key"],
+    [`${mark}\n${JSON.stringify(summary)}\nSECRET-BODY`, "bad layout"],
+    [`${mark}\n{SECRET json\n\nSECRET-BODY`, "bad json"],
+    [envelope({ ...summary, evidenceUrl: 42 }), "invalid field evidenceUrl"],
+    [envelope({ ...summary, title: undefined }), "missing field title"],
+  ];
+  for (const [text, reason] of cases) {
+    logged.length = 0;
+    render({ ...event, payload: { ...route, text } });
+    assert.deepEqual(logged, [`livex-slack-summary: summary card replaced by notice: ${reason}`]);
+    assert.doesNotMatch(logged[0], /SECRET/u);
+  }
+});
+
 test("drops evidence links outside the Logs Explorer host but still posts the card", () => {
   const dropped = [
     "https://console.cloud.google.com.evil.example/logs",
@@ -202,6 +228,11 @@ test("drops evidence links outside the Logs Explorer host but still posts the ca
     "https://console.example.test/logs",
     "https://console.cloud.google.com:8443/logs",
     "https://sub.console.cloud.google.com/logs",
+    "http://console.example.test/logs",
+    "https://user:password@console.example.test/logs",
+    "https://console.cloud.google.com/logs|unsafe>",
+    `https://console.cloud.google.com/${"x".repeat(1600)}`,
+    `https://console.cloud.google.com/?x${"&x".repeat(400)}`,
   ];
   for (const evidenceUrl of dropped) {
     const slack = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl }) } })
@@ -310,4 +341,36 @@ test("buttons: false posts cards without buttons and registers no click handler"
   assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED", buttons: false }).buttons, false);
   assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED" }).buttons, true);
   assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED", buttons: true }).buttons, true);
+});
+
+test("a failing hook logs one fixed reason line and never the hostile content", () => {
+  const hostile = () => ({
+    get sessionKey() {
+      throw new Error("SECRET-PAYLOAD");
+    },
+    get toolName() {
+      throw new Error("SECRET-PAYLOAD");
+    },
+    get params() {
+      throw new Error("SECRET-PAYLOAD");
+    },
+    get result() {
+      throw new Error("SECRET-PAYLOAD");
+    },
+    get kind() {
+      throw new Error("SECRET-PAYLOAD");
+    },
+  });
+  const ctx = { get sessionKey() { throw new Error("SECRET-PAYLOAD"); } };
+  logged.length = 0;
+  hooks.get("message_sent")(hostile(), ctx);
+  hooks.get("after_tool_call")(hostile(), ctx);
+  const blocked = hooks.get("before_tool_call")(hostile(), ctx);
+  assert.equal(blocked.block, true);
+  assert.deepEqual(logged, [
+    "livex-slack-summary: card confirmation not recorded: message_sent handler failed",
+    "livex-slack-summary: evidence links not recorded: after_tool_call handler failed",
+    "livex-slack-summary: amendment guard failed closed: before_tool_call handler failed",
+  ]);
+  assert.ok(!logged.join("\n").includes("SECRET"));
 });

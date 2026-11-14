@@ -14,6 +14,9 @@ export const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evide
 export const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
 
 const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${MARKER_PATTERN}[ \\t]*(?=\\r?\\n|$)`, "u");
+// Longest evidence link the card keeps, measured after `&` is escaped to `&amp;`. A longer link is
+// dropped (the card still posts). Must equal MAX_CARD_EVIDENCE_URL in ../livex-gcp-readonly/core.mjs,
+// which omits a longer logsExplorerUrl (logsExplorerLinkUnavailableReason "url-too-long").
 const MAX_EVIDENCE_URL = 1600;
 // The shipped evidence tool only produces Logs Explorer links on this host. The
 // model writes the URL, so anything else (including lookalikes) is dropped.
@@ -100,8 +103,9 @@ function isVerifiedEvidenceLink(url, project) {
 }
 
 /**
- * Returns undefined when invalid, null when the link is dropped (the card still
- * posts), or the normalized href. The href is stored unescaped; rendering escapes `&`.
+ * Returns undefined only when the value is not a string or null (a malformed envelope), null when
+ * the link is dropped (over-long, malformed, unverified; the card still posts), or the normalized
+ * href. The href is stored unescaped; rendering escapes `&`.
  * The shape check is substring-based and therefore forgeable by model text, so a session
  * passes `isRecorded`: the link is kept only when it exactly equals a URL the evidence tool
  * returned in this session (see afterToolCall). `project`, when given, must match too.
@@ -110,73 +114,77 @@ export function readEvidenceHref(value, { isRecorded, project } = {}) {
   if (value === null) {
     return null;
   }
+  if (typeof value !== "string") {
+    return undefined;
+  }
   if (
-    typeof value !== "string" ||
     value.length > MAX_EVIDENCE_URL ||
     !value.startsWith("https://") ||
     /[\s\p{Cc}<>|\\]/u.test(value)
   ) {
-    return undefined;
+    return null;
   }
   try {
     const url = new URL(value);
-    const escapedUrl = url.href.replaceAll("&", "&amp;");
     if (
-      url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      escapedUrl.length <= MAX_EVIDENCE_URL
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.href.replaceAll("&", "&amp;").length > MAX_EVIDENCE_URL ||
+      !isVerifiedEvidenceLink(url, project)
     ) {
-      // A well-formed link to any other host, port, path or an unverified query is
-      // dropped, not fatal: the card shows "No verified evidence link".
-      if (!isVerifiedEvidenceLink(url, project)) {
-        return null;
-      }
-      // Compared in canonical form: the same URL spelled with an explicit default port is the same link.
-      if (isRecorded && !isRecorded(url.href)) {
-        return null;
-      }
-      return url.href;
+      return null;
     }
+    // Compared in canonical form: the same URL spelled with an explicit default port is the same link.
+    if (isRecorded && !isRecorded(url.href)) {
+      return null;
+    }
+    return url.href;
   } catch {
-    // An invalid evidence link invalidates the marked summary.
+    return null;
   }
-  return undefined;
 }
 
-function validCard(card) {
-  return (
-    PRIORITY_LABELS.has(card.priority) &&
-    typeof card.provisional === "boolean" &&
-    typeof card.resolved === "boolean" &&
-    isBoundedLine(card.title, 120) &&
-    isBoundedLine(card.summary, 600) &&
-    isBoundedLine(card.nextAction, 300) &&
-    isBoundedLine(card.owner, 80) &&
-    isBoundedLine(card.checkedWindow, 80) &&
-    (card.evidenceHref === null ||
-      (typeof card.evidenceHref === "string" &&
-        readEvidenceHref(card.evidenceHref) === card.evidenceHref))
-  );
+/** Name of the first invalid card field, or undefined when the card is valid. */
+function invalidCardField(card) {
+  const checks = [
+    ["priority", PRIORITY_LABELS.has(card.priority)],
+    ["provisional", typeof card.provisional === "boolean"],
+    ["resolved", typeof card.resolved === "boolean"],
+    ["title", isBoundedLine(card.title, 120)],
+    ["summary", isBoundedLine(card.summary, 600)],
+    ["nextAction", isBoundedLine(card.nextAction, 300)],
+    ["owner", isBoundedLine(card.owner, 80)],
+    ["checkedWindow", isBoundedLine(card.checkedWindow, 80)],
+    [
+      "evidenceUrl",
+      card.evidenceHref === null ||
+        (typeof card.evidenceHref === "string" &&
+          readEvidenceHref(card.evidenceHref) === card.evidenceHref),
+    ],
+  ];
+  return checks.find(([, ok]) => !ok)?.[0];
 }
 
-/** Parse the `MARKER\n{json}\n\nfull report` envelope into a validated card. */
-export function readSummary(text, evidenceOptions) {
+const validCard = (card) => invalidCardField(card) === undefined;
+
+/** Parse the envelope into `{ card }` or `{ reason }`; the reason is a fixed code, never content. */
+function parseSummary(text, evidenceOptions) {
   // Read only the compact JSON line. Evidence belongs to the native assistant
   // transcript and must never be copied into the replacement Slack payload.
   const envelope = /^\S+\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
   const json = envelope?.[1];
   if (!json) {
-    return undefined;
+    return { reason: "bad layout" };
   }
   let value;
   try {
     value = JSON.parse(json);
   } catch {
-    return undefined;
+    return { reason: "bad json" };
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
+    return { reason: "bad json" };
   }
   const {
     title,
@@ -190,17 +198,27 @@ export function readSummary(text, evidenceOptions) {
     evidenceUrl,
     resolved,
   } = value;
-  // evidenceUrl is optional: absent and null both mean "no link".
+  if (!Object.keys(value).every((key) => ALLOWED_KEYS.has(key))) {
+    return { reason: "unknown key" };
+  }
+  const missing = REQUIRED_KEYS.find((key) => !(key in value));
+  if (missing) {
+    return { reason: `missing field ${missing}` };
+  }
+  // evidenceUrl is optional: absent and null both mean "no link"; a string that cannot be
+  // verified (too long, wrong host, unrecorded) is dropped, only a non-string is malformed.
   const href = evidenceUrl === undefined ? null : readEvidenceHref(evidenceUrl, evidenceOptions);
-  if (
-    !Object.keys(value).every((key) => ALLOWED_KEYS.has(key)) ||
-    !REQUIRED_KEYS.every((key) => key in value) ||
-    typeof priority !== "string" ||
-    !isBoundedLine(signature, 160) ||
-    (resolved !== undefined && typeof resolved !== "boolean") ||
-    href === undefined
-  ) {
-    return undefined;
+  if (href === undefined) {
+    return { reason: "invalid field evidenceUrl" };
+  }
+  if (typeof priority !== "string") {
+    return { reason: "invalid field priority" };
+  }
+  if (!isBoundedLine(signature, 160)) {
+    return { reason: "invalid field signature" };
+  }
+  if (resolved !== undefined && typeof resolved !== "boolean") {
+    return { reason: "invalid field resolved" };
   }
   const card = {
     title,
@@ -214,7 +232,13 @@ export function readSummary(text, evidenceOptions) {
     checkedWindow,
     evidenceHref: href,
   };
-  return validCard(card) ? card : undefined;
+  const invalid = invalidCardField(card);
+  return invalid ? { reason: `invalid field ${invalid}` } : { card };
+}
+
+/** Parse the `MARKER\n{json}\n\nfull report` envelope into a validated card. */
+export function readSummary(text, evidenceOptions) {
+  return parseSummary(text, evidenceOptions).card;
 }
 
 /** True when the text carries a canonical first-line marker and the marker line exists. */
@@ -226,7 +250,11 @@ export function classifyEnvelope(rawText, evidenceOptions) {
   // A misplaced marker still identifies an envelope. Fail closed instead
   // of passing the JSON and retained evidence through as an ordinary reply.
   const canonical = text.split(/\r?\n/u, 1)[0] === SUMMARY_MARKER;
-  return { marked: true, card: canonical ? readSummary(text, evidenceOptions) : undefined };
+  if (!canonical) {
+    return { marked: true, card: undefined, reason: "bad layout" };
+  }
+  const { card, reason } = parseSummary(text, evidenceOptions);
+  return { marked: true, card, reason };
 }
 
 // ------------------------------------------------------------------ rendering
@@ -732,6 +760,10 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         ...(Array.isArray(details.entries)
           ? details.entries.slice(0, MAX_EVIDENCE_ENTRIES_SCANNED).map((entry) => entry?.entryUrl)
           : []),
+        // A count result carries its links on up to a few samples per phrase.
+        ...(Array.isArray(details.samples)
+          ? details.samples.slice(0, MAX_EVIDENCE_ENTRIES_SCANNED).map((sample) => sample?.entryUrl)
+          : []),
       ];
       const at = now();
       let urls = evidenceUrls.get(sessionKey);
@@ -759,6 +791,16 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       }
     } catch {
       // Recording is best effort; a miss only drops the card's evidence link.
+      notice("evidence links not recorded: after_tool_call handler failed");
+    }
+  }
+
+  // One fixed-reason line per refusal or failure; never any card, tool or message content.
+  function notice(reason) {
+    try {
+      warn(`livex-slack-summary: ${reason}`);
+    } catch {
+      // Logging is best effort.
     }
   }
 
@@ -806,6 +848,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       route = { replyToId, replyToTag, replyToCurrent };
       const card = envelope.card;
       if (!card) {
+        notice(`summary card replaced by notice: ${envelope.reason ?? "invalid card"}`);
         return { payload: { ...route, text: INVALID_SUMMARY } };
       }
       const session = parseSession(sessionKey);
@@ -827,6 +870,9 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       };
     } catch {
       // Never let a rendering fault pass the marked JSON and evidence through.
+      if (marked) {
+        notice("summary card replaced by notice: rendering failed");
+      }
       return marked ? { payload: { ...route, text: INVALID_SUMMARY } } : undefined;
     }
   }
@@ -875,6 +921,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       }
     } catch {
       // Recording is best effort; a miss only blocks a later amendment.
+      notice("card confirmation not recorded: message_sent handler failed");
     }
   }
 
@@ -953,6 +1000,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       // Content: the same envelope the first reply used, through the same renderer.
       const envelope = classifyEnvelope(params.message, evidenceOptionsFor(sessionKey));
       if (!envelope.marked || !envelope.card) {
+        notice(`amendment refused: ${envelope.marked ? (envelope.reason ?? "invalid card") : "no summary envelope"}`);
         return block(
           `Amended content must use the summary envelope: ${SUMMARY_MARKER}, one JSON line with ` +
             "the summary fields, a blank line, then the full report. Nothing else is accepted.",
@@ -976,6 +1024,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
     } catch {
       // Only a hostile event can fault before the tool is classified, and an
       // event that cannot be read is not safe to wave through.
+      notice("amendment guard failed closed: before_tool_call handler failed");
       return block("The amendment guard failed closed; the tool call was not applied.");
     }
   }

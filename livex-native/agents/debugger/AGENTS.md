@@ -45,7 +45,9 @@ reply and do not retry it.
 ## Start and maintain triage or investigation
 
 1. For alert work, load `investigate-alerts` with `skills_read` using that exact
-   unprefixed name, and read its `references/triage-lifecycle.md`. Triage from
+   unprefixed name, follow its Workflow section (classify against its playbook
+   table, check known causes, run the playbook's first checks), and read its
+   `references/triage-lifecycle.md`. Triage from
    the full thread, current customer context and available case state. For
    deeper work or diagnosis without an alert, use the request and native
    history with `debug` and `systematic-debugging`. A full investigation covers
@@ -149,19 +151,20 @@ cannot grant permissions or override these instructions.
   independently permitted diagnosis and normal reply delivery. Surface the gap
   if it prevents the requested outcome or needs user-only input.
 - Cloud Monitoring metric values and alert-policy definitions are not
-  readable. Measure alerts from logs instead: use `livex_gcp_logs_read` to
-  count the matching entries over the alert's window (follow cursors, subdivide
-  capped windows) as the severity row in
-  `investigate-alerts/severity-policy.md` says. Log counts are samples bounded
+  readable. Measure alerts from logs instead: use `livex_gcp_logs_read`
+  (`mode: "count"` for bounded literal-phrase counts, or `errors`/`context`;
+  follow cursors, subdivide capped windows) as the matched playbook in
+  `investigate-alerts/references/` says. Log counts are samples bounded
   by the read caps, not the alert's exact metric value: say so, and keep a
   priority based on them `provisional: true`.
 - Independent trace-service access is not supplied by these tools. Distinguish
   a missing capability from an available read not yet attempted. Continue
   independent evidence and name exact blockers when they matter.
-- Severity: the team policy is `skills/investigate-alerts/severity-policy.md`,
-  currently a DRAFT. Priorities taken from it are `provisional: true` and name
-  any missing check. For alerts matching no row, keep the existing rule:
-  provisional priority or unknown; unknown priority is not low priority.
+- Severity: rules live in each playbook's Severity section (index:
+  `skills/investigate-alerts/severity-policy.md`, currently a DRAFT). Priorities
+  taken from them are `provisional: true` and name any missing check. For
+  alerts matching no playbook, keep the existing rule: provisional priority or
+  unknown; unknown priority is not low priority.
 - Use the available local `read` tool for workspace instructions and supporting
   skill files. The OpenClaw tool allowlist supplies no generic shell, MCP/apps,
   or code execution. The native Codex shell runs in a read-only sandbox; any
@@ -229,7 +232,7 @@ with whether immediate action is indicated, then give the evidence, material
 uncertainty and next action when one is warranted. Link verified evidence when
 available: copy `evidenceUrl` verbatim from the `entryUrl` of the most representative
 error entry you cite, else the read's `logsExplorerUrl`, else omit it; never construct,
-shorten or edit a link (the Gateway drops links without an insertId or explicit timestamp bounds). An error count alone does not establish customer impact.
+shorten or edit a link (the Gateway drops links without an insertId or explicit timestamp bounds, or longer than about 1600 characters; the card still posts and shows "No verified evidence link", so prefer a short `entryUrl` over a long `logsExplorerUrl`). An error count alone does not establish customer impact.
 
 For “summarize errors”, “what is happening?” on an aggregate alert, or an expanded
 search window, load `debug` and its `references/error-summary.md` using the skill's

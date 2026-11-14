@@ -884,3 +884,20 @@ test("a tool stage without a prompt-build runId is not adopted by a later reply;
   assert.equal(rows.length, 1);
   assert.match(rows[0].value.signature, /^checkout/u);
 });
+
+test("createLog.notOffered rate limits per tool and reason with the injected clock", () => {
+  const lines = [];
+  let time = 1_000_000;
+  const log = createLog({ warn: (m) => lines.push(m) }, "livex-investigations-lite", { now: () => time });
+  log.notOffered("t", "channel not allowed");
+  time += 59_000;
+  log.notOffered("t", "channel not allowed");
+  log.notOffered("t", "agent mismatch");
+  time += 2_000;
+  log.notOffered("t", "channel not allowed");
+  assert.deepEqual(lines, [
+    "[livex-investigations-lite] tool not offered: channel not allowed (t)",
+    "[livex-investigations-lite] tool not offered: agent mismatch (t)",
+    "[livex-investigations-lite] tool not offered: channel not allowed (t)",
+  ]);
+});

@@ -133,7 +133,8 @@ test("evidence links must open an entry or a bounded time range in Logs Explorer
     assert.equal(readEvidenceHref(link), null, link);
   }
   assert.equal(readEvidenceHref(null), null);
-  assert.equal(readEvidenceHref("http://console.cloud.google.com/logs/query?query=insertId%3D%22a%22"), undefined);
+  assert.equal(readEvidenceHref("http://console.cloud.google.com/logs/query?query=insertId%3D%22a%22"), null);
+  assert.equal(readEvidenceHref(42), undefined);
 });
 
 test("a dropped evidence link still posts the card with 'No verified evidence link'", () => {
@@ -264,6 +265,54 @@ test("a real entryUrl and logsExplorerUrl from the log tool are accepted, text-o
   const wrong = load({ ...baseConfig, gcpProject: "different-prd" });
   fire(wrong, result);
   assert.equal(evidenceOf(postCard(wrong, { fields: { ...summary, evidenceUrl: entryUrl } })), NO_LINK);
+});
+
+test("a count result's samples[].entryUrl and logsExplorerUrl are accepted as card evidence links", async () => {
+  const config = { gcloudPath: "/sdk/bin/gcloud", cloudSdkConfig: "/private/cloud", gcloudAccount: "reader@example.test", project: "example-prd", allowedSenderId: SENDER, allowedChannelId: CHANNEL };
+  const context = { messageChannel: "slack", nativeChannelId: CHANNEL, requesterSenderId: SENDER, assertInvocationCurrent() {} };
+  const rows = [
+    { insertId: "close-1", timestamp: "2026-11-14T09:12:05.250Z", severity: "INFO", textPayload: "[PHONE_CLOSE] Closing conversation" },
+    { insertId: "close-2", timestamp: "2026-11-14T09:30:00.000Z", severity: "INFO", textPayload: "[PHONE_CLOSE] Closing conversation" },
+  ];
+  const tool = createLogsTool(config, context, async () => ({ code: 0, termination: "exit", killed: false, stdout: JSON.stringify(rows), stderr: "" }), { now: () => Date.parse("2026-11-14T12:00:00Z") });
+  const result = await tool.execute("count", {
+    mode: "count",
+    resourceType: "k8s_container",
+    resourceLabels: { container_name: "chat-engine" },
+    phrases: ["[PHONE_CLOSE] Closing conversation"],
+    start: "2026-11-14T09:00:00Z",
+    end: "2026-11-14T10:00:00Z",
+  });
+  const [first] = result.details.samples;
+  const { logsExplorerUrl } = result.details;
+  assert.ok(first?.entryUrl && logsExplorerUrl);
+  assert.equal(result.details.entries, undefined, "a count result has no entries[]: samples are the only entry links");
+  const fire = (loaded, toolResult) =>
+    loaded.hooks.get("after_tool_call")({ toolName: "livex_gcp_logs_read", params: {}, result: toolResult }, { sessionKey: SESSION, toolName: "livex_gcp_logs_read" });
+  for (const toolResult of [result, { content: result.content }]) {
+    for (const sample of result.details.samples) {
+      for (const pluginConfig of [baseConfig, { ...baseConfig, gcpProject: "example-prd" }]) {
+        const loaded = load(pluginConfig);
+        assert.equal(evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: sample.entryUrl } })), NO_LINK, "not recorded yet");
+        fire(loaded, toolResult);
+        assert.match(evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: sample.entryUrl } })), /\|Logs>/u, sample.insertId);
+      }
+    }
+  }
+  // Only the links the tool returned count: a forged sibling link and another project's result are refused.
+  const loaded = load(baseConfig);
+  fire(loaded, result);
+  assert.equal(evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: first.entryUrl.replace("close-1", "close-9") } })), NO_LINK);
+  const wrong = load({ ...baseConfig, gcpProject: "different-prd" });
+  fire(wrong, result);
+  assert.equal(evidenceOf(postCard(wrong, { fields: { ...summary, evidenceUrl: first.entryUrl } })), NO_LINK);
+  // The recorder takes samples from a hand-built count result as well, and ignores a non-array.
+  const manual = load(baseConfig);
+  fire(manual, { details: { project: PROJECT, samples: [{ phrase: "p", entryUrl: VERIFIED }, null, { entryUrl: 5 }] } });
+  assert.notEqual(evidenceOf(postCard(manual)), NO_LINK);
+  const none = load(baseConfig);
+  fire(none, { details: { project: PROJECT, samples: "nope" } });
+  assert.equal(evidenceOf(postCard(none)), NO_LINK);
 });
 
 test("only successful livex_gcp_logs_read results in a debugger thread are recorded", () => {

@@ -307,3 +307,31 @@ test("two plugin instances share pending records: a tool record in one is commit
   assert.equal(rows.length, 2, "the tool record from instance A and the envelope case are both committed");
   delete globalThis[Symbol.for("livex-investigations-lite.memory-state.v1")];
 });
+
+test("a refused tool context logs a fixed reason at most once a minute and never any content", () => {
+  const cap = captureConsole();
+  try {
+    const { factories } = register({ store: memoryStore() });
+    const refusedLines = () =>
+      cap.lines.map(([, m]) => m).filter((m) => m.includes("tool not offered"));
+    for (const name of ["investigation_record", "investigation_lookup"]) {
+      const { factory } = factories.get(name);
+      const secret = { requesterSenderId: "U0SECRETSENDER", sessionKey: "agent:debugger:slack:channel:csecretchan:thread:1.2" };
+      assert.equal(factory.create(toolContext(secret)), null);
+      assert.equal(factory.create(toolContext(secret)), null);
+    }
+    const lines = refusedLines();
+    assert.deepEqual(lines, [
+      "[livex-investigations-lite] tool not offered: requester not allowed (investigation_record)",
+      "[livex-investigations-lite] tool not offered: requester not allowed (investigation_lookup)",
+    ]);
+    assert.ok(!/SECRET|secret/u.test(lines.join("\n")));
+    // A different reason is a different line; an authorized context logs nothing.
+    assert.equal(factories.get("investigation_record").factory.create(toolContext({ messageChannel: "web" })), null);
+    assert.equal(refusedLines().length, 3);
+    assert.ok(factories.get("investigation_record").factory.create(toolContext()));
+    assert.equal(refusedLines().length, 3);
+  } finally {
+    cap.restore();
+  }
+});
