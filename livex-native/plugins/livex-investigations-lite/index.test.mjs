@@ -43,10 +43,61 @@ function register(state, extra = {}) {
   return { factories, handlers, opened, hookOpts };
 }
 
-test("the entry stays inert on a host without the V2 keyed store", () => {
+test("the entry stays inert on a host with no keyed store at all", () => {
   const { factories, handlers } = register({});
   assert.equal(factories.size, 0);
   assert.equal(handlers.size, 0);
+});
+
+test("on a V1-only host (OpenClaw 2026.10.5) the entry uses openKeyedStore and records end to end", async () => {
+  const store = memoryStore();
+  const openedV1 = [];
+  const { factories, handlers } = register({
+    openKeyedStore(options) {
+      openedV1.push(options);
+      return store;
+    },
+  });
+  assert.deepEqual([...factories.keys()].sort(), ["investigation_lookup", "investigation_record"]);
+  assert.deepEqual([...handlers.keys()].sort(), ["before_prompt_build", "message_sent", "reply_payload_sending"]);
+  assert.equal(openedV1.length, 0, "the store is opened lazily, never in register()");
+
+  const runId = "dispatch-run-v1";
+  const sendCtx = { channelId: "slack", sessionKey: SESSION, senderId: SENDER, runId };
+  await handlers.get("before_prompt_build")({ prompt: "x" }, { ...sendCtx, agentId: "debugger" });
+  handlers.get("reply_payload_sending")(
+    {
+      kind: "final",
+      channel: "slack",
+      sessionKey: SESSION,
+      runId,
+      payload: {
+        text: [
+          "LIVEX_ALERT_SUMMARY_V2",
+          JSON.stringify({
+            title: "checkout timeouts",
+            signature: "checkout-api | create order | upstream timeout",
+            priority: "high",
+            provisional: false,
+            summary: "Orders timed out upstream.",
+            nextAction: "Check the gateway.",
+            owner: "Unassigned",
+            checkedWindow: "2026-11-14 09:10-09:25 UTC",
+          }),
+          "",
+          "Full report.",
+        ].join("\n"),
+      },
+    },
+    sendCtx,
+  );
+  await handlers.get("message_sent")(
+    { sessionKey: SESSION, success: true, messageId: "1768996900.000100", content: "" },
+    { channelId: "slack", sessionKey: SESSION, senderId: SENDER },
+  );
+  assert.ok(openedV1.length > 0, "the V1 store was opened");
+  const rows = await store.entries();
+  assert.equal(rows.length, 1, "one case committed through the V1 store");
 });
 
 test("the entry registers gated tools and the three hooks end to end", async () => {

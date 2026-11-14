@@ -17,14 +17,20 @@ export default definePluginEntry({
   configSchema: buildJsonPluginConfigSchema(manifest.configSchema),
   register(api) {
     // The keyed store V2 API is required; without it the plugin stays inert.
-    if (typeof api.runtime.state.openKeyedStoreV2 !== "function") {
-      console.warn("[livex-investigations-lite] inert: api.runtime.state.openKeyedStoreV2 is unavailable");
+    // OpenClaw 2026.10.5 (the pinned image) has only the async V1 keyed store
+    // (api.runtime.state.openKeyedStore); newer hosts add openKeyedStoreV2. This
+    // plugin uses only register/lookup/entries, which both provide.
+    const state = api.runtime.state;
+    const hasV2 = typeof state.openKeyedStoreV2 === "function";
+    const hasV1 = typeof state.openKeyedStore === "function";
+    if (!hasV2 && !hasV1) {
+      console.warn("[livex-investigations-lite] inert: no keyed store (openKeyedStoreV2 or openKeyedStore) on this host");
       return;
     }
     const config = validateConfig(api.pluginConfig);
     const options = storeOptions(config);
     const openStore = (authority?: { assertCurrent: () => void }) =>
-      api.runtime.state.openKeyedStoreV2(options, authority);
+      hasV2 ? state.openKeyedStoreV2(options, authority) : state.openKeyedStore(options);
     // The store is opened lazily (hooks and tools), never here: during register()
     // the plugin record is not yet active, so openKeyedStoreV2 would throw
     // (src/plugins/registry-runtime.ts:114-124). Failures are logged, not hidden.
@@ -90,7 +96,7 @@ export default definePluginEntry({
       return hooks.messageSent(event, ctx);
     });
     console.warn(
-      `[livex-investigations-lite] registered: tools=investigation_record,investigation_lookup hooks=before_prompt_build,reply_payload_sending,message_sent agents=${config.agents.join(",")}`,
+      `[livex-investigations-lite] registered: store=${hasV2 ? "keyed-v2" : "keyed-v1"} tools=investigation_record,investigation_lookup hooks=before_prompt_build,reply_payload_sending,message_sent agents=${config.agents.join(",")}`,
     );
   },
 });
