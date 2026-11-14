@@ -1,0 +1,112 @@
+[
+  {
+    "name": "api-gateway errors, 15 in 10 min",
+    "thread": "C079BU33H0W/1794639553.675229",
+    "facts": {
+      "alertClass": "gke-application-errors",
+      "service": "api-gateway",
+      "alertSeverity": "error",
+      "sustained": false,
+      "known": "no",
+      "sampleChecked": 5,
+      "sampleAffected": 0,
+      "scope": "unknown",
+      "traffic": "live",
+      "clientEffectVerified": true
+    },
+    "reads": {
+      "ok": 3,
+      "degraded": false
+    },
+    "expected": "low",
+    "ownerConfirmed": false
+  },
+  {
+    "name": "language-detection timeouts (109 in digest)",
+    "thread": "C09N85B5664/1794614410.698759",
+    "facts": {
+      "alertClass": "error-digest-categories",
+      "service": "chat-engine",
+      "alertSeverity": "error",
+      "sustained": false,
+      "known": "no",
+      "sampleChecked": 1,
+      "sampleAffected": 0,
+      "scope": "unknown",
+      "traffic": "live",
+      "clientEffectVerified": true
+    },
+    "reads": {
+      "ok": 4,
+      "degraded": true
+    },
+    "expected": "medium",
+    "ownerConfirmed": false
+  },
+  {
+    "name": "phone call notes missing",
+    "thread": "C079BU33H0W/1794630823.217059",
+    "facts": {
+      "alertClass": "phone-call-notes",
+      "service": "conversation-telephony",
+      "alertSeverity": "error",
+      "sustained": false,
+      "known": "no",
+      "sampleChecked": 0,
+      "sampleAffected": 0,
+      "scope": "unknown",
+      "traffic": "live",
+      "clientEffectVerified": false
+    },
+    "reads": {
+      "ok": 0,
+      "degraded": false
+    },
+    "expected": "medium",
+    "ownerConfirmed": false
+  },
+  {
+    "name": "conversation-avatar ElevenLabs errors",
+    "thread": "C079BU33H0W/1794620059.873099",
+    "facts": {
+      "alertClass": "gke-application-errors",
+      "service": "conversation-avatar",
+      "alertSeverity": "error",
+      "sustained": false,
+      "known": "no",
+      "sampleChecked": 6,
+      "sampleAffected": 3,
+      "scope": "single",
+      "traffic": "live",
+      "clientEffectVerified": true
+    },
+    "reads": {
+      "ok": 3,
+      "degraded": true
+    },
+    "expected": "high",
+    "ownerConfirmed": false
+  },
+  {
+    "name": "conversation-avatar silent session",
+    "thread": "C079BU33H0W/1794622229.533059",
+    "facts": {
+      "alertClass": "gke-application-errors",
+      "service": "conversation-avatar",
+      "alertSeverity": "error",
+      "sustained": true,
+      "known": "no",
+      "sampleChecked": 2,
+      "sampleAffected": 1,
+      "scope": "single",
+      "traffic": "live",
+      "clientEffectVerified": true
+    },
+    "reads": {
+      "ok": 3,
+      "degraded": false
+    },
+    "expected": "high",
+    "ownerConfirmed": false
+  }
+]
