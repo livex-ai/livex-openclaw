@@ -14,8 +14,13 @@ it needs no code change.
 1. **Client effect** — derived by the Gateway, never written by the model.
    Clients were affected when `sampleAffected` is above 0. "No client effect"
    counts only with `clientEffectVerified` true, at least `minSample` (3)
-   sampled, and at least one successful logs read in the thread with none
-   capped, incomplete or failed. Anything else is "not verified": a
+   sampled, and at least one successful logs read in the thread. It is lost for
+   the whole thread (narrowing later does not undo it) when a read fails for a
+   reason other than rejected arguments, a `count` returns `complete: false`, or
+   an ID-scoped read (`conversationId`, `jobId`, `roomId`, `traceId`,
+   `insertId` or `insertIds`) loses entries (`truncationReasons` has `row-limit`
+   or a result-byte limit). A capped listing read without an id is a sample
+   frame and does not block it; field-only truncation never does. Anything else is "not verified": a
    user-facing alert is rated up (Medium), a background one stays Low.
    User-facing is looked up by `service`, then `alertClass`; today only
    `embedding-server` is not user-facing.
@@ -27,10 +32,11 @@ it needs no code change.
 3. **The alert itself** — `alertSeverity` (from the alert text, else the
    playbook's Alert severity section) and `sustained` (the playbook's
    Sustained check). An error that keeps recurring with no client effect
-   found is Medium.
+   found is Medium unless it is a known fixed or harmless pattern, which is Low.
 
-`traffic: test` makes an affected alert Low; `scope: multiple` or a majority
-of the sample affected makes it High.
+`traffic: test` makes an affected alert Low, or Medium when it was marked
+known-fixed but is still affecting users; `scope: multiple` or a majority of
+the sample affected makes it High.
 
 ## Where each playbook defines its facts
 

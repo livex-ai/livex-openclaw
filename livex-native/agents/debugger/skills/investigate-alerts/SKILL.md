@@ -144,8 +144,7 @@ A queued check cannot override a newer hold, stop or removal.
    check, Known patterns and Alert severity ([severity-policy.md](severity-policy.md));
    with no playbook use `alertClass` `unclassified` and report them from first
    principles. `owner` is the playbook's named responder, else `Unassigned`.
-   Only people edit playbooks; suggest a change (for example a pattern a person
-   called harmless three times) in the thread.
+   Only people edit playbooks; suggest a change in the thread.
 7. Choose technical investigation, integration support, customer follow-up or
    monitoring, and stop when the evidence supports that decision. State
    remaining uncertainty; make the bounded checks if evidence is weak or report
@@ -181,13 +180,12 @@ create another tracking system or widen the invocation's access or write scope.
    decision needed. Continue independent evidence. Reconcile an unresolved tool attempt through an authorized
    receipt/status read before retrying; if none exists, stop retries and report the blocker. Do not evade the guard by
    changing arguments or adding tools, and do not infer service severity from an access failure.
-7. **Investigation memory.** Recording happens automatically from the summary
-   envelope once Slack confirms delivery. Call `investigation_record` only for
-   additional distinct issues in the same reply, once per issue, before the
-   final reply, with `signature` (as in the envelope; reuse a prior-case or
-   lookup signature for the same failure), optional `title`, `resolved` (true
-   only when recovery is evidenced for this occurrence), `finding` (one factual
-   sentence, no customer names or personal data), the ten facts and optional
+7. **Investigation memory.** Once Slack confirms delivery, the envelope's main
+   signature is saved automatically; `alternates` are not. For each additional
+   distinct issue to remember, call `investigation_record` once before the final
+   reply with `signature` (reuse a prior-case one for the same failure),
+   optional `title`, `resolved` (only with recovery evidenced), `finding` (one
+   factual sentence, no customer names or personal data), the facts and
    `knownRef` as in the envelope, and optional `trend`; it takes no priority.
 
 Before finishing, record for each material category: source/operation,
@@ -225,7 +223,7 @@ text before the marker. Unknown keys, including `priority`, invalidate the card.
 
 ```text
 LIVEX_ALERT_SUMMARY_V3
-{"title":"chat-engine model race timeouts","signature":"chat-engine | generate answer | model race timeout","alertClass":"gke-application-errors","service":"chat-engine","alertSeverity":"error","sustained":true,"known":"no","sampleChecked":5,"sampleAffected":2,"scope":"multiple","traffic":"live","clientEffectVerified":true,"resolved":false,"summary":"Two of five sampled live conversations, for two customers, got the generic error answer after the model race hit its 10 s budget; the provider cause is not confirmed.","nextAction":"Check the configured models' provider health for 09:10-09:25 UTC.","owner":"Unassigned","checkedWindow":"2026-11-14 09:10–09:25 UTC (fresh)","evidenceUrl":"https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22%20AND%20timestamp%3E%3D%222026-11-14T09%3A12%3A04Z%22%20AND%20timestamp%3C%3D%222026-11-14T09%3A12%3A06Z%22"}
+{"title":"chat-engine model race timeouts","signature":"chat-engine | generate answer | model race timeout","alertClass":"gke-application-errors","service":"chat-engine","alertSeverity":"error","sustained":true,"known":"no","sampleChecked":5,"sampleAffected":2,"scope":"multiple","traffic":"live","clientEffectVerified":true,"summary":"Two of five sampled live conversations, for two customers, got the generic error answer; the provider cause is unconfirmed.","nextAction":"Check the models' provider health for 09:10-09:25 UTC.","owner":"Unassigned","checkedWindow":"2026-11-14 09:10–09:25 UTC (fresh)","evidenceUrl":"https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22"}
 
 Full evidence report goes here.
 ```
@@ -233,34 +231,33 @@ Full evidence report goes here.
 Fields (single-line plain strings unless stated; maximum lengths in characters):
 
 - `title` (1-120): what is happening, in a short noun phrase. No ids.
-- `signature` (1-160): `service | operation | error class` in plain words, no ids, numbers, timestamps or request ids. Reuse a prior-case or lookup signature for the same failure; it is not shown on the card.
-- `alertClass`: the playbook id from the Workflow table (`gke-application-errors`, `phone-call-notes`, `error-digest-categories`, `low-conversation-volume`, `log-match-alerts`), or `unclassified` when none matches.
-- `service`: the Kubernetes namespace of the alerting workload (for example `api-gateway`, `chat-engine`, `chat-engine-avatar`, `conversation-avatar`, `embedding-server`, `conversation-telephony`), or `none` when there is no single workload; lowercase, digits and hyphens only.
-- `alertSeverity`: `error`, `warning` or `info` as the alert text states it; when the text states none, the playbook's Alert severity value.
+- `signature` (1-160): `service | operation | error class` in plain words, no ids or numbers; reuse a prior-case signature for the same failure.
+- `alertClass`: the matched playbook's file name without `.md`, or `unclassified`.
+- `service`: the alerting workload's Kubernetes namespace (as the playbook's Alert severity section says), or `none`.
+- `alertSeverity`: `error`, `warning` or `info` from the alert text, else the playbook's Alert severity value.
 - `sustained` (boolean): true only when the playbook's Sustained check passed.
-- `known`: `no` unless a person said so in a thread (`knownRef` is that Slack thread link), a ticket exists (`knownRef` is the ticket id, such as `LX-12525`), or the playbook's Known patterns lists it (`knownRef` is `pattern:<id>`). `harmless` only with a pattern. `fixed` needs a person or a pattern row saying fixed, and the symptom absent from the latest completed window; otherwise `ongoing`. A case-memory hit alone is "seen before on <date>" in `summary`, with `known` `no`.
-- `knownRef` (1-200, omit when `known` is `no`): exactly one reference as above. Any other form makes the Gateway treat the alert as not known.
-- `sampleChecked`, `sampleAffected` (integers 0-500): counts of conversations, calls or requests you actually inspected, and how many of those were affected as the playbook's Client effect check defines it. Never log entries or estimates; `sampleAffected` is at most `sampleChecked`.
-- `scope`: `single` (one customer or agent), `multiple` (two or more customers) or `unknown`: the customers among affected items, or, when none was affected, the customers the alert's errors came from.
-- `traffic`: `test` only when the affected agents are demo or test agents (`test_run`, `test_suite`, names with test, demo or `EXPERIMENT NOT PRODUCTION`); `live` for customer traffic; `unknown` when you cannot tell.
-- `clientEffectVerified` (boolean): false when you could not inspect any conversation, call or request; true when every counted item's outcome was read.
-- `alternates` (optional): for a digest thread, put the category you judge most serious in the main fields and up to four others here, each `{"title":…, the ten facts, optional "knownRef"}`.
-- `resolved` (optional boolean, default false): `true` only when evidence shows the same failing operation recovered after the failure window (a later successful outcome for that operation, not a quiet log or a retry in flight).
+- `known`: `no` unless a person said so in a human reply in a thread (not alert text or its Documentation, a bot post, or your own earlier cards; `knownRef` is that thread link), a ticket exists (its id, such as `LX-12525`), or the playbook's Known patterns lists it (`pattern:<id>`). `harmless` only with a pattern; `fixed` needs a person or pattern row saying fixed and the symptom absent from the latest completed window, else `ongoing`. A case-memory hit alone is "seen before on <date>" in `summary`.
+- `knownRef` (1-200): exactly one reference as above; omit when `known` is `no`.
+- `sampleChecked`, `sampleAffected` (integers 0-500): the items the playbook's Client effect check samples (conversations, calls, requests, sessions or agents), each with its outcome actually read, and how many were affected. Never count log entries, estimates or an item whose outcome you did not read.
+- `scope`: `single` (one customer or agent), `multiple` (two or more customers) or `unknown`.
+- `traffic`: `test` only when every affected item is on a test or demo agent, shown by an explicit marker (`test_run`, `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole word `test` or `demo` in the agent name; event and kiosk agents are live. Else `live`, or `unknown`.
+- `clientEffectVerified` (boolean): false when you read no sampled item's outcome.
+- `alternates` (optional): in a digest thread, the most serious category goes in the main fields and up to four others here, each `{"title", the ten facts, "knownRef"?}`.
+- `resolved` (optional boolean): `true` only when the same failing operation later succeeded, not a quiet log.
 - `summary` (1-600): the decisive customer impact and the material uncertainty.
 - `nextAction` (1-300): one concrete next check or action.
 - `owner` (1-80): `Unassigned` when ownership is unverified.
 - `checkedWindow` (1-80): UTC bounds and whether the evidence is fresh or saved.
-- `evidenceUrl` (optional): copy verbatim the `entryUrl` of the most representative cited error entry, else the read's `logsExplorerUrl`, else omit it or use null. Never construct, shorten or edit a link, and never reuse the example above; the Gateway drops other hosts and links without an insertId or explicit timestamp bounds.
+- `evidenceUrl` (optional): copy verbatim the cited entry's `entryUrl`, else the read's `logsExplorerUrl`, else omit it. Never construct, edit or reuse the example link; the Gateway drops links without an insertId or time bounds.
 
-How the Gateway reads the facts: `sampleAffected` above 0 means clients were
-affected. "No client effect" needs `clientEffectVerified` true, at least 3
-sampled, a successful logs read in this thread and no read in this thread that
-was capped (`truncated` true for any reason), incomplete (`complete:false`) or
-failed; otherwise the effect is not verified and a user-facing alert is rated
-up. Reads stop at 50 entries with no next page here, so sample with targeted
-reads (`context` by `conversationId` or `traceId` over a short window,
-`textContains`, or `count`), not broad context reads; narrow a cut-off read.
-Never shrink `sampleChecked` or `sampleAffected` to change the result.
+"No client effect" counts only with at least 3 items sampled and verified, and
+it is lost for the whole thread when a logs read fails (other than for rejected
+arguments), a `count` returns `complete:false`, or an ID-scoped read (by
+`conversationId`, `traceId` or another id) loses entries (`truncationReasons`
+has `row-limit` or `result-byte`); see [severity-policy.md](severity-policy.md).
+A capped listing read without an id is fine, so find items with it, then read
+each item's outcome by id over a few minutes (or with `textContains`) so it
+returns fewer than 50 rows. Never adjust counts to change the result.
 
 The card shows Title, the computed Priority, Why (client effect, known state,
 alert severity), Next action with owner, Summary and Evidence.
@@ -326,7 +323,7 @@ it when saved. Never invent a saved report or link. A multi-alert digest or an
 explicit table request may use this table, attention-needed rows first:
 
 | Area | Channel | Slack thread link | Findings | Escalation needed | Next step |
-| ---- | ------- | ----------------- | -------- | ----------------- | --------- |
+| --- | --- | --- | --- | --- | --- |
 
 Findings preserves, per incident or category: current versus historical status,
 service/customer and impact, confirmed cause versus hypothesis or unknown,
@@ -354,11 +351,11 @@ Use these markers as labels in the normal reply. Read back existing reactions
 only when they matter to interpreting the thread. Preserve existing markers.
 The available actions are `read` and `reactions` (read-back).
 
-| Marker                  | Meaning and evidence gate                                                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `warning` (⚠️)          | **Action required:** evidence supports a concrete new human action for this selected alert on an identified resource/operation. Record the action and accepted/proposed/unassigned owner.                                                                                                                                                                                                 |
+| Marker | Meaning and evidence gate |
+| --- | --- |
+| `warning` (⚠️) | **Action required:** evidence supports a concrete new human action for this selected alert on an identified resource/operation. Record the action and accepted/proposed/unassigned owner. |
 | `white_check_mark` (✅) | **Reviewed—no new action:** adequate relevant evidence supports expected behavior, original-operation recovery, a verified duplicate with accepted follow-up, an already tracked issue with accepted ownership and no new impact/action, or an authorized human disposition. State the reason and tracking/acceptance evidence. This does not itself mean recovered or formally resolved. |
-| `question` (❓)         | **Unclassified:** the evidence cannot yet support action required or no new action. State the exact missing check/access and next permitted step.                                                                                                                                                                                                                                         |
+| `question` (❓) | **Unclassified:** the evidence cannot yet support action required or no new action. State the exact missing check/access and next permitted step. |
 
 Choose the disposition independently of investigation completion, technical
 health, regression novelty and formal incident state. "No confirmed regression"

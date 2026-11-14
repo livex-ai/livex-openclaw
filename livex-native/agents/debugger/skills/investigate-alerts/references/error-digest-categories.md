@@ -133,14 +133,21 @@ Call `investigation_lookup` with `chat-engine | <operation> | <category in plain
 
 ## Client effect check
 
-Per picked category, sample N=5 conversations by default (proposed). Take ids
+Per picked category, sample N=5 conversations by default (proposed). List ids
 with `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, textContains:"<phrase>", start, end, limit:50}`
-over one hour of the digest window, then one `mode:"context"` read per id
-with `conversationId` over that turn plus a few minutes. Count a conversation
-once even when two categories name it. A conversation is **affected** as the
-category's "Affected" line says; for an unmined category, when the user did
-not get an answer. Live agents first; `traffic: "test"` only when every
-affected conversation is on a test or demo agent.
+over one hour of the digest window, then read each one's outcome with one
+`mode:"context"` read by `conversationId` over that turn plus a few minutes.
+Each outcome read is ID-scoped, so keep it to a few minutes (or add
+`textContains` for the outcome phrase) so it returns fewer than 50 rows: an
+ID-scoped read that loses entries (`row-limit` or `result-byte`) makes "no
+client effect" unreachable for the whole thread, and narrowing afterwards does
+not undo it. The listing read that finds ids may be capped; that is fine. Count a conversation once even when two categories name it,
+and never count one whose outcome you did not read. A conversation is
+**affected** as the category's "Affected" line says; for an unmined category,
+when the user did not get an answer. Live agents first; `traffic: "test"` only
+when every affected item is on a test or demo agent, shown by an explicit
+marker (`test_run`, `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole
+word `test` or `demo` in the agent name; event and kiosk agents are live.
 
 Put the category you judge most serious in the envelope's main fields and up
 to four other picked categories in `alternates`, each with its own `title` and
@@ -155,16 +162,15 @@ digest's window (proposed). A burst confined to one or two hours is false.
 
 ## Known patterns
 
-`knownRef` is the id cell, copied verbatim. Use a `fixed` row as `known:
-"fixed"` only when the symptom is absent from the latest completed window;
-otherwise `known: "ongoing"` with the same reference. A ticket a person filed
+`knownRef` is the id cell, copied verbatim; `known` is the row's state, except
+that a `fixed` row is `ongoing` while the symptom is in the latest completed
+window. A ticket a person filed
 (for example LX-12524 for API usage limits) is `known: "ongoing"` with the
 ticket id. Only people edit this table; suggest a new row in the thread.
 
-| id | pattern | state (fixed or harmless) | since | source |
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
 | --- | --- | --- | --- | --- |
-| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | fixed | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin: widget trim fix chatbox-js PR 1528 and a Wyze theme fix) |
-| `pattern:qwen-self-hosted-outage` | `Request timed out` / `APITimeoutError` burst on Wyze or Ego agents from the self-hosted Qwen LLM | fixed | 2026-11-12 | https://livexai.slack.com/archives/C0BM1L6D755/p1794510349507229 (Dagang Wei: fix and watchdog rolled out; LX-12525) |
+| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | ongoing | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin named the remedy, widget trim fix chatbox-js PR 1528 and a Wyze theme fix; not confirmed shipped) |
 
 ## Alert severity
 

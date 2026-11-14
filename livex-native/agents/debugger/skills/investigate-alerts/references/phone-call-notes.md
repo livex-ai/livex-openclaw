@@ -60,15 +60,22 @@ Call `investigation_lookup` with `conversation-telephony | close phone call | cl
 
 ## Client effect check
 
-Sample N=5 closes by default (proposed): conversation ids from step 1's
-`samples`, any `Close request failed` ids first. For each, two targeted reads
+Sample N=5 closes by default (proposed): the most recent closes in W (ids from
+step 1's `samples`, or a `textContains:"[PHONE_CLOSE] Closing conversation"`
+listing read over the last hour of W). Do not pick failed closes first: that
+inflates the affected share. Each outcome read is ID-scoped, so keep it to a few minutes (or add
+`textContains` for the outcome phrase) so it returns fewer than 50 rows: an
+ID-scoped read that loses entries (`row-limit` or `result-byte`) makes "no
+client effect" unreachable for the whole thread, and narrowing afterwards does
+not undo it. The listing read that finds ids may be capped; that is fine. For each close, two reads
 over a few minutes around the close: `livex_gcp_logs_read {mode:"context", resourceType:"k8s_container", resourceLabels:<telephony>, conversationId, start, end, limit:50}`
 for close start, retry and failure, then the same id on the chat-engine labels
 for whether `close_phone_call_conversation` returned. A close is **affected**
 when it failed after its retry, or chat-engine logged
 `Error in close_phone_call_conversation` or never received it: that call lost
 its notes. A close that returned, including one whose notes were skipped for
-an empty caller number or history, is not affected. The Zendesk ticket and
+an empty caller number or history, is not affected. Never count a close
+whose outcome you did not read. The Zendesk ticket and
 notes cannot be read: say "notes persistence unverified" in the report rather
 than "recovered". Calls with no close at all (callers who never reached a
 LiveX phone agent) are not sampled.
@@ -80,12 +87,13 @@ appears in at least 2 consecutive hourly buckets of W (proposed). Otherwise fals
 
 ## Known patterns
 
-`knownRef` is the id cell, copied verbatim. Only people edit this table;
+`knownRef` is the id cell, copied verbatim; `known` is the row's state. Only
+people edit this table;
 suggest a new row in the thread. No row yet: no human conclusion was found in
 the threads read (LX-11451 is a past episode named in the alert text; use it as
 `knownRef` only if a person links the current alert to it).
 
-| id | pattern | state (fixed or harmless) | since | source |
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
 | --- | --- | --- | --- | --- |
 
 ## Alert severity

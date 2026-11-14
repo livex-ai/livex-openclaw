@@ -39,14 +39,14 @@ Monitoring value cannot be read; the alert's own number is only the threshold
 context.
 
 1. **Top messages.** `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, start, end, limit:50}` over W.
-   This host returns no `nextCursor`: if `truncationReasons` includes `row-limit`,
-   the read was cut off, so split the window or add `textContains` (a cut-off
-   read keeps "no client effect" from counting). Group entries by message shape (strip ids). Note the top 3
+   This listing read (no id) may be capped at 50 (`row-limit`; this host returns
+   no `nextCursor`); that is fine, it is a sample frame. For more shapes, split
+   the window or add `textContains`. Group entries by message shape (strip ids). Note the top 3
    shapes and 2-5 literal phrases that identify them.
 2. **Size and onset.** `livex_gcp_logs_read {mode:"count", resourceType, resourceLabels, phrases:[<top phrases>], start: W.start - 5h, end: W.end}` (6 h
    maximum; start shorter, such as W.start - 1h, on a busy workload). Read `buckets` for onset and recurrence. If `complete:false`, say
-   the totals are lower bounds; that read also keeps "no client effect" from
-   counting in this thread. If one phrase explains the alert and it matches a
+   the totals are lower bounds, and an incomplete count keeps "no client effect"
+   from counting for the rest of this thread. If one phrase explains the alert and it matches a
    Known patterns row, go straight to step 3.
 3. **Client effect sample.** Run the Client effect check below.
 4. **Recurrence and neighbours.** Other alerts in the same 30 min from other
@@ -122,18 +122,21 @@ and carry its owner only if a human accepted it.
 
 ## Client effect check
 
-Sample N=5 by default (proposed): distinct conversation, session or request
-ids from step 1, spread across W, live agents first. For each, one targeted
-read: `livex_gcp_logs_read {mode:"context", resourceType, resourceLabels, conversationId | traceId, start, end, limit:50}`
-over the failing turn plus a few minutes, not the whole window. An item is
+Sample N=5 by default (proposed) of the items below (conversations, requests
+or sessions): distinct ids from step 1's listing read, spread across W, live
+agents first. Read each item's outcome with one ID-scoped read,
+`livex_gcp_logs_read {mode:"context", resourceType, resourceLabels, conversationId | traceId, start, end, limit:50}`,
+over a few minutes around the failing turn (or add `textContains` for the
+outcome phrase) so it returns fewer than 50 rows: an ID-scoped read that loses
+entries (`row-limit` or `result-byte`) makes "no client effect" unreachable for
+the whole thread, and narrowing afterwards does not undo it. An item is
 **affected** when its user-facing operation failed by the service section's
 Success definition: api-gateway request not 2xx/3xx; chat-engine turn with no
 saved answer other than the generic error text; avatar session with no speech
 or video output after the error, or ended by a reconnect timeout;
-embedding-server caller got `{}` and no retry returned a vector. Count only
-items whose outcome you read (`sampleChecked`); an item you could not read is
-left out and named in Coverage. If the alert carries no usable ids, take them
-with `textContains:<top phrase>` over a 10 min slice of W.
+embedding-server caller got `{}` and no retry returned a vector. Never count
+an item whose outcome you did not read; name it in Coverage. If step 1 shows no
+usable ids, list them with `textContains:<top phrase>` over a 10 min slice of W.
 
 ## Sustained check
 
@@ -143,16 +146,15 @@ shows it 30 minutes or more after W (proposed). Otherwise false.
 
 ## Known patterns
 
-`knownRef` is the id cell, copied verbatim. Use a `fixed` row as `known:
-"fixed"` only when the symptom is absent from the latest completed window;
-otherwise `known: "ongoing"` with the same reference. Only people edit this
+`knownRef` is the id cell, copied verbatim; `known` is the row's state, except
+that a `fixed` row is `ongoing` while the symptom is in the latest completed
+window. Only people edit this
 table; suggest a new row in the thread.
 
-| id | pattern | state (fixed or harmless) | since | source |
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
 | --- | --- | --- | --- | --- |
 | `pattern:wyze-zendesk-suspended-requester` | `Error creating tickets in create_zendesk_ticket` 4xx for the Wyze agent, "suspended requester" | harmless | 2026-11-06 | https://livexai.slack.com/archives/C09N85B5664/p1793993173960419 (Tanmesh: known, does not count) |
-| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | fixed | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin: widget trim fix chatbox-js PR 1528 and a Wyze theme fix) |
-| `pattern:qwen-self-hosted-outage` | `Request timed out` / `APITimeoutError` burst on Wyze or Ego agents from the self-hosted Qwen LLM | fixed | 2026-11-12 | https://livexai.slack.com/archives/C0BM1L6D755/p1794510349507229 (Dagang Wei: fix and watchdog rolled out; LX-12525) |
+| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | ongoing | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin named the remedy, widget trim fix chatbox-js PR 1528 and a Wyze theme fix; not confirmed shipped) |
 | `pattern:avatar-tts-flash-v3-model` | TTS `model_not_found` for `eleven_flash_v3` in the English avatar voice config (Sojitz/Pier One) | fixed | 2026-11-13 | https://livexai.slack.com/archives/C079BU33H0W/p1794544244431139 (Fernando changed it to `eleven_v3`) |
 
 ## Alert severity

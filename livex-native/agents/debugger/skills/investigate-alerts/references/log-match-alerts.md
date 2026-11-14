@@ -23,7 +23,7 @@ names the pod). Use the alert's `conversation_id` as `conversationId`.
 
 ## First checks (in order; stop when the timeline explains the symptom)
 
-1. `livex_gcp_logs_read {mode:"context", resourceType, resourceLabels, conversationId, start: alert - 5 min, end: alert + 10 min, limit:50}`. Read the failing turn through to the saved answer.
+1. `livex_gcp_logs_read {mode:"context", resourceType, resourceLabels, conversationId, start: alert - 2 min, end: alert + 5 min, limit:50}`. Read the failing turn through to the saved answer. This read is ID-scoped: if it returns 50 rows (`row-limit`), "no client effect" is lost for the thread, so start with this short window (or add `textContains`).
 2. **Did this turn answer?** Look for a saved assistant message after the error that is not the generic error text. That decides user impact.
 3. **Client effect sample.** Run the Client effect check below.
 4. **Test versus live.** Agent name, `test_run`/`test_suite` markers, demo agents.
@@ -48,8 +48,14 @@ Call `investigation_lookup` with `chat-engine | <operation> | <error class>` and
 Sample N=5 conversations by default (proposed): the alert's own conversation
 (step 1) plus up to 4 others. Find them with `mode:"count"` and the alert's key
 phrase over the last 6 h (its `samples` carry ids), or
-`mode:"errors", textContains:<phrase>, limit:50` over one hour; then one
-`context` read per id by `conversationId` over that turn plus a few minutes.
+`mode:"errors", textContains:<phrase>, limit:50` over one hour (a capped
+listing read is fine); then one `context` read per id by `conversationId` over
+that turn plus a few minutes. Each outcome read is ID-scoped, so keep it to a few minutes (or add
+`textContains` for the outcome phrase) so it returns fewer than 50 rows: an
+ID-scoped read that loses entries (`row-limit` or `result-byte`) makes "no
+client effect" unreachable for the whole thread, and narrowing afterwards does
+not undo it. Never
+count a conversation whose outcome you did not read.
 A conversation is **affected** when the user saw the generic error text or got
 no answer for that turn; for `Error in generating ticket`, when no retry
 returned 201 (the ticket was not created); for `Salesforce client init failed`,
@@ -63,10 +69,11 @@ answered is not affected.
 
 ## Known patterns
 
-`knownRef` is the id cell, copied verbatim. Only people edit this table;
+`knownRef` is the id cell, copied verbatim; `known` is the row's state. Only
+people edit this table;
 suggest a new row in the thread.
 
-| id | pattern | state (fixed or harmless) | since | source |
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
 | --- | --- | --- | --- | --- |
 | `pattern:wyze-zendesk-suspended-requester` | `Error creating tickets in create_zendesk_ticket` 4xx for the Wyze agent, "suspended requester" | harmless | 2026-11-06 | https://livexai.slack.com/archives/C09N85B5664/p1793993173960419 (Tanmesh: known, does not count) |
 
