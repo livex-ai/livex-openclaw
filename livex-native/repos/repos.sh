@@ -278,6 +278,18 @@ as_node() {
   fi
 }
 
+# The live root is created 0700, so uid 1000 cannot reach $root/repos-* on the host to
+# verify it (the container mounts the snapshot directly and is not affected). Allow
+# traversal only (0711): nothing in $root becomes listable, its files stay 0600 and its
+# directories 0700, and the snapshots are 0750 owned by uid 1000.
+ensure_node_traverse() {
+  [[ $(id -u) == 0 ]] || return 0
+  local mode
+  mode=$(stat -c %a "$root")
+  [[ $mode == 700 ]] && { chmod 0711 "$root" || die "cannot allow traversal of $root"; }
+  as_node test -x "$root" || die "uid $node_uid cannot traverse $root (mode $mode)"
+}
+
 node_git() { # $1=dir, rest = git args; sanitized like the tool's git
   local dir=$1
   shift
@@ -388,6 +400,7 @@ cmd_install() {
   ((10#$(pinned_count) > 0)) || die "manifest has no pinned commits"
   take_deploy_lock
   umask 022
+  ensure_node_traverse
   local sha12 dest new have base old i
   sha12=$(manifest_sha12 "$mf")
   base=$(basename "$archive")
