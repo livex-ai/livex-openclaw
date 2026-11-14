@@ -27,13 +27,14 @@ No GKE workload is named. To look for the agent's traffic use chat-engine:
 1. **Group the round.** From the thread and neighbours in the last 30 min,
    list the agents in the same round and their customers. One customer's demo
    agents versus agents across customers decides step 4.
-2. **Is silence expected?** Read the agent name and thread context: event
-   demos, kiosks and off-hours agents go quiet. If a human said the event ended or the
-   device is off, that is the answer.
-3. **Traffic history.** `livex_gcp_logs_read {mode:"count", resourceType:"k8s_container", resourceLabels:<chat-engine>, agentId:"<pub-id>", start: now - 1h, end: now}`
-   (no phrases; the total, hourly buckets and up to 3 samples come back under the key `"*"`) per agent (up to the 5 agents of the Client effect check). The samples' timestamps show when
-   requests stopped. An incomplete count (`complete:false`) keeps "no client
-   effect" from counting for this thread.
+2. **Is silence expected?** Read the thread: if a person said the event ended
+   or the device is off, the agent is not affected. Event and kiosk agents are
+   live; the agent name alone does not make silence expected.
+3. **Traffic history.** `livex_gcp_logs_read {mode:"count", resourceType:"k8s_container", resourceLabels:<chat-engine>, agentId:"<pub-id>", start: <alert time> - 3h, end: <alert time>}`
+   (no phrases; the total, three hourly buckets and up to 3 newest samples come back under the key `"*"`) per agent (up to the 5 agents of the Client effect check). The buckets show earlier traffic; the newest
+   sample's timestamp shows when requests stopped. If `complete:false`, say the
+   history is a lower bound and set `clientEffectVerified` false (an incomplete
+   count also keeps "no client effect" from counting for this thread).
 4. **Platform check.** `mode:"errors"` on the chat-engine labels for the last
    30 min: are errors elevated for many agents? Elevated platform errors plus
    several customers' agents silent at once is a platform signal.
@@ -43,8 +44,9 @@ No GKE workload is named. To look for the agent's traffic use chat-engine:
 
 | If you see | And | It usually means | Then |
 | --- | --- | --- | --- |
-| Zero requests for the agent in the last hour | agent is a demo or event agent | no traffic expected (unverified) | Not affected; say expected is unconfirmed by a human. *(unmined)* |
-| Traffic earlier, stops at one minute | no errors for the agent | the visitor flow stopped, device off or event ended | Affected only if the agent normally runs continuously and a person has not said it is off. *(unverified)* |
+| Zero requests for the agent in all 3 buckets | | no recent traffic | Not affected; say "no recent traffic" in the summary. *(unmined)* |
+| Silent agent is a test or demo agent (by the `traffic: "test"` wording below) | | non-customer traffic | Not affected. Event and kiosk agents are live and follow the Client effect check. *(unmined)* |
+| Requests in at least 2 earlier buckets, none in the alert's window | no person has said the agent is off | the visitor flow stopped, device off or a fault | Affected (Client effect check). *(unverified)* |
 | Traffic stops for agents of several customers at once | chat-engine or gateway errors up | platform or ingress problem | One investigation of the platform workloads. *(unverified)* |
 | Agent has errors in the window but no requests | `Could not find agent with id` or config validation errors | agent config or publish broken | See error-digest-categories.md. *(unverified)* |
 
@@ -55,13 +57,14 @@ Call `investigation_lookup` with `<agent name> | conversation volume | no traffi
 ## Client effect check
 
 Sample the agents of the round, N=5 by default (proposed); each agent is an
-item, and its outcome is the `count` read of step 3 (total, hourly bucket and
-up to 3 samples; only `complete:false` makes it incomplete). An agent is
-**affected** only if it normally runs continuously and a person has not said it
-is off or its event ended, and it had no requests in that hour; or its last
-conversation, read with one ID-scoped `mode:"context"` read by
-`conversationId` over a few minutes, ended in an error. Never count an agent
-whose count you did not read. `traffic: "test"` only when every affected item
+item, and its outcome is the `count` read of step 3. An agent **normally runs
+continuously** when it had requests in at least 2 of the earlier hourly
+buckets. It is **affected** when it normally runs continuously, has no requests
+in the alert's window (its newest sample is older than the window), and no
+person in the thread has said it is off. An agent with no requests in any
+bucket has "no recent traffic": not affected; say so in the summary. Never
+count an agent whose count you did not read; with `complete:false`, set
+`clientEffectVerified` false. `traffic: "test"` only when every affected item
 is on a test or demo agent, shown by an explicit marker (`test_run`,
 `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole word `test` or `demo`
 in the agent name; event and kiosk agents are live. `scope` counts the
@@ -94,7 +97,6 @@ Unassigned (TBD). No responder in the threads read.
 
 ## Expected window / when the classification is wrong
 
-Demo agents recur for the duration of an event. If silence persists after a
-human says the event is running, or the agent shows steady traffic before and
-no errors, the "expected" classification is wrong: count the agent as affected
-and ask for the device or kiosk state.
+Event agents recur for the duration of an event. If silence persists after a
+human says the event is running, ask for the device or kiosk state; the Client
+effect check still decides whether the agent is affected.
