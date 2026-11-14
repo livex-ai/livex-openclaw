@@ -855,6 +855,19 @@ function readLostEntries(details) {
   return details.truncated === true;
 }
 
+const ID_PARAMS = ["conversationId", "jobId", "roomId", "traceId", "insertId", "insertIds"];
+
+/** A read keyed on ids has its own outcome to protect; a listing is only a sample. Unknown: scoped. */
+function isIdScoped(params) {
+  if (params === null || typeof params !== "object") {
+    return true;
+  }
+  return ID_PARAMS.some((name) => {
+    const value = params[name];
+    return Array.isArray(value) ? value.length > 0 : typeof value === "string" ? value !== "" : value != null;
+  });
+}
+
 function boundedSet(map, key, limit) {
   let set = map.get(key);
   if (set) {
@@ -968,14 +981,19 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, 
         return;
       }
       if (event.error) {
-        noteRead(sessionKey, { ok: false, degraded: true });
+        // "Invalid ..." means the tool rejected the arguments and read nothing.
+        const text = typeof event.error === "string" ? event.error : event.error?.message;
+        if (!(typeof text === "string" && text.startsWith("Invalid"))) {
+          noteRead(sessionKey, { ok: false, degraded: true });
+        }
         return;
       }
       const details = readToolDetails(event.result);
       if (details !== undefined) {
         noteRead(sessionKey, {
           ok: true,
-          degraded: details.complete === false || readLostEntries(details),
+          degraded:
+            details.complete === false || (readLostEntries(details) && isIdScoped(event.params)),
         });
       }
       const project = details?.project;

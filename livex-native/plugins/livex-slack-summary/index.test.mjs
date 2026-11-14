@@ -408,9 +408,16 @@ test("with no recorded read the effect is not verified and a user-facing alert i
   assert.match(text, /client effect not verified \(1 of 5 sampled\)/u);
 });
 
-test("a capped read turns 'no effect' into not verified", () => {
+test("a capped listing read does not block 'no effect'", () => {
   const loaded = load();
-  recordRead(loaded, { truncated: true });
+  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] });
+  const text = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0 } }));
+  assert.match(text, /no client effect found/u);
+});
+
+test("a capped id-scoped read turns 'no effect' into not verified", () => {
+  const loaded = load();
+  recordRead(loaded, { truncated: true }, SESSION, { conversationId: "c1" });
   const text = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0 } }));
   assert.match(text, /client effect not verified \(0 of 5 sampled, a read was capped or failed\)/u);
 });

@@ -392,9 +392,31 @@ test("logs reads are counted per thread and a capped, incomplete or failed read 
     call(fresh, { toolName: "livex_gcp_logs_read", result: { details } });
     assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true });
   }
-  const failed = load();
-  call(failed, { toolName: "livex_gcp_logs_read", error: "boom" });
-  assert.deepEqual(readStats(failed, SESSION), { ok: 0, degraded: true });
+  const row = { truncationReasons: ["row-limit"] };
+  for (const [params, degraded] of [
+    [{ query: "x" }, false],
+    [{ conversationId: "c1" }, true],
+    [{ insertIds: ["a"] }, true],
+    [{ insertIds: [] }, false],
+    [undefined, true],
+  ]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", ...(params ? { params } : {}), result: { details: row } });
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded }, JSON.stringify(params));
+  }
+  const countIncomplete = load();
+  call(countIncomplete, { toolName: "livex_gcp_logs_read", params: { query: "x" }, result: { details: { complete: false } } });
+  assert.deepEqual(readStats(countIncomplete, SESSION), { ok: 1, degraded: true });
+  for (const [error, expected] of [
+    ["boom", { ok: 0, degraded: true }],
+    ["Cloud log read exceeded its output limit", { ok: 0, degraded: true }],
+    ["Invalid end: use ISO UTC", { ok: 0, degraded: false }],
+    [new Error("Invalid end: use ISO UTC"), { ok: 0, degraded: false }],
+  ]) {
+    const failed = load();
+    call(failed, { toolName: "livex_gcp_logs_read", error });
+    assert.deepEqual(readStats(failed, SESSION), expected, String(error));
+  }
   assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false });
 });
 

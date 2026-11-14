@@ -190,10 +190,10 @@ export function recordEvidence(
 export const readStats = (loaded, sessionKey) => loaded.plugin.readStatsFor(sessionKey);
 
 /** Feed one livex_gcp_logs_read result (no links) to after_tool_call: a counted logs read. */
-export function recordRead(loaded, details = { entries: [], truncated: false, truncationReasons: [] }, sessionKey = SESSION) {
+export function recordRead(loaded, details = { entries: [], truncated: false, truncationReasons: [] }, sessionKey = SESSION, params = {}) {
   const toolName = "livex_gcp_logs_read";
   return loaded.hooks.get("after_tool_call")(
-    { toolName, params: {}, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } },
+    { toolName, params, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } },
     { toolName, sessionKey, agentId: "debugger" },
   );
 }

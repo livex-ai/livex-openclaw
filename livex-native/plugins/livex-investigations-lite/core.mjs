@@ -1023,7 +1023,7 @@ export function createRecordTool(config, context, memory, log = NOOP_LOG) {
         knownRef: {
           type: "string",
           maxLength: MAX_KNOWN_REF_CHARS,
-          description: "Optional reference to the known issue (ticket, incident or PR).",
+          description: "Optional reference to the known issue: a ticket id, a Slack thread link, or `pattern:<id>` from the playbook (harmless only with a pattern).",
         },
         finding: { type: "string", minLength: 1, maxLength: MAX_FINDING_CHARS * 2 },
         trend: {
