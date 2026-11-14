@@ -46,6 +46,10 @@
         },
       },
       slack: { enabled: true },
+      // memory-core's nightly "dreaming" job asks the default agent (debugger) to
+      // rewrite MEMORY.md. The debugger is read-only by design, so the job can only
+      // fail; turn the schedule off. Case memory is livex-investigations-lite.
+      "memory-core": { config: { dreaming: { enabled: false } } },
       "livex-slack-summary": {
         enabled: true,
         // Both are needed for the priority buttons; without them the card has no

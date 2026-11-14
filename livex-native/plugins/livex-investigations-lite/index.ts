@@ -18,6 +18,7 @@ export default definePluginEntry({
   register(api) {
     // The keyed store V2 API is required; without it the plugin stays inert.
     if (typeof api.runtime.state.openKeyedStoreV2 !== "function") {
+      console.warn("[livex-investigations-lite] inert: api.runtime.state.openKeyedStoreV2 is unavailable");
       return;
     }
     const config = validateConfig(api.pluginConfig);
@@ -54,12 +55,42 @@ export default definePluginEntry({
       { name: "investigation_lookup", optional: true, workspaceAccess: false },
     );
 
-    api.on("before_prompt_build", (event, ctx) => hooks.beforePromptBuild(event, ctx));
+    // Diagnostic trace (DEV): one warn line per hook call with routing facts only
+    // (hook, kind, channel, session key shape, whether ids are present), never content.
+    const trace = (hook: string, event: any, ctx: any) => {
+      try {
+        const sessionKey = event?.sessionKey ?? ctx?.sessionKey;
+        const shape = typeof sessionKey === "string" ? sessionKey.split(":").slice(0, 4).join(":") : "none";
+        console.warn(
+          `[livex-investigations-lite] trace ${hook} kind=${event?.kind ?? "-"} channel=${event?.channel ?? ctx?.channelId ?? "-"} ` +
+            `session=${shape} runId=${event?.runId || ctx?.runId ? "yes" : "no"} sender=${ctx?.senderId ? "yes" : "no"} ` +
+            `success=${event?.success ?? "-"} hasText=${typeof event?.payload?.text === "string" && event.payload.text.length > 0}`,
+        );
+      } catch {
+        // Tracing must never affect a reply.
+      }
+    };
+
+    api.on("before_prompt_build", (event, ctx) => {
+      trace("before_prompt_build", event, ctx);
+      return hooks.beforePromptBuild(event, ctx);
+    });
     // Priority 100 runs before the summary-card hook (default 0), which rewrites
     // the payload: this hook must see the raw envelope. It never modifies it.
-    api.on("reply_payload_sending", (event, ctx) => hooks.replyPayloadSending(event, ctx), {
-      priority: 100,
+    api.on(
+      "reply_payload_sending",
+      (event, ctx) => {
+        trace("reply_payload_sending", event, ctx);
+        return hooks.replyPayloadSending(event, ctx);
+      },
+      { priority: 100 },
+    );
+    api.on("message_sent", (event, ctx) => {
+      trace("message_sent", event, ctx);
+      return hooks.messageSent(event, ctx);
     });
-    api.on("message_sent", (event, ctx) => hooks.messageSent(event, ctx));
+    console.warn(
+      `[livex-investigations-lite] registered: tools=investigation_record,investigation_lookup hooks=before_prompt_build,reply_payload_sending,message_sent agents=${config.agents.join(",")}`,
+    );
   },
 });

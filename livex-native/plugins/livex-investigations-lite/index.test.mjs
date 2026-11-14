@@ -194,7 +194,11 @@ test("store failures reach the console as warnings", async () => {
       store: { lookup: async () => { throw new Error("nope"); }, register: async () => {}, entries: async () => { throw new Error("nope"); } },
     });
     await bad.handlers.get("before_prompt_build")({ prompt: "checkout api create order upstream timeout" }, ctx);
-    assert.deepEqual(cap.lines.filter(([l]) => l === "warn").map(([, m]) => m), ["[livex-investigations-lite] store read failed: nope"]);
+    const warnings = cap.lines
+      .filter(([l]) => l === "warn")
+      .map(([, m]) => m)
+      .filter((m) => !/\] (trace |registered: )/u.test(m));
+    assert.deepEqual(warnings, ["[livex-investigations-lite] store read failed: nope"]);
   } finally {
     cap.restore();
   }
