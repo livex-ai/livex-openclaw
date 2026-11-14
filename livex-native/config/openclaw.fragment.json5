@@ -57,7 +57,8 @@
         // amendments (message action "edit") do not depend on them.
         // allowPromptInjection: the plugin restates the summary-envelope rule on
         // each debugger turn in an alert thread.
-        hooks: { allowPromptInjection: true },
+        // The host requires allowConversationAccess for before_prompt_build as well.
+        hooks: { allowConversationAccess: true, allowPromptInjection: true },
         config: {
           buttons: false,
           allowedChannelId: "*",
