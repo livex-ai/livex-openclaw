@@ -343,7 +343,35 @@ function buildNextConfig(fragment, ids) {
   } else {
     console.log("slack tokens: SLACK_BOT_TOKEN/SLACK_APP_TOKEN not both set; token config skipped");
   }
+  refuseUnguardedMessageEdit(next);
   return next;
+}
+
+// The debugger may edit only its own summary card because the livex-slack-summary
+// before_tool_call guard blocks every other edit. Allowing message "edit" without that
+// guard loaded would let it edit any message the bot can, so refuse before writing.
+const EDIT_GUARD_PLUGIN = "livex-slack-summary";
+function refuseUnguardedMessageEdit(next) {
+  const scopes = [
+    ["tools", next.tools],
+    ["agents.defaults", next.agents?.defaults?.tools],
+    ...Object.entries(next.agents?.entries ?? {}).map(([id, entry]) => [`agents.entries.${id}`, entry?.tools]),
+  ];
+  const editors = scopes
+    .filter(([, tools]) => {
+      const allow = tools?.message?.actions?.allow;
+      return Array.isArray(allow) && allow.some((action) => String(action).trim().toLowerCase() === "edit");
+    })
+    .map(([where]) => where);
+  if (editors.length === 0) return;
+  const entry = next.plugins?.entries?.[EDIT_GUARD_PLUGIN];
+  const allowed = Array.isArray(next.plugins?.allow) && next.plugins.allow.includes(EDIT_GUARD_PLUGIN);
+  if (entry && typeof entry === "object" && entry.enabled !== false && allowed) return;
+  throw new Error(
+    `message action "edit" is allowed for ${editors.join(", ")} but the ${EDIT_GUARD_PLUGIN} plugin that restricts edits ` +
+      `to the agent's own summary card is not ${allowed ? "enabled in plugins.entries" : "in plugins.allow"}. ` +
+      `Enable it (plugins.allow and plugins.entries["${EDIT_GUARD_PLUGIN}"].enabled) or remove "edit" from tools.message.actions.allow.`,
+  );
 }
 
 function applyConfig(fragment, ids) {

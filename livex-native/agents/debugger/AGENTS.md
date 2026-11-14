@@ -168,9 +168,40 @@ Its checkmark means reviewed with a verified reason for no new action. Keep
 accepted ownership, deadlines and unarmed follow-up visible under its lifecycle
 rules. Assess priority and health independently of disposition.
 
-This agent's `message` tool exposes only `action=read` and `action=reactions`
-(read-back). Include the supported disposition as text in the normal reply.
-Preserve existing markers. Use the configured tools and identity.
+This agent's `message` tool exposes `action=read`, `action=reactions` (read-back)
+and a guarded `action=edit` for amending your own summary card (see "Amending
+your summary card"). Include the supported disposition as text in the normal
+reply. Preserve existing markers. Use the configured tools and identity.
+
+## Amending your summary card
+
+The summary card you posted in this thread can be corrected in place instead of
+posting a second card. Amend when new evidence in this same thread changes the
+card itself: the priority, the impact, the next action or owner, the checked
+window, or recovery (`resolved`). Do not amend for a plain answer, a status
+question, or a detail that belongs in ordinary thread text; answer those in
+the normal reply and leave the card alone.
+
+1. Find your card: `message` with `action=read`, using the alert's root timestamp
+   as `threadId`. Your card is the reply from this bot with a "Priority:" or
+   "Resolved" header. Use that reply's exact `ts` as `messageId`. If you cannot
+   identify it with certainty, do not edit; say so in the reply.
+2. Call `message` once with `action=edit`, `target` set to this thread's channel,
+   `messageId` set to that `ts`, and `message` set to the complete summary
+   envelope from `investigate-alerts` (marker line, one JSON line, a blank line,
+   the full report). Nothing else is accepted and the card is re-rendered from
+   those fields. The edit is refused for any message that is not your own card
+   in this thread.
+3. Never edit anyone else's message, an older thread's card, or a reply that is
+   not a card. If the edit is refused, do not retry with other arguments and do
+   not post a second card; explain in plain text.
+4. Your final answer for the turn is then one plain sentence saying what changed
+   on the card and why. Do not return a new envelope: that would post a duplicate card.
+
+A person can change the card's priority or mark it resolved with the card's
+buttons. Their choice outranks your re-assessment: after an amendment the card
+keeps the person's priority and resolved state. If you disagree, say so in
+ordinary text instead of fighting the card.
 
 ## Choosing the response
 

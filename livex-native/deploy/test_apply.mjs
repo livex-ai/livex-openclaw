@@ -50,7 +50,7 @@ function priorOncall(workspace) {
   };
 }
 
-function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
+function fixture(t, { includeOncall = false, stockSlack = false, patchFragment } = {}) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "livex-apply-"));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const configPath = path.join(state, "openclaw.json");
@@ -89,15 +89,18 @@ function fixture(t, { includeOncall = false, stockSlack = false } = {}) {
   );
 
   let releaseDir = nativeDir;
-  if (includeOncall) {
+  if (includeOncall || patchFragment) {
     releaseDir = path.join(state, "release");
     fs.mkdirSync(path.join(releaseDir, "config"), { recursive: true });
     fs.symlinkSync(path.join(nativeDir, "agents"), path.join(releaseDir, "agents"));
     const fragment = json5.parse(
       fs.readFileSync(path.join(nativeDir, "config", "openclaw.fragment.json5"), "utf8"),
     );
-    fragment.agents.entries.oncall = { name: "LiveX OnCall" };
-    fragment.bindings.push(slackRoute("oncall", "C0OPTIN"));
+    if (includeOncall) {
+      fragment.agents.entries.oncall = { name: "LiveX OnCall" };
+      fragment.bindings.push(slackRoute("oncall", "C0OPTIN"));
+    }
+    patchFragment?.(fragment);
     fs.writeFileSync(
       path.join(releaseDir, "config", "openclaw.fragment.json5"),
       JSON.stringify(fragment),
@@ -172,6 +175,11 @@ test("fresh install registers the Debugger route and enables its Slack summary",
   assert.deepEqual(config.bindings, [slackRoute("debugger")]);
   assert.ok(config.plugins.allow.includes("livex-slack-summary"));
   assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
+  assert.deepEqual(config.plugins.entries["livex-slack-summary"].config, {
+    allowedChannelId: "*",
+    allowedSenderId: "${SLACK_SENDER_ID}",
+  });
+  assert.ok(config.agents.entries.debugger.tools.message.actions.allow.includes("edit"));
   assert.ok(config.plugins.allow.includes("livex-investigations-lite"));
   const lite = config.plugins.entries["livex-investigations-lite"];
   assert.equal(lite.enabled, true);
@@ -722,4 +730,45 @@ test("a malformed manifest stops apply before anything is written", (t) => {
     assert.match(apply.stderr, /manifest\.json/);
     assert.equal(read(), before);
   }
+});
+
+test("message action edit needs the livex-slack-summary guard enabled and allowed; the check-only preview refuses too", (t) => {
+  // The shipped fragment allows edit and enables the guard, so a normal apply passes.
+  const shipped = fixture(t);
+  const ok = shipped.run();
+  assert.equal(ok.status, 0, ok.stderr);
+  const edit = JSON.parse(shipped.read()).agents.entries.debugger.tools.message.actions.allow;
+  assert.ok(edit.includes("edit"));
+
+  const cases = {
+    "plugin not in plugins.allow": (f) => {
+      f.plugins.allow = f.plugins.allow.filter((id) => id !== "livex-slack-summary");
+    },
+    "plugin entry disabled": (f) => {
+      f.plugins.entries["livex-slack-summary"].enabled = false;
+    },
+    "plugin entry missing": (f) => {
+      delete f.plugins.entries["livex-slack-summary"];
+    },
+  };
+  for (const [name, patchFragment] of Object.entries(cases)) {
+    const bad = fixture(t, { patchFragment });
+    for (const extra of [{}, { LIVEX_LIVE_GUARD: "1", LIVEX_CHECK_AGENTS_ONLY: "1" }]) {
+      const result = bad.run(extra);
+      assert.notEqual(result.status, 0, `${name} ${JSON.stringify(extra)}`);
+      assert.match(result.stderr, /message action "edit" is allowed for .*livex-slack-summary/s, name);
+      assert.equal(fs.existsSync(bad.configPath), false, `${name}: nothing was written`);
+    }
+  }
+
+  // Without edit in any allow list the guard plugin is not required.
+  const noEdit = fixture(t, {
+    patchFragment: (f) => {
+      f.agents.entries.debugger.tools.message.actions.allow = ["read", "reactions"];
+      f.plugins.allow = f.plugins.allow.filter((id) => id !== "livex-slack-summary");
+      delete f.plugins.entries["livex-slack-summary"];
+    },
+  });
+  const passes = noEdit.run();
+  assert.equal(passes.status, 0, passes.stderr);
 });

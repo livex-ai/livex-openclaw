@@ -232,6 +232,12 @@ Full evidence report goes here.
   card fields. Keep identifiers, query diagnostics, secondary hypotheses and
   additional sources in the full report after the blank line. The Gateway sends
   the card and retains the authored report in this thread’s native session.
+- When new evidence in the same thread changes the card (priority, impact,
+  next action, owner, checked window, or recovery), amend your earlier card
+  with `message` `action=edit` and this same envelope in `message` instead of
+  returning a second envelope; see "Amending your summary card" in the agent
+  instructions. A reply that only answers a question keeps the card as is. After
+  a successful edit, the final answer is one plain sentence about what changed.
 - If asked for full evidence or an explicit detailed/table reply, return the
   requested report directly, without the envelope marker. Reuse this thread’s retained
   evidence and label its freshness. If history is unavailable, say so and

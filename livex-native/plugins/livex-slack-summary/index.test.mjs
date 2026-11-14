@@ -8,20 +8,36 @@ const sdkHook = registerHooks({
       return nextResolve(specifier, context);
     }
     return {
-      url: "data:text/javascript,export%20const%20definePluginEntry%20%3D%20(entry)%20%3D%3E%20entry",
+      url:
+        "data:text/javascript," +
+        encodeURIComponent(
+          "export const definePluginEntry = (entry) => entry; export const buildJsonPluginConfigSchema = (schema) => schema;",
+        ),
       shortCircuit: true,
     };
   },
 });
 const { default: entry } = await import("./index.ts").finally(() => sdkHook.deregister());
-let render;
+const hooks = new Map();
+let interactive;
 entry.register({
+  // No plugin config: the cards render without buttons and no click handler is registered.
+  pluginConfig: {},
   on(name, callback) {
-    assert.equal(name, "reply_payload_sending");
-    assert.equal(render, undefined);
-    render = callback;
+    assert.equal(hooks.has(name), false);
+    hooks.set(name, callback);
+  },
+  registerInteractiveHandler(registration) {
+    interactive = registration;
   },
 });
+assert.deepEqual([...hooks.keys()].sort(), [
+  "before_tool_call",
+  "message_sent",
+  "reply_payload_sending",
+]);
+assert.equal(interactive, undefined);
+const render = hooks.get("reply_payload_sending");
 assert.equal(typeof render, "function");
 
 const summary = {

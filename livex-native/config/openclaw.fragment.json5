@@ -46,7 +46,15 @@
         },
       },
       slack: { enabled: true },
-      "livex-slack-summary": { enabled: true },
+      "livex-slack-summary": {
+        enabled: true,
+        // Both are needed for the priority buttons; without them the card has no
+        // buttons. Report amendments (message action "edit") do not depend on them.
+        config: {
+          allowedChannelId: "*",
+          allowedSenderId: "${SLACK_SENDER_ID}",
+        },
+      },
       "livex-investigations-lite": {
         enabled: true,
         hooks: { allowConversationAccess: true, allowPromptInjection: true },
@@ -139,7 +147,7 @@
           profile: "full",
           // OpenClaw tool allowlist: governs OpenClaw-managed tools only (the two
           // LiveX evidence tools, the two investigation memory tools, plus
-          // read-only helpers). Codex's native shell is bounded by the read-only
+          // read-only helpers and the guarded summary-card amendment). Codex's native shell is bounded by the read-only
           // appServer sandbox above, not by this list.
           allow: [
             "read",
@@ -150,7 +158,10 @@
             "investigation_record",
             "investigation_lookup",
           ],
-          message: { actions: { allow: ["read", "reactions"] } },
+          // "edit" is only usable on this agent's own summary card in the current
+          // thread: the livex-slack-summary before_tool_call guard blocks every other
+          // edit (WIRING-step4.md). Without that plugin enabled, do not allow "edit".
+          message: { actions: { allow: ["read", "reactions", "edit"] } },
           // "deny"/"allowlist" fail Codex preflight
           // (extensions/codex/src/app-server/config-exec-policy.ts:93-103).
           // "auto" forces model-backed approval review. "ask" keeps the read-only

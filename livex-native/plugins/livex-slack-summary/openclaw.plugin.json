@@ -9,6 +9,16 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "allowedChannelId": {
+        "type": "string",
+        "pattern": "^(?:\\*|[CG][A-Z0-9]+)$",
+        "description": "Slack channel ID or * for all channels where the priority buttons work. Same semantics as livex-gcp-readonly. Buttons need both this and allowedSenderId."
+      },
+      "allowedSenderId": {
+        "type": "string",
+        "description": "Slack user ID allowed to press the priority buttons. Same semantics as livex-gcp-readonly. An unresolved placeholder leaves the cards without buttons."
+      }
+    }
   }
 }

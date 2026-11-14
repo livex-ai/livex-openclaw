@@ -60,7 +60,7 @@ read the retained report. Deeper investigations use `debug` and `systematic-debu
 The stock Slack adapter suppresses pre-delivery previews when a reply modifier
 is registered. The shipped config already has Slack streaming off.
 
-The Slack `message` tool can read messages and reactions. The evidence tools
+The Slack `message` tool can read messages and reactions, and amend the agent's own summary card. The evidence tools
 are available only to a Slack turn from the configured sender in an allowed
 channel. For a Control UI chat, use evidence supplied by the user. The skill
 reports unavailable evidence and external case updates explicitly.
@@ -183,7 +183,7 @@ OpenClaw core `src/`.
 | Codex `appServer.sandbox` | `workspace-write` | `read-only` |
 | Codex `appServer.approvalPolicy` | `on-request` | `on-request` (same) |
 | Effective Codex approvals reviewer | `auto_review` | `user`, a human, set by exec mode `ask` |
-| Slack `message` actions | `read`, `react`, `reactions` | `read`, `reactions` |
+| Slack `message` actions | `read`, `react`, `reactions` | `read`, `reactions`, `edit` (own summary card only, guarded by `livex-slack-summary`) |
 | Slack agent `tools.profile` | `full` | `full` (same) |
 | Slack agent `tools.exec.mode` | `auto` | `ask` |
 | Global `tools.exec.mode` | `deny` | `ask`. `deny` fails Codex preflight for any agent without its own exec mode, such as `main` (`extensions/codex/src/app-server/config-options.ts:148-152`); an agent's own mode replaces the global one (`config-exec-approvals.ts:33-41`) |
@@ -206,7 +206,7 @@ The deployed non-core config is ported, so the Slack bot behaves like PR #1's
 | Agent names and identity ("LiveX Debugger", "LiveX Reporting · Debugger") | ✓ |
 | Global tool floor: minimal profile, elevated off | ✓ |
 | Codex as runtime, same `appServer` home scope | ✓, but sandbox `read-only` and exec `ask` (PR #1: `workspace-write` and `auto`) |
-| `react` message action | ✗ dropped on purpose; only `read` and `reactions` |
+| `react` message action | ✗ dropped on purpose; only `read`, `reactions` and the guarded `edit` |
 | Shared-skills directory | ✗ replaced by per-agent workspace skills |
 | Compact alert cards | Validated single-alert card with the stock Slack adapter |
 | Legacy priority colors and Resolved badge | ✗ PR #1 report renderer |

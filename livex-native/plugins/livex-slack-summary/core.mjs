@@ -1,0 +1,813 @@
+// Card validation, rendering, priority controls and the amendment guard for the
+// LiveX Debugger Slack summary card. No host, network or Slack access here: the
+// entry (index.ts) wires these functions to the plugin hooks.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
+
+export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V1";
+export const INTERACTIVE_NAMESPACE = "livex-priority";
+export const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
+export const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
+
+const MARKED_LINE = new RegExp(`(?:^|\\n)[ \\t]*${SUMMARY_MARKER}[ \\t]*(?=\\r?\\n|$)`, "u");
+const MAX_EVIDENCE_URL = 1600;
+// The shipped evidence tool only produces Logs Explorer links on this host. The
+// model writes the URL, so anything else (including lookalikes) is dropped.
+const EVIDENCE_HOSTS = ["console.cloud.google.com"];
+// `agent:debugger:slack:channel:<id>:thread:<ts>`, or with the team-qualified peer
+// `channel:team:<team>:channel:<id>` that Slack workspace routing produces.
+const DEBUGGER_SLACK_THREAD =
+  /^agent:debugger:slack:channel:(?:team:[a-z0-9%._-]+:channel:)?([cg][a-z0-9]+):thread:(\d+\.\d+)$/u;
+const SLACK_TS = /^\d{9,12}\.\d{3,9}$/u;
+const SENDER_ID = /^[UW][A-Z0-9]+$/u;
+const CHANNEL_GATE = /^(?:\*|[CG][A-Z0-9]+)$/u;
+
+const PRIORITY_LABELS = new Map([
+  ["critical", "Critical"],
+  ["high", "High"],
+  ["medium", "Medium"],
+  ["low", "Low"],
+  ["unknown", "Unknown"],
+]);
+// Stock Slack outbound cannot send legacy attachment colour bars, so priority
+// colour is a leading emoji. Low and Unknown share the neutral marker.
+const PRIORITY_MARKERS = new Map([
+  ["critical", "\u{1F534}"],
+  ["high", "\u{1F534}"],
+  ["medium", "\u{1F7E1}"],
+  ["low", "⚪"],
+  ["unknown", "⚪"],
+]);
+const RESOLVED_MARKER = "\u{1F7E2}";
+const REQUIRED_KEYS = [
+  "priority",
+  "provisional",
+  "impact",
+  "nextAction",
+  "owner",
+  "checkedWindow",
+  "evidenceUrl",
+];
+const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "resolved"]);
+
+// Buttons a human may press. High/Medium/Low reset the priority, Resolved closes it.
+const CHOICES = new Map([
+  ["high", "High"],
+  ["medium", "Medium"],
+  ["low", "Low"],
+  ["resolved", "Resolved"],
+]);
+// Slack's button value limit is 2000 characters (extensions/slack/src/presentation.ts:6).
+// Leave room for the namespace and choice prefix.
+const MAX_TOKEN_CHARS = 1900;
+const MAX_STATE_BYTES = 8192;
+
+// ----------------------------------------------------------------- validation
+
+function isBoundedLine(value, maxLength) {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maxLength &&
+    !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
+  );
+}
+
+/**
+ * Returns undefined when invalid, null when the link is dropped (the card still
+ * posts), or the normalized href. The href is stored unescaped; rendering escapes `&`.
+ */
+export function readEvidenceHref(value) {
+  if (value === null) {
+    return null;
+  }
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_EVIDENCE_URL ||
+    !value.startsWith("https://") ||
+    /[\s\p{Cc}<>|\\]/u.test(value)
+  ) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    const escapedUrl = url.href.replaceAll("&", "&amp;");
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      escapedUrl.length <= MAX_EVIDENCE_URL
+    ) {
+      // A well-formed link to any other host or port is dropped, not fatal.
+      if (!EVIDENCE_HOSTS.includes(url.hostname) || url.port !== "") {
+        return null;
+      }
+      return url.href;
+    }
+  } catch {
+    // An invalid evidence link invalidates the marked summary.
+  }
+  return undefined;
+}
+
+function validCard(card) {
+  return (
+    PRIORITY_LABELS.has(card.priority) &&
+    typeof card.provisional === "boolean" &&
+    typeof card.resolved === "boolean" &&
+    isBoundedLine(card.impact, 240) &&
+    isBoundedLine(card.nextAction, 120) &&
+    isBoundedLine(card.owner, 50) &&
+    isBoundedLine(card.checkedWindow, 64) &&
+    (card.evidenceHref === null ||
+      (typeof card.evidenceHref === "string" &&
+        readEvidenceHref(card.evidenceHref) === card.evidenceHref))
+  );
+}
+
+/** Parse the `MARKER\n{json}\n\nfull report` envelope into a validated card. */
+export function readSummary(text) {
+  // Read only the compact JSON line. Evidence belongs to the native assistant
+  // transcript and must never be copied into the replacement Slack payload.
+  const envelope = /^\S+\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
+  const json = envelope?.[1];
+  if (!json) {
+    return undefined;
+  }
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const { priority, provisional, impact, nextAction, owner, checkedWindow, evidenceUrl, resolved } =
+    value;
+  const href = readEvidenceHref(evidenceUrl);
+  if (
+    !Object.keys(value).every((key) => ALLOWED_KEYS.has(key)) ||
+    !REQUIRED_KEYS.every((key) => key in value) ||
+    typeof priority !== "string" ||
+    (resolved !== undefined && typeof resolved !== "boolean") ||
+    href === undefined
+  ) {
+    return undefined;
+  }
+  const card = {
+    priority,
+    provisional,
+    resolved: resolved === true,
+    impact,
+    nextAction,
+    owner,
+    checkedWindow,
+    evidenceHref: href,
+  };
+  return validCard(card) ? card : undefined;
+}
+
+/** True when the text carries a canonical first-line marker and the marker line exists. */
+export function classifyEnvelope(rawText) {
+  const text = typeof rawText === "string" ? rawText.trimStart() : "";
+  if (!text || !MARKED_LINE.test(text)) {
+    return { marked: false };
+  }
+  // A misplaced marker still identifies an envelope. Fail closed instead
+  // of passing the JSON and retained evidence through as an ordinary reply.
+  const canonical = text.split(/\r?\n/u, 1)[0] === SUMMARY_MARKER;
+  return { marked: true, card: canonical ? readSummary(text) : undefined };
+}
+
+// ------------------------------------------------------------------ rendering
+
+function priorityText(card) {
+  const label = PRIORITY_LABELS.get(card.priority);
+  return card.provisional && card.priority !== "unknown" ? `${label} (provisional)` : label;
+}
+
+export function headlineOf(card) {
+  return card.resolved
+    ? `${RESOLVED_MARKER} Resolved · was ${priorityText(card)}`
+    : `${PRIORITY_MARKERS.get(card.priority)} Priority: ${priorityText(card)}`;
+}
+
+function evidenceLinkOf(card) {
+  return card.evidenceHref
+    ? `<${card.evidenceHref.replaceAll("&", "&amp;")}|View evidence>`
+    : undefined;
+}
+
+function plainText(text) {
+  return { type: "plain_text", text };
+}
+
+function section(text) {
+  return { type: "section", text: plainText(text) };
+}
+
+/** What a button press does to a card. */
+export function applyChoice(card, choice) {
+  if (choice === "resolved") {
+    return { ...card, resolved: true };
+  }
+  // A human reset is no longer provisional and reopens a resolved card.
+  return { ...card, priority: choice, provisional: false, resolved: false };
+}
+
+/** The buttons a card offers, omitting a no-op for the card's current state. */
+export function availableChoices(card) {
+  const choices = [];
+  for (const choice of ["high", "medium", "low"]) {
+    if (!card.resolved && card.priority === choice && !card.provisional) {
+      continue;
+    }
+    choices.push(choice);
+  }
+  if (!card.resolved) {
+    choices.push("resolved");
+  }
+  return choices;
+}
+
+function buttonValue(choice, token) {
+  return `${INTERACTIVE_NAMESPACE}:${choice}:${token}`;
+}
+
+/** Native Slack blocks for the card (the shape the initial reply is sent in). */
+export function renderBlocks(card, controls) {
+  const evidenceLink = evidenceLinkOf(card);
+  const blocks = [
+    { type: "header", text: plainText(headlineOf(card)) },
+    section(`Impact: ${card.impact}`),
+    section(`Next action: ${card.nextAction}\nOwner: ${card.owner}`),
+    section(`Evidence: ${card.checkedWindow}`),
+    {
+      type: "context",
+      elements: [
+        ...(evidenceLink ? [{ type: "mrkdwn", text: evidenceLink, verbatim: true }] : []),
+        plainText(FULL_EVIDENCE_HINT),
+      ],
+    },
+  ];
+  if (controls?.length) {
+    blocks.push({
+      type: "actions",
+      block_id: "openclaw_reply_buttons_1",
+      // Same ids the stock presentation renderer emits for callback buttons
+      // (extensions/slack/src/blocks-render.ts:376), so a card edited through the
+      // message tool presents identical controls.
+      elements: controls.map((control, index) => ({
+        type: "button",
+        action_id: `openclaw:callback_button:1:${index + 1}`,
+        text: plainText(control.label),
+        value: control.value,
+        ...(control.choice === "resolved" ? { style: "primary" } : {}),
+      })),
+    });
+  }
+  return blocks;
+}
+
+const ZWJ = "\u200D";
+
+/**
+ * Model text for a presentation: entity-escaped, then every character Slack would
+ * act on (`://` auto-links, `@` and `#` mentions, emphasis, code) is split with a
+ * zero-width joiner. The evidence link is the only live link and comes from the
+ * allowlisted evidence field alone.
+ */
+function neutralize(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("://", `:${ZWJ}//`)
+    .replace(/[@#*_~`]/gu, (char) => `${char}${ZWJ}`);
+}
+
+/**
+ * The same card as a message-tool presentation. The Slack `edit` action accepts
+ * only `message` text and a portable `presentation`, never raw blocks
+ * (extensions/slack/src/message-action-dispatch.ts:218-257), so an amendment is
+ * re-rendered by the stock presentation renderer. Model fields go in `context`
+ * blocks, which stock renders as verbatim mrkdwn (blocks-render.ts:285): no
+ * auto-linking or mention parsing. Emphasis is neutralized above.
+ */
+export function renderPresentation(card, controls) {
+  const evidenceLink = evidenceLinkOf(card);
+  return {
+    title: headlineOf(card),
+    blocks: [
+      { type: "context", text: neutralize(`Impact: ${card.impact}`) },
+      { type: "context", text: neutralize(`Next action: ${card.nextAction}\nOwner: ${card.owner}`) },
+      { type: "context", text: neutralize(`Evidence: ${card.checkedWindow}`) },
+      {
+        type: "context",
+        text: evidenceLink ? `${evidenceLink} \u00B7 ${FULL_EVIDENCE_HINT}` : FULL_EVIDENCE_HINT,
+      },
+      ...(controls?.length
+        ? [
+            {
+              type: "buttons",
+              buttons: controls.map((control) => ({
+                label: control.label,
+                action: { type: "callback", value: control.value },
+                ...(control.choice === "resolved" ? { style: "primary" } : {}),
+              })),
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
+// ------------------------------------------------------- button state (token)
+
+/** Bounded in-memory overflow for a card whose state does not fit a button value. */
+function createReferenceStore(limit) {
+  const rows = new Map();
+  return {
+    put(card, bind) {
+      const id = randomBytes(9).toString("base64url");
+      rows.set(id, { card, channelId: bind.channelId, threadTs: bind.threadTs });
+      while (rows.size > limit) {
+        rows.delete(rows.keys().next().value);
+      }
+      return id;
+    },
+    get(id, bind) {
+      const row = rows.get(id);
+      return row && row.channelId === bind.channelId && row.threadTs === bind.threadTs
+        ? row.card
+        : undefined;
+    },
+  };
+}
+
+const TAG_BYTES = 16;
+const TAG_CHARS = 22; // 16 bytes in unpadded base64url
+
+function tagFor(key, body, bind) {
+  return createHmac("sha256", key)
+    .update(`${body}\0${bind.channelId}\0${bind.threadTs}`)
+    .digest()
+    .subarray(0, TAG_BYTES)
+    .toString("base64url");
+}
+
+/**
+ * A token is `i<deflated state>` plus an HMAC tag bound to the card's channel and
+ * thread, or `r<id>` for a bounded in-memory overflow bound the same way.
+ */
+function encodeState(card, refs, bind, key) {
+  const row = [
+    card.priority,
+    card.provisional ? 1 : 0,
+    card.resolved ? 1 : 0,
+    card.impact,
+    card.nextAction,
+    card.owner,
+    card.checkedWindow,
+    card.evidenceHref,
+  ];
+  const body = `i${deflateRawSync(Buffer.from(JSON.stringify(row), "utf8"), { level: 9 }).toString("base64url")}`;
+  return body.length + TAG_CHARS <= MAX_TOKEN_CHARS
+    ? `${body}${tagFor(key, body, bind)}`
+    : `r${refs.put(card, bind)}`;
+}
+
+/** Fails closed: a token that is unsigned, signed for another channel or thread, or invalid is undefined. */
+export function decodeState(token, refs, bind, key) {
+  try {
+    if (
+      typeof token !== "string" ||
+      token.length < 2 ||
+      token.length > MAX_TOKEN_CHARS ||
+      !bind?.channelId ||
+      !bind?.threadTs
+    ) {
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9_-]+$/u.test(token.slice(1))) {
+      return undefined;
+    }
+    if (token[0] === "r") {
+      const stored = refs.get(token.slice(1), bind);
+      return stored && validCard(stored) ? { ...stored } : undefined;
+    }
+    if (token[0] !== "i" || token.length <= TAG_CHARS + 1) {
+      return undefined;
+    }
+    const body = token.slice(0, -TAG_CHARS);
+    // Compare the canonical text: 22 base64url characters carry 132 bits for a 128-bit
+    // tag, so decoded bytes would accept several spellings of the same tag.
+    const given = Buffer.from(token.slice(-TAG_CHARS), "ascii");
+    const expected = Buffer.from(tagFor(key, body, bind), "ascii");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      return undefined;
+    }
+    const json = inflateRawSync(Buffer.from(body.slice(1), "base64url"), {
+      maxOutputLength: MAX_STATE_BYTES,
+    }).toString("utf8");
+    const row = JSON.parse(json);
+    if (!Array.isArray(row) || row.length !== 8) {
+      return undefined;
+    }
+    const [priority, provisional, resolved, impact, nextAction, owner, checkedWindow, href] = row;
+    if (![0, 1].includes(provisional) || ![0, 1].includes(resolved)) {
+      return undefined;
+    }
+    const card = {
+      priority,
+      provisional: provisional === 1,
+      resolved: resolved === 1,
+      impact,
+      nextAction,
+      owner,
+      checkedWindow,
+      evidenceHref: href,
+    };
+    return validCard(card) ? card : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const KEY_STORE_OPTIONS = { namespace: "hmac-key", maxEntries: 2, overflowPolicy: "evict-oldest" };
+
+/**
+ * The signing key must outlive a restart so old cards keep working. Returns the
+ * persisted 32-byte key, creating and storing one on first use; undefined when the
+ * store fails (the caller keeps its per-process key and old cards then fail closed).
+ */
+export async function loadOrCreateKey(store) {
+  try {
+    const existing = await store.lookup("key");
+    const raw = typeof existing?.key === "string" ? Buffer.from(existing.key, "base64url") : null;
+    if (raw?.length === 32) {
+      return raw;
+    }
+    const fresh = randomBytes(32);
+    // Atomic first write: a concurrent loader that lost the race reads the winner's key.
+    if (await store.registerIfAbsent("key", { key: fresh.toString("base64url") })) {
+      return fresh;
+    }
+    const winner = await store.lookup("key");
+    const stored = typeof winner?.key === "string" ? Buffer.from(winner.key, "base64url") : null;
+    return stored?.length === 32 ? stored : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ------------------------------------------------------------------- config
+
+/**
+ * Buttons need both gates; without them the card renders without controls
+ * (the pre-step-4 behaviour) and no interactive handler is registered.
+ */
+export function readConfig(raw) {
+  const record = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const senderId =
+    typeof record.allowedSenderId === "string" && SENDER_ID.test(record.allowedSenderId)
+      ? record.allowedSenderId
+      : undefined;
+  const channelId =
+    typeof record.allowedChannelId === "string" && CHANNEL_GATE.test(record.allowedChannelId)
+      ? record.allowedChannelId
+      : undefined;
+  return { senderId, channelId, buttons: Boolean(senderId && channelId) };
+}
+
+function channelAllowed(config, channelId) {
+  return config.channelId === "*" || config.channelId === channelId;
+}
+
+export function parseSession(sessionKey) {
+  const match = typeof sessionKey === "string" ? DEBUGGER_SLACK_THREAD.exec(sessionKey) : null;
+  return match ? { channelId: match[1].toUpperCase(), threadTs: match[2] } : undefined;
+}
+
+/** Channel id from `C123`, `channel:C123` or `team:T1:channel:C123`; otherwise undefined. */
+function readChannelId(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const match = /^(?:slack:)?(?:team:[A-Za-z0-9%._-]+:)?(?:channel:)?([CG][A-Z0-9]+)$/u.exec(
+    value.trim(),
+  );
+  return match?.[1];
+}
+
+function tsAfter(ts, rootTs) {
+  const [a, b] = ts.split(".");
+  const [c, d] = rootTs.split(".");
+  return a.length === c.length
+    ? a > c || (a === c && b.padEnd(9, "0") > d.padEnd(9, "0"))
+    : a.length > c.length;
+}
+
+// ------------------------------------------------------------------ plugin
+
+const PENDING_TTL_MS = 5 * 60_000;
+const MAX_PENDING = 8;
+const MAX_SESSIONS = 500;
+const MAX_CARDS_PER_SESSION = 25;
+const MAX_OVERRIDES = 1000;
+
+function boundedSet(map, key, limit) {
+  let set = map.get(key);
+  if (set) {
+    map.delete(key);
+  } else {
+    set = new Set();
+  }
+  map.set(key, set);
+  while (map.size > limit) {
+    map.delete(map.keys().next().value);
+  }
+  return set;
+}
+
+export function createPlugin(rawConfig, { now = Date.now } = {}) {
+  const config = readConfig(rawConfig);
+  // Per-process until the persisted key loads (see loadOrCreateKey).
+  let key = randomBytes(32);
+  const refs = createReferenceStore(200);
+  // sessionKey -> ts values of cards this plugin rendered and Slack confirmed.
+  const cards = new Map();
+  // sessionKey -> cards rendered but not yet confirmed by message_sent.
+  const pending = new Map();
+  // `${channel}:${ts}` -> priority state a human set with the buttons.
+  const overrides = new Map();
+
+  function controlsFor(card, bind) {
+    const token = encodeState(card, refs, bind, key);
+    return availableChoices(card).map((choice) => ({
+      choice,
+      label: CHOICES.get(choice),
+      value: buttonValue(choice, token),
+    }));
+  }
+
+  const buttonsAllowed = (session) =>
+    config.buttons && Boolean(session) && channelAllowed(config, session.channelId);
+
+  // ------------------------------------------------------ reply_payload_sending
+  function replyPayloadSending(event, ctx) {
+    let marked = false;
+    let route = {};
+    try {
+      const { kind, channel, sessionKey, payload } = event ?? {};
+      if (
+        kind !== "final" ||
+        channel !== "slack" ||
+        !sessionKey ||
+        !DEBUGGER_SLACK_THREAD.test(sessionKey) ||
+        !payload ||
+        payload.isReasoning ||
+        payload.isCommentary ||
+        payload.isStatusNotice
+      ) {
+        return undefined;
+      }
+      const envelope = classifyEnvelope(payload.text);
+      if (!envelope.marked) {
+        return undefined;
+      }
+      marked = true;
+      const { replyToId, replyToTag, replyToCurrent } = payload;
+      route = { replyToId, replyToTag, replyToCurrent };
+      const card = envelope.card;
+      if (!card) {
+        return { payload: { ...route, text: INVALID_SUMMARY } };
+      }
+      const session = parseSession(sessionKey);
+      const controls = buttonsAllowed(session) ? controlsFor(card, session) : undefined;
+      // Prune expired entries and re-insert the session as most recent (bounded LRU).
+      const queue = (pending.get(sessionKey) ?? []).filter((entry) => now() - entry.at <= PENDING_TTL_MS);
+      queue.push({
+        at: now(),
+        headline: headlineOf(card),
+        runId: typeof (event.runId ?? ctx?.runId) === "string" ? (event.runId ?? ctx?.runId) : undefined,
+      });
+      pending.delete(sessionKey);
+      pending.set(sessionKey, queue.slice(-MAX_PENDING));
+      while (pending.size > MAX_SESSIONS) {
+        pending.delete(pending.keys().next().value);
+      }
+      return {
+        payload: { ...route, channelData: { slack: { blocks: renderBlocks(card, controls) } } },
+      };
+    } catch {
+      // Never let a rendering fault pass the marked JSON and evidence through.
+      return marked ? { payload: { ...route, text: INVALID_SUMMARY } } : undefined;
+    }
+  }
+
+  // ----------------------------------------------------------------- message_sent
+  function messageSent(event, ctx) {
+    try {
+      const sessionKey = event?.sessionKey ?? ctx?.sessionKey;
+      const session = parseSession(sessionKey);
+      const ts = event?.messageId;
+      const success = event?.success === true;
+      if (!session || (success && (typeof ts !== "string" || !SLACK_TS.test(ts)))) {
+        return;
+      }
+      const queue = pending.get(sessionKey);
+      if (!queue?.length) {
+        return;
+      }
+      const live = queue.filter((entry) => now() - entry.at <= PENDING_TTL_MS);
+      const content = typeof event.content === "string" ? event.content : "";
+      const sentRun = event.runId ?? ctx?.runId;
+      // The card is posted without text, so a confirmed card carries either no
+      // content or its own header text. Any other message (a plain reply, the
+      // invalid-summary notice) is not a card and keeps the queue. When both
+      // sides carry a run id they must agree.
+      const index = live.findIndex(
+        (entry) =>
+          (content.trim() === "" || content.includes(entry.headline)) &&
+          !(typeof sentRun === "string" && entry.runId && sentRun !== entry.runId),
+      );
+      const done = (list) => (list.length ? pending.set(sessionKey, list) : pending.delete(sessionKey));
+      if (index < 0 || (success && !tsAfter(ts, session.threadTs))) {
+        done(live);
+        return;
+      }
+      live.splice(index, 1);
+      done(live);
+      if (!success) {
+        // A failed card send leaves nothing in Slack: forget its pending entry.
+        return;
+      }
+      const known = boundedSet(cards, sessionKey, MAX_SESSIONS);
+      known.add(ts);
+      while (known.size > MAX_CARDS_PER_SESSION) {
+        known.delete(known.values().next().value);
+      }
+    } catch {
+      // Recording is best effort; a miss only blocks a later amendment.
+    }
+  }
+
+  // -------------------------------------------------------------- before_tool_call
+  const block = (reason) => ({ block: true, blockReason: reason });
+
+  function beforeToolCall(event, ctx) {
+    try {
+      if (event?.toolName !== "message") {
+        return undefined;
+      }
+      const params = event.params;
+      const action = typeof params?.action === "string" ? params.action.trim().toLowerCase() : "";
+      if (action !== "edit") {
+        return undefined;
+      }
+      const sessionKey = ctx?.sessionKey;
+      const debuggerSession =
+        typeof sessionKey === "string" ? sessionKey.startsWith("agent:debugger:") : false;
+      if (!debuggerSession) {
+        // Other agents keep their own policy. An edit with no session at all
+        // cannot be tied to a thread, so it is refused for the debugger only.
+        return ctx?.agentId === "debugger" ? block("Editing is not available in this context.") : undefined;
+      }
+      const session = parseSession(sessionKey);
+      if (!session) {
+        return block("Report amendments are only available inside an alert thread.");
+      }
+
+      // Target: any supplied target must be this thread's channel, and one must be present.
+      const channel = params.channel;
+      if (channel !== undefined && String(channel).trim().toLowerCase() !== "slack") {
+        return block("Report amendments are limited to this Slack thread.");
+      }
+      if (params.targets !== undefined) {
+        return block("Report amendments take a single target in this thread's channel.");
+      }
+      const targets = ["target", "to", "channelId"]
+        .map((key) => params[key])
+        .filter((value) => value !== undefined && value !== null && value !== "");
+      if (
+        targets.length === 0 ||
+        !targets.every((value) => readChannelId(value) === session.channelId)
+      ) {
+        return block("Report amendments must target this thread's channel.");
+      }
+
+      // Message: one well-formed ts that this plugin recorded as a card in this session.
+      const ids = [params.messageId, params.message_id].filter(
+        (value) => value !== undefined && value !== null && value !== "",
+      );
+      const messageId = ids[0];
+      if (
+        ids.length === 0 ||
+        typeof messageId !== "string" ||
+        !SLACK_TS.test(messageId) ||
+        !ids.every((value) => value === messageId)
+      ) {
+        return block("messageId must be the timestamp of your own summary card in this thread.");
+      }
+      if (!cards.get(sessionKey)?.has(messageId)) {
+        return block(
+          "Only a LiveX summary card this bot posted in this thread can be amended. " +
+            "That message is not one (or this gateway has restarted since it was posted).",
+        );
+      }
+
+      // Content: the same envelope the first reply used, through the same renderer.
+      const envelope = classifyEnvelope(params.message);
+      if (!envelope.marked || !envelope.card) {
+        return block(
+          `Amended content must use the summary envelope: ${SUMMARY_MARKER}, one JSON line with ` +
+            "the summary fields, a blank line, then the full report. Nothing else is accepted.",
+        );
+      }
+      let card = envelope.card;
+      const human = overrides.get(`${session.channelId}:${messageId}`);
+      if (human) {
+        // A person's button choice outranks the agent's re-assessment.
+        card = { ...card, priority: human.priority, provisional: human.provisional, resolved: human.resolved };
+      }
+      const controls = buttonsAllowed(session) ? controlsFor(card, session) : undefined;
+      return {
+        params: {
+          messageId,
+          message_id: messageId,
+          message: headlineOf(card),
+          presentation: renderPresentation(card, controls),
+        },
+      };
+    } catch {
+      // Only a hostile event can fault before the tool is classified, and an
+      // event that cannot be read is not safe to wave through.
+      return block("The amendment guard failed closed; the tool call was not applied.");
+    }
+  }
+
+  // ------------------------------------------------------------------ interactive
+  async function interactive(ctx) {
+    const reply = async (text) => {
+      try {
+        await ctx?.respond?.reply?.({ text, responseType: "ephemeral" });
+      } catch {
+        // Feedback is best effort.
+      }
+      return { handled: true };
+    };
+    try {
+      if (!config.buttons) {
+        return await reply("These controls are not enabled.");
+      }
+      if (ctx.senderId !== config.senderId) {
+        return await reply("Only the configured responder can change this card.");
+      }
+      const channelId = readChannelId(String(ctx.conversationId ?? "").trim());
+      if (!channelId || !channelAllowed(config, channelId)) {
+        return await reply("These controls are not enabled in this channel.");
+      }
+      const interaction = ctx.interaction;
+      if (interaction?.kind !== "button" || typeof interaction.messageTs !== "string") {
+        return await reply("This control could not be read.");
+      }
+      const payload = typeof interaction.payload === "string" ? interaction.payload : "";
+      const separator = payload.indexOf(":");
+      const choice = separator > 0 ? payload.slice(0, separator) : "";
+      const bind = {
+        channelId,
+        threadTs: String(interaction.threadTs ?? ctx.threadId ?? ""),
+      };
+      const card = CHOICES.has(choice)
+        ? decodeState(payload.slice(separator + 1), refs, bind, key)
+        : undefined;
+      if (!card) {
+        return await reply(
+          "This card's controls are invalid or expired. Mention the bot in the thread for an updated card.",
+        );
+      }
+      const next = applyChoice(card, choice);
+      await ctx.respond.editMessage({
+        text: headlineOf(next),
+        blocks: renderBlocks(next, controlsFor(next, bind)),
+      });
+      const cardKey = `${channelId}:${interaction.messageTs}`;
+      overrides.delete(cardKey);
+      overrides.set(cardKey, {
+        priority: next.priority,
+        provisional: next.provisional,
+        resolved: next.resolved,
+      });
+      while (overrides.size > MAX_OVERRIDES) {
+        overrides.delete(overrides.keys().next().value);
+      }
+      return { handled: true };
+    } catch {
+      return await reply("Could not update the card. Try again.");
+    }
+  }
+
+  return { config, setKey: (next) => void (key = next), replyPayloadSending, messageSent, beforeToolCall, interactive };
+}
