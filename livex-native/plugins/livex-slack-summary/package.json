@@ -7,10 +7,11 @@
   "files": [
     "index.ts",
     "core.mjs",
+    "priority.mjs",
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "test": "node --test index.test.mjs interactive.test.mjs amend.test.mjs attachments.test.mjs"
+    "test": "node --test index.test.mjs interactive.test.mjs amend.test.mjs attachments.test.mjs priority.test.mjs"
   },
   "peerDependencies": {
     "openclaw": ">=2026.10.5"
