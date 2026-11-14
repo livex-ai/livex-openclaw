@@ -600,7 +600,10 @@ export function readConfig(raw) {
     typeof record.gcpProject === "string" && GCP_PROJECT.test(record.gcpProject)
       ? record.gcpProject
       : undefined;
-  return { senderId, channelId, gcpProject, buttons: Boolean(senderId && channelId) };
+  // `buttons: false` turns the priority buttons (and their click handler and key file)
+  // off even when both gates are set; the guarded amendments do not depend on them.
+  const buttonsOff = record.buttons === false;
+  return { senderId, channelId, gcpProject, buttons: !buttonsOff && Boolean(senderId && channelId) };
 }
 
 function channelAllowed(config, channelId) {

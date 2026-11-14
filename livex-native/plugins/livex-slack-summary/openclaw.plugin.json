@@ -10,6 +10,10 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "buttons": {
+        "type": "boolean",
+        "description": "Set false to post cards without the priority buttons (no click handler, no key file). Defaults to on when allowedChannelId and allowedSenderId are both set."
+      },
       "allowedChannelId": {
         "type": "string",
         "pattern": "^(?:\\*|[CG][A-Z0-9]+)$",

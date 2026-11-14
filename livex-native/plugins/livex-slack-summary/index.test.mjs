@@ -304,3 +304,10 @@ test("a card has no header or plain-text section, only mrkdwn sections in the PR
   );
   assert.ok(blocks.slice(0, 5).every((block) => block.text.type === "mrkdwn" && block.text.verbatim === true));
 });
+
+test("buttons: false posts cards without buttons and registers no click handler", async () => {
+  const { readConfig } = await import("./core.mjs");
+  assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED", buttons: false }).buttons, false);
+  assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED" }).buttons, true);
+  assert.equal(readConfig({ allowedChannelId: "*", allowedSenderId: "U0ALLOWED", buttons: true }).buttons, true);
+});

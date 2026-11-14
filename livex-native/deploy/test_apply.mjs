@@ -197,6 +197,7 @@ test("fresh install registers the Debugger route and enables its Slack summary",
   assert.ok(config.plugins.allow.includes("livex-slack-summary"));
   assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
   assert.deepEqual(config.plugins.entries["livex-slack-summary"].config, {
+    buttons: false,
     allowedChannelId: "*",
     allowedSenderId: "${SLACK_SENDER_ID}",
   });

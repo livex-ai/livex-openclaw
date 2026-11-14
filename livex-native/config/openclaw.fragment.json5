@@ -52,9 +52,11 @@
       "memory-core": { config: { dreaming: { enabled: false } } },
       "livex-slack-summary": {
         enabled: true,
-        // Both are needed for the priority buttons; without them the card has no
-        // buttons. Report amendments (message action "edit") do not depend on them.
+        // Priority buttons are off: Slack clicks never reached the Gateway on DEV.
+        // Set buttons: true (with both gates below) to bring them back. Report
+        // amendments (message action "edit") do not depend on them.
         config: {
+          buttons: false,
           allowedChannelId: "*",
           allowedSenderId: "${SLACK_SENDER_ID}",
         },
