@@ -143,14 +143,36 @@ function writeConfigAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// remote.sh runs apply in a fresh container right after stopping the Gateway. OpenClaw
+// refuses CLI config reads while the stopped Gateway's owner heartbeat is still fresh
+// (up to 90 s), because a different PID namespace cannot verify the owner. Wait it out.
+const ownerWaitMs = Number(process.env.LIVEX_OWNER_WAIT_MS ?? 150_000);
+const ownerPollMs = Number(process.env.LIVEX_OWNER_POLL_MS ?? 5_000);
+const OWNER_BUSY = /cannot verify Gateway ownership/;
+
 function runCli(args) {
   const [cmd, ...head] = openclawCmd;
-  return spawnSync(cmd, [...head, ...args], { encoding: "utf8", env: process.env });
+  const deadline = Date.now() + ownerWaitMs;
+  for (let announced = false; ; ) {
+    const result = spawnSync(cmd, [...head, ...args], { encoding: "utf8", env: process.env });
+    const busy = result.status !== 0 && OWNER_BUSY.test(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+    if (!busy || Date.now() >= deadline) return result;
+    if (!announced) {
+      console.log("openclaw: the stopped Gateway's owner heartbeat is still fresh; waiting for it to expire");
+      announced = true;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ownerPollMs);
+  }
+}
+
+function cliFailed(what, result) {
+  process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+  return new Error(`${what} failed (exit ${result.status})`);
 }
 
 function listedPlugins() {
   const result = runCli(["plugins", "list", "--json"]);
-  if (result.status !== 0) throw new Error("`plugins list --json` failed");
+  if (result.status !== 0) throw cliFailed("`plugins list --json`", result);
   const start = result.stdout.indexOf("{");
   const parsed = JSON.parse(result.stdout.slice(start));
   return new Map((parsed.plugins ?? []).map((plugin) => [plugin.id, plugin]));
@@ -158,7 +180,7 @@ function listedPlugins() {
 
 function inspectSlack() {
   const inspected = runCli(["plugins", "inspect", "slack", "--json"]);
-  if (inspected.status !== 0) throw new Error("`plugins inspect slack --json` failed");
+  if (inspected.status !== 0) throw cliFailed("`plugins inspect slack --json`", inspected);
   return JSON.parse(inspected.stdout.slice(inspected.stdout.indexOf("{")));
 }
 

@@ -50,7 +50,7 @@ function priorOncall(workspace) {
   };
 }
 
-function fixture(t, { includeOncall = false, stockSlack = false, patchFragment } = {}) {
+function fixture(t, { includeOncall = false, stockSlack = false, patchFragment, ownerBusyTimes = 0 } = {}) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "livex-apply-"));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const configPath = path.join(state, "openclaw.json");
@@ -70,6 +70,13 @@ function fixture(t, { includeOncall = false, stockSlack = false, patchFragment }
     const args = process.argv.slice(2).join(" ");
     const version = ${JSON.stringify(pinnedSlack)};
     const installRecord = ${JSON.stringify(installRecord)};
+    const busyFile = ${JSON.stringify(path.join(state, "owner-busy-count"))};
+    const busySoFar = fs.existsSync(busyFile) ? Number(fs.readFileSync(busyFile, "utf8")) : 0;
+    if (busySoFar < ${ownerBusyTimes}) {
+      fs.writeFileSync(busyFile, String(busySoFar + 1));
+      console.error("Failed to read config: cannot verify Gateway ownership from this process (different PID namespace)");
+      process.exit(1);
+    }
     if (args === "plugins list --json") {
       console.log(JSON.stringify({ plugins: [{ id: "codex" }, { id: "slack", version }] }));
     } else if (args === "plugins inspect slack --json") {
@@ -135,6 +142,20 @@ function fixture(t, { includeOncall = false, stockSlack = false, patchFragment }
   };
   return { state, configPath, oncallWorkspace, run, read, seed, applyTwice };
 }
+
+test("waits for a stopped Gateway's fresh owner heartbeat, then gives up with the CLI error", (t) => {
+  const waits = fixture(t, { ownerBusyTimes: 2 });
+  const ok = waits.run({ LIVEX_OWNER_WAIT_MS: "5000", LIVEX_OWNER_POLL_MS: "10" });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /owner heartbeat is still fresh; waiting/);
+
+  const stuck = fixture(t, { ownerBusyTimes: 1000 });
+  const failed = stuck.run({ LIVEX_OWNER_WAIT_MS: "50", LIVEX_OWNER_POLL_MS: "10" });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /cannot verify Gateway ownership/);
+  assert.match(failed.stderr, /`plugins list --json` failed \(exit 1\)/);
+  assert.equal(fs.existsSync(stuck.configPath), false, "nothing written when the CLI never becomes available");
+});
 
 test("replaces same-version stock Slack with the release archive once", (t) => {
   const { run } = fixture(t, { stockSlack: true });
