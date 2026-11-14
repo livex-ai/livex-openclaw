@@ -99,8 +99,8 @@ paragraph:
 
 ## 6. agents/debugger/skills/investigate-alerts/SKILL.md
 
-Recording is automatic: the plugin reads the `LIVEX_ALERT_SUMMARY_V2` envelope
-(`title`, `signature`, `priority`, `resolved`, `summary`) from the final reply, so
+Recording is automatic: the plugin reads the `LIVEX_ALERT_SUMMARY_V3` envelope
+(`title`, `signature`, the facts, `resolved`, `summary`) from the final reply, so
 the envelope `signature` must be `service | operation | error class` in plain words
 without ids or numbers. `investigation_record` is only for additional distinct
 issues in the same reply. The livex-slack-summary plugin must keep its
@@ -117,7 +117,9 @@ investigation"; this file is being edited by another worker, so merge with their
 +     numbers, timestamps or request ids (for example
 +     `checkout-api | create order | upstream timeout`). Reuse the signature shown
 +     in a prior-case block or lookup when it is the same failure.
-+   - `priority`: the priority you assigned (`critical|high|medium|low|unknown`).
++   - the ten facts (`alertClass` through `clientEffectVerified`) and optional
++     `knownRef`, as in the envelope. There is no `priority` parameter: the
++     stored priority is computed from the facts.
 +   - `resolved`: true only when recovery is evidenced for this occurrence.
 +   - `finding`: one factual sentence, no customer names or personal data.
 +   - `trend` (optional): how this compares with the prior occurrences you saw.
@@ -126,8 +128,9 @@ investigation"; this file is being edited by another worker, so merge with their
 +   ownership and resolution in it as stale until current evidence confirms them.
 ```
 
-The summary-card `resolved` field and the `priority` JSON field should match the
-values passed to `investigation_record`.
+The summary-card
+`resolved` field and facts should match the values passed to `investigation_record`
+for the same signature.
 
 ## 7. Verification to run after wiring (not done here)
 

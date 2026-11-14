@@ -1,4 +1,4 @@
-> Note: parts of this proposal predate the V2 card (Title / Priority / Next action / Summary / Evidence sections), the file-based signing key and the no-`respond` refusal rule; section 0 and `README.md` describe the current behavior.
+> Note: parts of this proposal predate the V3 card (the model reports facts in a `LIVEX_ALERT_SUMMARY_V3` envelope and the plugin computes the priority; the Why line), the file-based signing key and the no-`respond` refusal rule; section 0, `README.md` and the debugger's `AGENTS.md`/`SKILL.md` describe the current behavior.
 
 # Wiring proposal for step 4 (priority buttons and report amendments)
 
@@ -268,13 +268,14 @@ reactions" sentence.
   session's thread: not a human's message, not another agent's, not another thread's card, not
   an ordinary reply, not a message from before the last gateway restart. Every refusal returns
   a reason as the tool result.
-- The edit content must be the same `LIVEX_ALERT_SUMMARY_V2` envelope; everything else is
-  refused. The full report after the blank line is dropped, as in the first reply.
+- The edit content must be the same `LIVEX_ALERT_SUMMARY_V3` envelope (its priority is
+  recomputed from the facts); everything else is refused. The full report after the blank
+  line is dropped, as in the first reply.
 - Other `message` actions (`read`, `reactions`, ...) are untouched by the guard; they remain
   governed by `message.actions.allow`. Other agents' sessions are not touched at all. A
   debugger edit with no thread-bound session is refused.
-- A button click changes the card's priority or resolved state. A priority click clears
-  `provisional` and reopens a resolved card; Resolved keeps the priority ("Resolved · was High").
+- A button click changes the card's priority or resolved state. A priority click reopens a
+  resolved card; Resolved keeps the priority ("Resolved · was High").
 - The agent never sees clicks. Its guard keeps a person's priority/resolved state on later
   amendments until the gateway restarts.
 

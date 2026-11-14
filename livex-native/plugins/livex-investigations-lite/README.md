@@ -6,7 +6,7 @@ on public plugin APIs: no core patches, no files on disk, no second agent.
 
 ## What it does
 
-1. **Remember.** The debugger's final reply carries a `LIVEX_ALERT_SUMMARY_V2`
+1. **Remember.** The debugger's final reply carries a `LIVEX_ALERT_SUMMARY_V3`
    envelope; the plugin stages a case from it automatically (see below), so the
    model does not have to call anything. `investigation_record` remains for
    additional distinct issues. Either way the note is saved only after Slack
@@ -33,7 +33,7 @@ one value per signature key `sig:<sha256 prefix>`:
 
 ```
 { signature, title, firstSeen, lastSeen, totalOccurrences,
-  occurrences: [{ at, priority, resolved, finding,
+  occurrences: [{ at, priority, ruleId?, facts?, resolved, finding,
                   thread: { channel, threadTs, replyTs? } }],   // newest 10
   notes: [{ text, channel }] }                                  // newest 5
 ```
@@ -71,7 +71,7 @@ a recall hint, not proof of identity: the agent must verify against current evid
 
 ## Auto-record from the summary envelope
 
-The final reply starts with `LIVEX_ALERT_SUMMARY_V2`, one JSON line, a blank line
+The final reply starts with `LIVEX_ALERT_SUMMARY_V3`, one JSON line, a blank line
 and the report. The `reply_payload_sending` hook is registered with
 `priority: 100` (hooks sort higher first, `src/plugins/hooks.ts:178-188`;
 `api.on(name, handler, { priority })` per `PluginHookRegistrationOptions`,
@@ -79,17 +79,19 @@ and the report. The `reply_payload_sending` hook is registered with
 `livex-slack-summary` turns it into a card. It never modifies the payload and
 always returns `undefined`.
 
-Parsing is strict: the first line must be exactly the V2 marker (a V1 marker or a
-misplaced marker records nothing), the second line must be a JSON object with only
-the known keys `title`, `signature`, `priority`, `provisional`, `resolved`
-(optional), `summary`, `nextAction`, `owner`, `checkedWindow`, `evidenceUrl`
-(optional), all required ones present and within their length bounds. Anything
-else records nothing. Mapping: `signature` to the case signature (then normalized
-like the tool's), `priority` and `resolved` directly (`resolved` defaults to
-false), `finding` = `summary` (bounded to 240 chars), `title` = `title`, no trend.
-Records already staged by `investigation_record` in the same run are kept; on a
-shared signature the tool's record wins. The usual tag-and-commit-on-`message_sent`
-flow then saves it.
+Parsing is strict and matches `livex-slack-summary`: the first line must be exactly
+the V3 marker (an older or misplaced marker records nothing), the second line a JSON
+object with only the card's keys (`title`, `signature`, the ten facts, `summary`,
+`nextAction`, `owner`, `checkedWindow`, optional `knownRef`, `resolved`,
+`evidenceUrl`, `alternates`), all valid. `priority` and `provisional` are rejected
+keys. Mapping: `signature` to the case signature (then normalized like the tool's),
+the facts and `resolved` directly, `finding` = `summary` (bounded to 240 chars),
+`title` = `title`, no trend. The model never writes a priority: at commit the case
+stores the card's computed priority (and `ruleId`) for the card's own signature,
+else the priority engine's rating of the record's facts, else `unrated`. On a
+signature shared with an `investigation_record` call, the envelope's facts, resolved
+state and title are kept with the tool's finding and trend. The usual
+tag-and-commit-on-`message_sent` flow then saves it.
 
 ## Diagnosing a silent run
 
@@ -99,7 +101,7 @@ never with content: `record staged: source=envelope|tool`, `reply tagged`, `case
 committed`, `message_sent ignored: <reason>`, and `record dropped: <reason>` with
 reason one of `sender-gate`, `channel-gate`, `agent-gate`, `no-run-id`,
 `run-mismatch`, `superseded by a newer run`, `send-failed`, `expired`,
-`no-message_sent`. `final reply has no V2 envelope` means the final text did not
+`no-message_sent`. `final reply has no V3 envelope` means the final text did not
 carry the marker. The plugin does not use `api.logger` because the host's subsystem
 logger filters by console level; the gateway's own lines come from the same console.
 
@@ -112,8 +114,8 @@ a newer prompt build, an expiry, or a missing `runId` on the reply drops it.
 
 ## Failure visibility
 
-A V2-marked envelope that cannot be recorded logs one warning with only a fixed
-reason (`summary envelope not recorded: invalid envelope: missing key`, `...: signature too generic`, and so on; field names at most, never values). Text without the V2 marker stays silent.
+A V3-marked envelope that cannot be recorded logs one warning with only a fixed
+reason (`summary envelope not recorded: invalid envelope: missing key`, `...: signature too generic`, and so on; field names at most, never values). Text without the V3 marker stays silent.
 
 Every store open, read or commit failure is logged with `console.warn`
 (see above for why not `api.logger`): `[livex-investigations-lite] store
