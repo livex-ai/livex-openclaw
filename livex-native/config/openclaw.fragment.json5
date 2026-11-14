@@ -160,7 +160,9 @@
             "skills_read",
             "message",
             "livex_gcp_logs_read",
-            "livex_gcp_metrics_read",
+            // livex_gcp_metrics_read (read-only Cloud Monitoring) is registered by
+            // livex-gcp-readonly but not allowed: the service account has no
+            // Monitoring read role. Add it here once roles/monitoring.viewer is granted.
             "livex_repository_read",
             "investigation_record",
             "investigation_lookup",

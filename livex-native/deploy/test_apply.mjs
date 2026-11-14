@@ -202,7 +202,8 @@ test("fresh install registers the Debugger route and enables its Slack summary",
     allowedSenderId: "${SLACK_SENDER_ID}",
   });
   assert.ok(config.agents.entries.debugger.tools.message.actions.allow.includes("edit"));
-  assert.ok(config.agents.entries.debugger.tools.allow.includes("livex_gcp_metrics_read"));
+  // No Monitoring read role on the service account: the metrics tool stays off the allowlist.
+  assert.ok(!config.agents.entries.debugger.tools.allow.includes("livex_gcp_metrics_read"));
   assert.ok(config.plugins.allow.includes("livex-investigations-lite"));
   const lite = config.plugins.entries["livex-investigations-lite"];
   assert.equal(lite.enabled, true);
