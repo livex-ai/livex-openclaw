@@ -1025,6 +1025,27 @@ test("an envelope with alternates stages only the main record", async () => {
   assert.equal(readSummaryEnvelope(v3Envelope({ alternates: [{ ...alternate, signature: "x | y" }] })).record, undefined);
 });
 
+test("a card whose priority came from an alternate is stored with the registry's primary priority", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  // The card plugin keeps the main signature and publishes the displayed level and the rule that set it.
+  const primary = { signature: "checkout-api | create order | upstream timeout", priority: "high", ruleId: "live-broad" };
+  const compute = () => ({ priority: "medium", ruleId: "live-narrow" });
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary, compute }]]) };
+  try {
+    const alternate = { title: "Other category", ...v3Facts, sampleAffected: 4 };
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    sendFinal(env, { runId: "r1", payload: { text: v3Envelope({ alternates: [alternate] }) } });
+    await sent(env);
+    const rows = await env.store.entries();
+    assert.equal(rows.length, 1);
+    const last = rows[0].value.occurrences.at(-1);
+    assert.deepEqual([last.priority, last.ruleId], ["high", "live-broad"]);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
 test("stored V2 occurrences (priority, no facts) still load and render as stored", async () => {
   const env = setup();
   await env.store.register(signatureKey("checkout-api | create-order | upstream-timeout"), {

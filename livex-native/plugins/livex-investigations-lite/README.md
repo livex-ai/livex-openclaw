@@ -138,7 +138,7 @@ needed; tool reads additionally pass the invocation authority.
 | --- | --- | --- |
 | observe | `before_prompt_build` | Records the turn's `runId` per session (before any sender gate); a different `runId` than the one that staged a pending entry discards it |
 | stage | `investigation_record` | In-memory pending entry keyed by the thread's session key, stamped with the session's current `runId` |
-| envelope | `reply_payload_sending` (`kind: "final"`, Slack), priority 100 | Parses the V2 summary envelope and stages a record bound to the session's current `runId` (see Auto-record) |
+| envelope | `reply_payload_sending` (`kind: "final"`, Slack), priority 100 | Parses the V3 summary envelope (`LIVEX_ALERT_SUMMARY_V3`) and stages a record bound to the session's current `runId` (see Auto-record) |
 | tag | `reply_payload_sending` (`kind: "final"`, Slack) | Tags the entry only when the event `runId` equals the staging `runId` (and `senderId`, when present, is the allowed sender); never alters the payload |
 | commit | `message_sent` with `success: true` | Writes the case; records `messageId` as the reply ts when it is a Slack ts |
 
