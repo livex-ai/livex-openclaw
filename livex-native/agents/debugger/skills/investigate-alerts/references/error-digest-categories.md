@@ -159,7 +159,7 @@ report.
 Per category, `sustained` is true when it was also in the previous digest for
 the same service, or its `count` buckets show it in at least 3 hours of this
 digest's window (proposed). A burst confined to one or two hours is false.
-On a busy workload start with a shorter count window: `complete: false` gives
+On a busy workload start with a 1-hour count window: `complete: false` gives
 lower bounds and blocks "no client effect" for the thread.
 
 ## Known patterns
