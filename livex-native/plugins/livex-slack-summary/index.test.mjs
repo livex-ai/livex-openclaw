@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import { ENVELOPE_REMINDER, INVALID_SUMMARY, colorOf } from "./core.mjs";
+import { SESSION, cardOf, cardText, factsOf, linked, load, postCard, recordOutcomes, recordRead, summary } from "./test-helpers.mjs";
 
 const sdkHook = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -36,6 +38,7 @@ entry.register({
 });
 assert.deepEqual([...hooks.keys()].sort(), [
   "after_tool_call",
+  "before_prompt_build",
   "before_tool_call",
   "message_sent",
   "reply_payload_sending",
@@ -44,31 +47,21 @@ assert.equal(interactive, undefined);
 const render = hooks.get("reply_payload_sending");
 assert.equal(typeof render, "function");
 
-const summary = {
-  title: "checkout-api upstream timeouts",
-  signature: "checkout-api | create order | upstream timeout",
-  priority: "medium",
-  provisional: true,
-  summary: "An upstream timeout was recovered by the request retry.",
-  nextAction: "Confirm whether later requests needed retries.",
-  owner: "Unassigned",
-  checkedWindow: "2026-01-21 12:20–12:25 UTC",
-  evidenceUrl: "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22",
-};
 const evidence = "The complete report includes private correlation IDs and diagnostics.";
-const mark = "LIVEX_ALERT_SUMMARY_V2";
+const mark = "LIVEX_ALERT_SUMMARY_V3";
 const HINT = "Mention this bot in the thread for full evidence.";
 const EVIDENCE_LINK = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22";
 const flat = (slack) => [slack.blocks[0], ...slack.attachments[0].blocks, ...slack.blocks.slice(1)];
 const mrkdwn = (text) => ({ type: "section", text: { type: "mrkdwn", text, verbatim: true } });
 const envelope = (fields, full = evidence) => `${mark}\n${JSON.stringify(fields)}\n\n${full}`;
 // The evidence link counts only when the log tool returned it in the same session.
+// The id-scoped read is also an outcome read; three make "no client effect" possible.
 const recordLink = (sessionKey) =>
   hooks.get("after_tool_call")(
     {
       toolName: "livex_gcp_logs_read",
-      params: {},
-      result: { content: [], details: { project: "livex-copilot-prd", entries: [{ entryUrl: summary.evidenceUrl }] } },
+      params: { insertIds: ["abc123"] },
+      result: { content: [], details: { project: "livex-copilot-prd", entries: [{ entryUrl: linked.evidenceUrl }] } },
     },
     { toolName: "livex_gcp_logs_read", sessionKey },
   );
@@ -78,10 +71,10 @@ const event = {
   channel: "slack",
   sessionKey: "agent:debugger:slack:channel:c123:thread:1768996800.000001",
 };
-recordLink(event.sessionKey);
+for (let index = 0; index < 3; index += 1) recordLink(event.sessionKey);
 
 test("registered hook emits only a compact card and preserves the original evidence and route", () => {
-  const text = envelope(summary);
+  const text = envelope(linked);
   const payload = Object.freeze({
     ...route,
     text,
@@ -101,15 +94,17 @@ test("registered hook emits only a compact card and preserves the original evide
             color: "#D99A00",
             fallback: [
               "*Title:* checkout-api upstream timeouts",
-              "*Priority:* \u{1F7E1} Medium (provisional)",
-              `*Next action:* ${summary.nextAction} (Owner: Unassigned)`,
-              `*Summary:* ${summary.summary}`,
+              "*Priority:* \u{1F7E1} Medium",
+              "*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · users affected: one customer or a minority of the sample",
+              `*Next action:* ${linked.nextAction} (Owner: Unassigned)`,
+              `*Summary:* ${linked.summary}`,
               "*Evidence:* Logs · Checked window: 2026-01-21 12:20–12:25 UTC",
             ].join("\n"),
             blocks: [
-              mrkdwn("*Priority:* \u{1F7E1} Medium (provisional)"),
-              mrkdwn(`*Next action:* ${summary.nextAction} (Owner: Unassigned)`),
-              mrkdwn(`*Summary:* ${summary.summary}`),
+              mrkdwn("*Priority:* \u{1F7E1} Medium"),
+              mrkdwn("*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · users affected: one customer or a minority of the sample"),
+              mrkdwn(`*Next action:* ${linked.nextAction} (Owner: Unassigned)`),
+              mrkdwn(`*Summary:* ${linked.summary}`),
               mrkdwn(`*Evidence:* <${EVIDENCE_LINK}|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC`),
               { type: "context", elements: [{ type: "plain_text", text: HINT }] },
             ],
@@ -126,24 +121,25 @@ test("registered hook emits only a compact card and preserves the original evide
   );
 });
 
-test("renders model fields as literal text and supports unknown priority without a link", () => {
+test("renders model fields as literal text and a computed low priority without a link", () => {
   const body = "Model text with <!channel> and *formatting* and @here stays literal.";
-  const text = envelope({ ...summary, priority: "unknown", summary: body, evidenceUrl: null }).replaceAll(
+  const text = envelope({ ...linked, sampleAffected: 0, summary: body, evidenceUrl: null }).replaceAll(
     "\n",
     "\r\n",
   );
   const blocks = flat(render({ ...event, payload: { text } }).payload.channelData.slack);
-  assert.equal(blocks[1].text.text, "*Priority:* \u26AA Unknown");
+  assert.equal(blocks[1].text.text, "*Priority:* \u26AA Low");
+  assert.equal(blocks[2].text.text, "*Why:* no client effect found (5 sampled) · known: no · alert: error · no user impact found");
   assert.equal(
-    blocks[3].text.text,
+    blocks[4].text.text,
     "*Summary:* Model text with &lt;!channel&gt; and *\u200Dformatting*\u200D and @\u200Dhere stays literal.",
   );
-  assert.equal(blocks[3].text.verbatim, true);
-  assert.equal(blocks[4].text.text, `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`);
+  assert.equal(blocks[4].text.verbatim, true);
+  assert.equal(blocks[5].text.text, `*Evidence:* No verified evidence link · Checked window: ${linked.checkedWindow}`);
   // An absent evidenceUrl is the same as null.
-  const { evidenceUrl: _drop, ...noUrl } = summary;
+  const { evidenceUrl: _drop, ...noUrl } = linked;
   assert.equal(
-    flat(render({ ...event, payload: { text: envelope(noUrl) } }).payload.channelData.slack)[4].text.text.startsWith(
+    flat(render({ ...event, payload: { text: envelope(noUrl) } }).payload.channelData.slack)[5].text.text.startsWith(
       "*Evidence:* No verified evidence link",
     ),
     true,
@@ -153,36 +149,59 @@ test("renders model fields as literal text and supports unknown priority without
 test("malformed marked output cannot pass through JSON, diagnostics, or unsafe URLs", () => {
   const cases = [
     mark,
-    "Here is the summary.\n" + envelope(summary),
-    "Here is the summary.\r\n  " + envelope(summary).replaceAll("\n", "\r\n"),
-    "```json\n" + envelope(summary) + "\n```",
+    "Here is the summary.\n" + envelope(linked),
+    "Here is the summary.\r\n  " + envelope(linked).replaceAll("\n", "\r\n"),
+    "```json\n" + envelope(linked) + "\n```",
     `${mark}\n{invalid json}\n\n${evidence}`,
-    `${mark}\n${JSON.stringify(summary)}\n${evidence}`,
-    envelope(summary, " "),
-    envelope({ ...summary, additional: "extra key" }),
-    envelope({ ...summary, checkedWindow: undefined }),
-    envelope({ ...summary, title: undefined }),
-    envelope({ ...summary, signature: undefined }),
-    envelope({ ...summary, title: "x".repeat(121) }),
-    envelope({ ...summary, signature: "x".repeat(161) }),
-    envelope({ ...summary, summary: "x".repeat(601) }),
-    envelope({ ...summary, nextAction: "x".repeat(301) }),
-    envelope({ ...summary, owner: "x".repeat(81) }),
-    envelope({ ...summary, checkedWindow: "x".repeat(81) }),
-    envelope({ ...summary, summary: "x".repeat(4097) }),
-    envelope({ ...summary, impact: "the retired V1 field" }),
-    `LIVEX_ALERT_SUMMARY_V1\n${JSON.stringify(summary)}\n\n${evidence}`,
-    `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify(summary)}\n\n${evidence}`,
-    envelope({ ...summary, nextAction: "Line one\nLine two" }),
-    envelope({ ...summary, title: " " }),
-    envelope({ ...summary, summary: "Hidden\u0000control" }),
-    envelope({ ...summary, owner: " " }),
-    envelope({ ...summary, priority: "urgent" }),
-    envelope({ ...summary, provisional: "yes" }),
-    envelope({ ...summary, resolved: "true" }),
-    envelope({ ...summary, resolved: 1 }),
-    envelope({ ...summary, resolved: null }),
-    envelope({ ...summary, evidenceUrl: 42 }),
+    `${mark}\n${JSON.stringify(linked)}\n${evidence}`,
+    envelope(linked, " "),
+    envelope({ ...linked, additional: "extra key" }),
+    envelope({ ...linked, checkedWindow: undefined }),
+    envelope({ ...linked, title: undefined }),
+    envelope({ ...linked, signature: undefined }),
+    envelope({ ...linked, title: "x".repeat(121) }),
+    envelope({ ...linked, signature: "x".repeat(161) }),
+    envelope({ ...linked, summary: "x".repeat(601) }),
+    envelope({ ...linked, nextAction: "x".repeat(301) }),
+    envelope({ ...linked, owner: "x".repeat(81) }),
+    envelope({ ...linked, checkedWindow: "x".repeat(81) }),
+    envelope({ ...linked, summary: "x".repeat(4097) }),
+    envelope({ ...linked, impact: "the retired V1 field" }),
+    `LIVEX_ALERT_SUMMARY_V1\n${JSON.stringify(linked)}\n\n${evidence}`,
+    `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify(linked)}\n\n${evidence}`,
+    `LIVEX_ALERT_SUMMARY_V4\n${JSON.stringify(linked)}\n\n${evidence}`,
+    envelope({ ...linked, nextAction: "Line one\nLine two" }),
+    envelope({ ...linked, title: " " }),
+    envelope({ ...linked, summary: "Hidden\u0000control" }),
+    envelope({ ...linked, owner: " " }),
+    envelope({ ...linked, priority: "urgent" }),
+    envelope({ ...linked, priority: "high" }),
+    envelope({ ...linked, provisional: "yes" }),
+    envelope({ ...linked, alertClass: "GKE errors" }),
+    envelope({ ...linked, service: "x" }),
+    envelope({ ...linked, alertSeverity: "critical" }),
+    envelope({ ...linked, sustained: "yes" }),
+    envelope({ ...linked, known: "maybe" }),
+    envelope({ ...linked, scope: "all" }),
+    envelope({ ...linked, traffic: "prod" }),
+    envelope({ ...linked, clientEffectVerified: 1 }),
+    envelope({ ...linked, sampleChecked: "5" }),
+    envelope({ ...linked, sampleAffected: null }),
+    envelope({ ...linked, knownRef: "" }),
+    envelope({ ...linked, knownRef: "LX-1\nLX-2" }),
+    envelope({ ...linked, knownRef: "x".repeat(201) }),
+    envelope({ ...linked, traffic: undefined }),
+    envelope({ ...linked, alternates: {} }),
+    envelope({ ...linked, alternates: Array.from({ length: 5 }, () => ({ ...factsOf(linked), title: "t" })) }),
+    envelope({ ...linked, alternates: [{ ...factsOf(linked) }] }),
+    envelope({ ...linked, alternates: [{ ...factsOf(linked), title: "t", priority: "high" }] }),
+    envelope({ ...linked, alternates: [{ ...factsOf(linked), title: "t", sampleAffected: 9 }] }),
+    envelope({ ...linked, alternates: [{ title: "t", alertClass: "a-b" }] }),
+    envelope({ ...linked, alternates: [null] }),
+    envelope({ ...linked, resolved: "true" }),
+    envelope({ ...linked, resolved: 1 }),
+    envelope({ ...linked, resolved: null }),
+    envelope({ ...linked, evidenceUrl: 42 }),
   ];
   for (const text of cases) {
     assert.deepEqual(render({ ...event, payload: { ...route, text, spokenText: evidence } }), {
@@ -198,20 +217,23 @@ test("an over-long evidence link is dropped and the card still posts", () => {
   const long = `https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22a%22${"%20OR%20insertId%3D%22b%22".repeat(80)}`;
   assert.ok(long.length > 2000);
   logged.length = 0;
-  const slack = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl: long }) } })
+  const slack = render({ ...event, payload: { ...route, text: envelope({ ...linked, evidenceUrl: long }) } })
     .payload.channelData.slack;
-  assert.match(flat(slack)[4].text.text, /^\*Evidence:\* No verified evidence link · /u);
+  assert.match(flat(slack)[5].text.text, /^\*Evidence:\* No verified evidence link · /u);
   assert.deepEqual(logged, []);
 });
 
 test("an invalid card logs one fixed reason line with no card content", () => {
   const cases = [
-    [envelope({ ...summary, owner: "SECRET-OWNER".repeat(20) }), "invalid field owner"],
-    [envelope({ ...summary, extra: "SECRET-KEY-VALUE" }), "unknown key"],
-    [`${mark}\n${JSON.stringify(summary)}\nSECRET-BODY`, "bad layout"],
+    [envelope({ ...linked, owner: "SECRET-OWNER".repeat(20) }), "invalid field owner"],
+    [envelope({ ...linked, extra: "SECRET-KEY-VALUE" }), "unknown key"],
+    [`${mark}\n${JSON.stringify(linked)}\nSECRET-BODY`, "bad layout"],
     [`${mark}\n{SECRET json\n\nSECRET-BODY`, "bad json"],
-    [envelope({ ...summary, evidenceUrl: 42 }), "invalid field evidenceUrl"],
-    [envelope({ ...summary, title: undefined }), "missing field title"],
+    [envelope({ ...linked, evidenceUrl: 42 }), "invalid field evidenceUrl"],
+    [envelope({ ...linked, title: undefined }), "missing field title"],
+    [envelope({ ...linked, known: "SECRET" }), "invalid field known"],
+    [envelope({ ...linked, provisional: true }), "unknown key"],
+    [envelope({ ...linked, alternates: [{ title: "SECRET" }] }), "invalid field alternates"],
   ];
   for (const [text, reason] of cases) {
     logged.length = 0;
@@ -235,17 +257,17 @@ test("drops evidence links outside the Logs Explorer host but still posts the ca
     `https://console.cloud.google.com/?x${"&x".repeat(400)}`,
   ];
   for (const evidenceUrl of dropped) {
-    const slack = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl }) } })
+    const slack = render({ ...event, payload: { ...route, text: envelope({ ...linked, evidenceUrl }) } })
       .payload.channelData.slack;
     const blocks = flat(slack);
-    assert.equal(blocks.length, 6);
-    assert.match(blocks[4].text.text, /^\*Evidence:\* No verified evidence link · Checked window: /u);
+    assert.equal(blocks.length, 7);
+    assert.match(blocks[5].text.text, /^\*Evidence:\* No verified evidence link · Checked window: /u);
     assert.doesNotMatch(JSON.stringify(blocks), /<https?:/u);
   }
   const allowed = flat(render({
     ...event,
-    payload: { ...route, text: envelope({ ...summary, evidenceUrl: `${EVIDENCE_LINK.replaceAll("&amp;", "&").replace("https://console.cloud.google.com", "https://console.cloud.google.com:443")}` }) },
-  }).payload.channelData.slack)[4];
+    payload: { ...route, text: envelope({ ...linked, evidenceUrl: `${EVIDENCE_LINK.replaceAll("&amp;", "&").replace("https://console.cloud.google.com", "https://console.cloud.google.com:443")}` }) },
+  }).payload.channelData.slack)[5];
   assert.match(allowed.text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22\|Logs> · Checked window: /u);
 });
 
@@ -256,7 +278,7 @@ test("renders the card for team-qualified Slack thread sessions", () => {
   ];
   for (const sessionKey of sessions) {
     recordLink(sessionKey);
-    const result = render({ ...event, sessionKey, payload: { ...route, text: envelope(summary) } });
+    const result = render({ ...event, sessionKey, payload: { ...route, text: envelope(linked) } });
     assert.equal(result.payload.channelData.slack.blocks[0].text.text, "*Title:* checkout-api upstream timeouts", sessionKey);
   }
   for (const sessionKey of [
@@ -264,12 +286,12 @@ test("renders the card for team-qualified Slack thread sessions", () => {
     "agent:debugger:slack:channel:team:t0123abc:channel:c123",
     "agent:debugger:slack:channel:team:t0123abc:user:u123:thread:1768996800.000001",
   ]) {
-    assert.equal(render({ ...event, sessionKey, payload: { text: envelope(summary) } }), undefined, sessionKey);
+    assert.equal(render({ ...event, sessionKey, payload: { text: envelope(linked) } }), undefined, sessionKey);
   }
 });
 
 test("leaves other channels, agents, unmarked replies, and progress alone", () => {
-  const marked = { text: envelope(summary) };
+  const marked = { text: envelope(linked) };
   const unrelatedEvents = [
     { channel: "webchat", payload: marked },
     { sessionKey: "agent:oncall:slack:channel:c123:thread:1768996800.000001", payload: marked },
@@ -290,50 +312,46 @@ const priorityOf = (fields) =>
   flat(render({ ...event, payload: { ...route, text: envelope(fields) } }).payload.channelData.slack)[1]
     .text.text;
 
-test("priority marker and written word render for every priority", () => {
-  const expected = {
-    critical: "*Priority:* \u{1F534} Critical",
-    high: "*Priority:* \u{1F534} High",
-    medium: "*Priority:* \u{1F7E1} Medium",
-    low: "*Priority:* \u26AA Low",
-    unknown: "*Priority:* \u26AA Unknown",
-  };
-  for (const [priority, text] of Object.entries(expected)) {
-    assert.equal(priorityOf({ ...summary, priority, provisional: false }), text);
+test("priority marker and written word render for every computed priority", () => {
+  // The c123 session has three recorded outcome reads: 3 of 5 affected is broad, 1 is narrow, 0 is no effect.
+  const expected = [
+    [3, "*Priority:* \u{1F534} High"],
+    [1, "*Priority:* \u{1F7E1} Medium"],
+    [0, "*Priority:* \u26AA Low"],
+  ];
+  for (const [sampleAffected, text] of expected) {
+    assert.equal(priorityOf({ ...linked, sampleAffected }), text);
   }
-  assert.equal(
-    priorityOf({ ...summary, priority: "high", provisional: true }),
-    "*Priority:* \u{1F534} High (provisional)",
-  );
+  assert.doesNotMatch(priorityOf({ ...linked, sampleAffected: 3 }), /provisional|Unknown|Critical/u);
 });
 
-test("resolved badge overrides the marker, keeps the written priority, and is opt-in", () => {
+test("resolved badge overrides the marker, keeps the computed priority, and is opt-in", () => {
   assert.equal(
-    priorityOf({ ...summary, priority: "high", provisional: false, resolved: true }),
+    priorityOf({ ...linked, sampleAffected: 3, resolved: true }),
     "*Priority:* \u{1F7E2} Resolved \u00B7 was High",
   );
   assert.equal(
-    priorityOf({ ...summary, priority: "medium", resolved: true }),
-    "*Priority:* \u{1F7E2} Resolved \u00B7 was Medium (provisional)",
+    priorityOf({ ...linked, resolved: true }),
+    "*Priority:* \u{1F7E2} Resolved \u00B7 was Medium",
   );
   for (const resolved of [false, undefined]) {
-    const text = priorityOf({ ...summary, priority: "high", provisional: false, resolved });
+    const text = priorityOf({ ...linked, sampleAffected: 3, resolved });
     assert.equal(text, "*Priority:* \u{1F534} High");
     assert.doesNotMatch(text, /Resolved/u);
   }
 });
 
 test("a card has no header or plain-text section, only mrkdwn sections in the PR 1 order", () => {
-  const blocks = flat(render({ ...event, payload: { text: envelope({ ...summary, resolved: true }) } }).payload.channelData.slack);
+  const blocks = flat(render({ ...event, payload: { text: envelope({ ...linked, resolved: true }) } }).payload.channelData.slack);
   assert.deepEqual(
     blocks.map((block) => block.type),
-    ["section", "section", "section", "section", "section", "context"],
+    ["section", "section", "section", "section", "section", "section", "context"],
   );
   assert.deepEqual(
-    blocks.slice(0, 5).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
-    ["Title", "Priority", "Next action", "Summary", "Evidence"],
+    blocks.slice(0, 6).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
+    ["Title", "Priority", "Why", "Next action", "Summary", "Evidence"],
   );
-  assert.ok(blocks.slice(0, 5).every((block) => block.text.type === "mrkdwn" && block.text.verbatim === true));
+  assert.ok(blocks.slice(0, 6).every((block) => block.text.type === "mrkdwn" && block.text.verbatim === true));
 });
 
 test("buttons: false posts cards without buttons and registers no click handler", async () => {
@@ -373,4 +391,291 @@ test("a failing hook logs one fixed reason line and never the hostile content", 
     "livex-slack-summary: amendment guard failed closed: before_tool_call handler failed",
   ]);
   assert.ok(!logged.join("\n").includes("SECRET"));
+});
+
+// ------------------------------------------------------------ computed priority (V3)
+
+test("the card shows the computed priority and why", () => {
+  const loaded = load();
+  recordRead(loaded);
+  const text = cardText(postCard(loaded));
+  assert.match(text, /\*Priority:\* 🟡 Medium/u);
+  assert.match(text, /\*Why:\* clients affected \(1 of 5 sampled\) · known: no · alert: error · users affected: one customer or a minority of the sample/u);
+  assert.equal(colorOf(cardOf(postCard(loaded))), "#D99A00");
+});
+
+test("with no recorded read the effect is not verified and a user-facing alert is rated up", () => {
+  const text = cardText(postCard(load()));
+  assert.match(text, /\*Priority:\* 🟡 Medium/u);
+  assert.match(text, /client effect not verified \(1 of 5 sampled\)/u);
+});
+
+test("a capped listing read does not block 'no effect' when the outcome reads are clean", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] }, SESSION, { query: "x" });
+  const text = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0 } }));
+  assert.match(text, /no client effect found/u);
+});
+
+test("a capped id-scoped read turns 'no effect' into not verified", () => {
+  const loaded = load();
+  recordRead(loaded, { truncated: true }, SESSION, { conversationId: "c1" });
+  const text = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0 } }));
+  assert.match(text, /client effect not verified \(0 of 5 sampled, a read was capped or failed\)/u);
+});
+
+test("impossible sample counts replace the card with the notice and log the reason", () => {
+  for (const bad of [{ sampleAffected: 6 }, { sampleAffected: -1 }, { sampleChecked: 2.5 }, { sampleChecked: 501 }]) {
+    const loaded = load();
+    const out = postCard(loaded, { fields: { ...summary, ...bad } });
+    assert.equal(out.payload.text, INVALID_SUMMARY);
+    assert.match(loaded.warnings.at(-1), /summary card replaced by notice: invalid field sample(Affected|Checked)$/u);
+  }
+});
+
+test("V2 envelopes and model-written priority are rejected", () => {
+  const loaded = load();
+  assert.equal(postCard(loaded, { marker: "LIVEX_ALERT_SUMMARY_V2" }).payload.text, INVALID_SUMMARY);
+  assert.equal(postCard(loaded, { fields: { ...summary, priority: "high" } }).payload.text, INVALID_SUMMARY);
+});
+
+test("a known reference is shown as inert text and an unaccepted one counts as no", () => {
+  const loaded = load();
+  recordRead(loaded);
+  const shown = cardText(postCard(loaded, { fields: { ...summary, known: "ongoing", knownRef: "LX-12525" } }));
+  assert.match(shown, /known: ongoing \(LX-12525\)/u);
+  const hostile = cardText(postCard(loaded, { fields: { ...summary, known: "fixed", knownRef: "<!channel> <https://evil.example|LX-1>" } }));
+  assert.match(hostile, /known: no/u);
+  assert.doesNotMatch(hostile, /<!channel>|<https:\/\/evil/u);
+});
+
+test("alternates: the highest-rated fact set sets the level, the main title stays, and every alternate is listed", () => {
+  const loaded = load();
+  recordRead(loaded);
+  const alt = { ...factsOf(summary), title: "avatar sessions silent", sampleAffected: 4 };
+  const text = cardText(postCard(loaded, { fields: { ...summary, alternates: [alt] } }));
+  assert.match(text, /\*Title:\* checkout-api upstream timeouts/u);
+  assert.match(text, /\*Priority:\* 🔴 High/u);
+  assert.match(text, /rated by: avatar sessions silent/u);
+  assert.match(text, /Also: avatar sessions silent — High/u);
+});
+
+test("the priority engine registry carries the result for the memory plugin", () => {
+  const loaded = load();
+  recordRead(loaded);
+  postCard(loaded, { runId: "run-1" });
+  const entry = globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION);
+  assert.equal(entry.runId, "run-1");
+  assert.deepEqual(entry.primary, { signature: summary.signature, priority: "medium", ruleId: "live-narrow" });
+  assert.equal(entry.compute({ ...factsOf(summary), sampleAffected: 4 }).priority, "high");
+});
+
+test("alternates: a tie keeps the main fact set, and the Also line is inert plain text of at most 300 characters", () => {
+  const loaded = load();
+  recordRead(loaded);
+  const tie = { ...factsOf(summary), title: "same level elsewhere" };
+  const result = postCard(loaded, { fields: { ...summary, alternates: [tie] } });
+  assert.match(cardText(result), /\*Title:\* checkout-api upstream timeouts/u);
+  assert.match(cardText(result), /Also: same level elsewhere — Medium/u);
+  const hostileTitle = `<!here> *x* https://evil.example ${"y".repeat(90)}`;
+  const many = Array.from({ length: 4 }, (_, index) => ({ ...factsOf(summary), sampleAffected: 0, title: `${index} ${hostileTitle}`.slice(0, 120) }));
+  const slack = postCard(loaded, { fields: { ...summary, alternates: many } }).payload.channelData.slack;
+  const also = slack.attachments[0].blocks.at(-1);
+  assert.equal(also.type, "context");
+  assert.deepEqual(also.elements.map((element) => element.type), ["plain_text"]);
+  assert.ok(also.elements[0].text.startsWith("Also: 0 &lt;!here&gt; *‍x*‍ https:‍//evil.example"));
+  assert.ok(also.elements[0].text.length <= 300);
+  assert.equal(cardOf({ payload: { channelData: { slack } } }).also.length, 4);
+  // No alternates, no Also line.
+  assert.equal(postCard(loaded).payload.channelData.slack.attachments[0].blocks.at(-1).elements[0].text, "Mention this bot in the thread for full evidence.");
+});
+
+test("the Why line shows recurring and an accepted Slack reference, cut to 300 characters", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  // 200 characters; every "&" grows to "&amp;" when neutralized, so the line must be cut.
+  const ref = `https://livexai.slack.com/archives/C0ALERTS1/p1768996800000001?${"&x".repeat(68)}y`;
+  assert.equal(ref.length, 200);
+  const fields = { ...summary, sampleAffected: 0, sustained: true, known: "ongoing", knownRef: ref };
+  const why = cardText(postCard(loaded, { fields })).split("\n").find((line) => line.startsWith("*Why:* "));
+  assert.ok(why.startsWith("*Why:* no client effect found (5 sampled) · known: ongoing (https:‍//livexai.slack.com"));
+  assert.equal(why.length - "*Why:* ".length, 300);
+  const short = cardText(postCard(loaded, { fields: { ...summary, sampleAffected: 0, sustained: true } }));
+  assert.match(short, /\*Why:\* no client effect found \(5 sampled\) · known: no · alert: error, recurring · no user impact found; recurring/u);
+  assert.match(short, /\*Priority:\* 🟡 Medium/u);
+});
+
+test("the registry is shared across plugin instances, pruned after 30 minutes and bounded", () => {
+  const key = Symbol.for("livex.priority-engine.v1");
+  const registry = globalThis[key];
+  assert.ok(registry.results instanceof Map);
+  let clock = 5_000_000_000;
+  const realNow = Date.now;
+  Date.now = () => clock;
+  try {
+    const stale = "agent:debugger:slack:channel:c0stale1:thread:1768996800.000001";
+    registry.results.set(stale, { runId: undefined, at: clock - 30 * 60_000 - 1, primary: {}, compute() {} });
+    const other = load();
+    postCard(other);
+    // A second instance wrote into the same registry object and pruned the stale entry.
+    assert.equal(globalThis[key], registry);
+    assert.equal(registry.results.has(stale), false);
+    assert.equal(registry.results.get(SESSION).primary.priority, "medium");
+    // compute refuses facts it was not built for.
+    assert.throws(() => registry.results.get(SESSION).compute({ ...factsOf(summary), scope: "everywhere" }), TypeError);
+    for (let index = 0; index < 510; index += 1) {
+      postCard(other, { sessionKey: `agent:debugger:slack:channel:c0bulk${index}:thread:1768996800.000001` });
+    }
+    assert.equal(registry.results.size, 500);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("computeFor rates a session with no rendered card, with the last-installed instance's read stats", () => {
+  const key = Symbol.for("livex.priority-engine.v1");
+  const first = load();
+  const registry = globalThis[key];
+  assert.equal(typeof registry.computeFor, "function");
+  const noCard = "agent:debugger:slack:channel:c0nocard1:thread:1768996800.000001";
+  recordOutcomes(first, 3, noCard);
+  const facts = { ...factsOf(summary), sampleAffected: 0 };
+  // Three outcome reads: no client effect, Low. No reads: not verified, Medium.
+  assert.equal(registry.computeFor(noCard, facts).priority, "low");
+  assert.equal(registry.computeFor("agent:debugger:slack:channel:c0unknown:thread:1.000001", facts).priority, "medium");
+  assert.equal(registry.computeFor(noCard, { ...factsOf(summary), sampleAffected: 4 }).priority, "high");
+  assert.equal(typeof registry.computeFor(noCard, facts).ruleId, "string");
+  // Invalid facts are refused like the per-session compute.
+  assert.throws(() => registry.computeFor(noCard, { ...factsOf(summary), scope: "everywhere" }), TypeError);
+  assert.throws(() => registry.computeFor(noCard, null), TypeError);
+  // No card was rendered, so there is no per-session entry.
+  assert.equal(registry.results.has(noCard), false);
+  // A later instance reuses the registry and its computeFor wins.
+  const before = registry.computeFor;
+  load();
+  assert.equal(globalThis[key], registry);
+  assert.notEqual(registry.computeFor, before);
+  assert.equal(registry.computeFor(noCard, facts).priority, "medium");
+});
+
+test("a configured policy file changes the computed priority; a bad one warns and uses the default", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { DEFAULT_POLICY } = await import("./priority.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "livex-policy-"));
+  const path = join(dir, "policy.json");
+  const allLow = { ...DEFAULT_POLICY, rules: DEFAULT_POLICY.rules.map((rule) => ({ ...rule, priority: "low" })), raise: [] };
+  writeFileSync(path, JSON.stringify(allLow));
+  const custom = load({ priorityPolicyPath: path });
+  recordRead(custom);
+  assert.match(cardText(postCard(custom, { fields: { ...summary, sampleAffected: 4 } })), /\*Priority:\* ⚪ Low/u);
+  assert.deepEqual(custom.warnings, []);
+  const broken = load({ priorityPolicyPath: join(dir, "missing.json") });
+  assert.deepEqual(broken.warnings, ["livex-slack-summary: priority policy could not be read or parsed; using the built-in default"]);
+  recordRead(broken);
+  assert.match(cardText(postCard(broken, { fields: { ...summary, sampleAffected: 4 } })), /\*Priority:\* 🔴 High/u);
+});
+
+// ------------------------------------------------------------ final review fixes
+
+const whyOf = (result) => cardText(result).split("\n").find((line) => line.startsWith("*Why:* "));
+
+test("the Why line ends with the rating's notes, so a discounted or raised level is visible", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 5, traffic: "test" } })),
+    "*Why:* clients affected (5 of 5 sampled) · known: no · alert: error · affected traffic is test/demo",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 0, known: "harmless", knownRef: "pattern:made-up-thing" } })),
+    "*Why:* no client effect found (5 sampled) · known: no · alert: error · known reference not accepted; no user impact found",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 0, known: "harmless", knownRef: "pattern:wyze-malformed-agent-id" } })),
+    "*Why:* no client effect found (5 sampled) · known: harmless (pattern:wyze-malformed-agent-id) · alert: error · known; discounted",
+  );
+  assert.equal(
+    whyOf(postCard(loaded, { fields: { ...summary, sampleAffected: 1, traffic: "test", known: "fixed", knownRef: "LX-12525" } })),
+    "*Why:* clients affected (1 of 5 sampled) · known: fixed (LX-12525) · alert: error · affected traffic is test/demo; marked known but users still affected",
+  );
+});
+
+test("'no client effect' needs outcome reads: a capped listing and a claimed 3/0 sample is not verified", () => {
+  const loaded = load();
+  recordRead(loaded, { truncated: true, truncationReasons: ["row-limit"] }, SESSION, { query: "x" });
+  const result = postCard(loaded, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } });
+  assert.match(whyOf(result), /^\*Why:\* client effect not verified \(0 of 3 sampled, fewer than 3 outcome reads\)/u);
+  assert.match(cardText(result), /\*Priority:\* 🟡 Medium/u);
+});
+
+test("three clean id-scoped reads give 'no client effect found'; a complete count is an outcome read", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  assert.match(whyOf(postCard(loaded, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /no client effect found \(3 sampled\)/u);
+  const counted = load();
+  recordOutcomes(counted, 2);
+  assert.match(whyOf(postCard(counted, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /fewer than 3 outcome reads/u);
+  recordRead(counted, { complete: true, totals: { x: 4 } }, SESSION, { mode: "count", phrases: ["x"] });
+  assert.equal(counted.plugin.readStatsFor(SESSION).outcomes, 3);
+  assert.match(whyOf(postCard(counted, { fields: { ...summary, sampleChecked: 3, sampleAffected: 0 } })), /no client effect found/u);
+});
+
+test("alternates: the card keeps the main title and facts; the highest rating sets the level and is named", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  const alt = { ...factsOf(summary), title: "avatar sessions silent", sampleAffected: 4 };
+  const other = { ...factsOf(summary), title: "quiet category", sampleAffected: 0 };
+  const result = postCard(loaded, { runId: "run-alt", fields: { ...summary, alternates: [alt, other] } });
+  const text = cardText(result);
+  assert.match(text, /\*Title:\* checkout-api upstream timeouts/u);
+  assert.match(text, /\*Priority:\* 🔴 High/u);
+  assert.equal(
+    whyOf(result),
+    "*Why:* clients affected (1 of 5 sampled) · known: no · alert: error · rated by: avatar sessions silent · users affected: several customers or most of the sample",
+  );
+  assert.match(text, /Also: avatar sessions silent — High; quiet category — Low/u);
+  const entry = globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION);
+  assert.deepEqual(entry.primary, { signature: summary.signature, priority: "high", ruleId: "live-broad" });
+  // A tie keeps the main rating: no "rated by".
+  const tie = postCard(loaded, { fields: { ...summary, alternates: [{ ...factsOf(summary), title: "same level" }] } });
+  assert.doesNotMatch(whyOf(tie), /rated by/u);
+  assert.deepEqual(globalThis[Symbol.for("livex.priority-engine.v1")].results.get(SESSION).primary, { signature: summary.signature, priority: "medium", ruleId: "live-narrow" });
+});
+
+test("the attachment fallback is cut to 4000 characters, never inside a surrogate pair", () => {
+  const loaded = load();
+  recordOutcomes(loaded);
+  // Every "&" grows to "&amp;", so the neutralized card is far over 4000 characters and the
+  // cut lands in the summary's emoji run; the two titles shift it by one character.
+  const lengths = [];
+  for (const tail of ["x", "xy"]) {
+    const fields = {
+      ...summary,
+      title: `${"&".repeat(118)}${tail}`,
+      nextAction: "&".repeat(300),
+      owner: "&".repeat(80),
+      summary: `${"&".repeat(200)}${"\u{1F600}".repeat(200)}`,
+      checkedWindow: "&".repeat(80),
+    };
+    const { fallback } = postCard(loaded, { fields }).payload.channelData.slack.attachments[0];
+    assert.ok(fallback.startsWith("*Title:* &amp;"));
+    assert.doesNotMatch(fallback, /[\uD800-\uDBFF]$/u);
+    assert.ok(fallback.endsWith("\u{1F600}"));
+    lengths.push(fallback.length);
+  }
+  assert.deepEqual(lengths.sort(), [3999, 4000]);
+});
+
+test("every debugger turn in an alert thread gets the envelope reminder; other sessions get nothing", () => {
+  const loaded = load();
+  const hook = loaded.hooks.get("before_prompt_build");
+  assert.deepEqual(hook({ prompt: "investigate" }, { sessionKey: SESSION }), { prependContext: ENVELOPE_REMINDER });
+  assert.match(ENVELOPE_REMINDER, /LIVEX_ALERT_SUMMARY_V3/);
+  assert.ok(ENVELOPE_REMINDER.length < 900);
+  for (const sessionKey of [undefined, "agent:oncall:slack:channel:c1:thread:1.1", "agent:debugger:slack:direct:u1", "agent:debugger:main"]) {
+    assert.equal(hook({ prompt: "x" }, { sessionKey }), undefined);
+  }
 });

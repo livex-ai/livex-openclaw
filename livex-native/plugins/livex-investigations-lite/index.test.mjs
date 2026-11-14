@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
-import { baseConfig, memoryStore, SENDER, SESSION, toolContext } from "./test-helpers.mjs";
+import { baseConfig, memoryStore, SENDER, SESSION, toolContext, v3Facts } from "./test-helpers.mjs";
 
 const sdk = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -73,12 +73,11 @@ test("on a V1-only host (OpenClaw 2026.10.5) the entry uses openKeyedStore and r
       runId,
       payload: {
         text: [
-          "LIVEX_ALERT_SUMMARY_V2",
+          "LIVEX_ALERT_SUMMARY_V3",
           JSON.stringify({
             title: "checkout timeouts",
             signature: "checkout-api | create order | upstream timeout",
-            priority: "high",
-            provisional: false,
+            ...v3Facts,
             summary: "Orders timed out upstream.",
             nextAction: "Check the gateway.",
             owner: "Unassigned",
@@ -116,7 +115,7 @@ test("the entry registers gated tools and the three hooks end to end", async () 
   const record = factories.get("investigation_record").factory.create(toolContext());
   await record.execute("c", {
     signature: "checkout-api | create order | upstream timeout",
-    priority: "medium",
+    ...v3Facts,
     resolved: true,
     finding: "Recovered after provider retry.",
   });
@@ -136,7 +135,7 @@ test("the entry registers gated tools and the three hooks end to end", async () 
     { prompt: "checkout-api create order upstream timeout" },
     { ...promptCtx, runId: "r" },
   );
-  assert.match(injected.prependContext, /latest medium resolved/);
+  assert.match(injected.prependContext, /latest unrated resolved \(known: no\)/, "no priority engine in this process");
   assert.ok(!injected.prependContext.includes("Recovered after provider retry"));
 
   const lookup = factories.get("investigation_lookup").factory.create(toolContext());
@@ -166,7 +165,7 @@ function captureConsole() {
 }
 
 const envelopeText = (over = {}) =>
-  `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ title: "T", signature: "checkout-api | create order | upstream timeout", priority: "high", provisional: false, summary: "Provider timed out.", nextAction: "Page owner.", owner: "payments", checkedWindow: "30m", ...over })}\n\nfull`;
+  `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify({ title: "T", signature: "checkout-api | create order | upstream timeout", ...v3Facts, summary: "Provider timed out.", nextAction: "Page owner.", owner: "payments", checkedWindow: "30m", ...over })}\n\nfull`;
 
 test("real Codex + Slack event shapes: auto-record commits and every decision is logged to the console", async () => {
   const cap = captureConsole();
@@ -267,7 +266,7 @@ test("two plugin instances share pending records: a tool record in one is commit
   const tool = a.factories.get("investigation_record").factory.create(toolContext());
   await tool.execute("call-1", {
     signature: "billing-api | charge card | gateway declined",
-    priority: "medium",
+    ...v3Facts,
     resolved: false,
     title: "billing declines",
     finding: "Card charges were declined by the gateway.",
@@ -281,12 +280,11 @@ test("two plugin instances share pending records: a tool record in one is commit
       runId,
       payload: {
         text: [
-          "LIVEX_ALERT_SUMMARY_V2",
+          "LIVEX_ALERT_SUMMARY_V3",
           JSON.stringify({
             title: "checkout timeouts",
             signature: "checkout-api | create order | upstream timeout",
-            priority: "high",
-            provisional: false,
+            ...v3Facts,
             summary: "Orders timed out upstream.",
             nextAction: "Check the gateway.",
             owner: "Unassigned",

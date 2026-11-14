@@ -5,11 +5,20 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { DEFAULT_POLICY, computePriority } from "./priority.mjs";
 
-export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V2";
+export const SUMMARY_MARKER = "LIVEX_ALERT_SUMMARY_V3";
 // Any versioned marker identifies an envelope; only the current version is accepted.
 const MARKER_PATTERN = "LIVEX_ALERT_SUMMARY_V[0-9]+";
 export const INTERACTIVE_NAMESPACE = "livex-priority";
+// Added to every debugger turn in an alert thread. A long-lived thread session keeps
+// the instructions and reply style it started with, so the current rule is restated here.
+export const ENVELOPE_REMINDER = [
+  "Gateway note (current reply rules for this alert thread; they override earlier replies in this session):",
+  `- A reply that reports investigation results, including a re-mention that asks you to investigate or brings new evidence, must end with the ${SUMMARY_MARKER} envelope (facts only, never a priority) followed by the full report.`,
+  "- Read the investigate-alerts skill again before answering: its envelope format and playbooks may have changed since this thread started.",
+  "- Plain text alone is correct only for a pure question or status request, an explicit detailed or table report request, or the one sentence after an amendment that was not blocked.",
+].join("\n");
 export const FULL_EVIDENCE_HINT = "Mention this bot in the thread for full evidence.";
 export const INVALID_SUMMARY = `Could not format the investigation summary. ${FULL_EVIDENCE_HINT}`;
 
@@ -32,36 +41,54 @@ const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u;
 const CHANNEL_GATE = /^(?:\*|[CG][A-Z0-9]+)$/u;
 
 const PRIORITY_LABELS = new Map([
-  ["critical", "Critical"],
   ["high", "High"],
   ["medium", "Medium"],
   ["low", "Low"],
-  ["unknown", "Unknown"],
 ]);
-// The leading emoji of the Priority line (the colour bar is the attachment colour
-// below). Low and Unknown share the neutral marker.
+// Lowest first: the rank of a computed priority.
+const PRIORITY_ORDER = ["low", "medium", "high"];
+// The leading emoji of the Priority line (the colour bar is the attachment colour below).
 const PRIORITY_MARKERS = new Map([
-  ["critical", "\u{1F534}"],
   ["high", "\u{1F534}"],
   ["medium", "\u{1F7E1}"],
   ["low", "⚪"],
-  ["unknown", "⚪"],
 ]);
 const RESOLVED_MARKER = "\u{1F7E2}";
 // Attachment colour bar, mirroring PR #1 (livex-agents/plugins/livex-oncall-reports/style.ts).
 // Verified resolution outranks the displayed priority.
 const REPORT_COLORS = { high: "#D92D20", medium: "#D99A00", resolved: "#2E8B57", default: "#9CA3AF" };
+// The facts the model reports; the plugin computes the priority from them (priority.mjs).
+const FACT_KEYS = [
+  "alertClass",
+  "service",
+  "alertSeverity",
+  "sustained",
+  "known",
+  "sampleChecked",
+  "sampleAffected",
+  "scope",
+  "traffic",
+  "clientEffectVerified",
+];
 const REQUIRED_KEYS = [
   "title",
   "signature",
-  "priority",
-  "provisional",
+  ...FACT_KEYS,
   "summary",
   "nextAction",
   "owner",
   "checkedWindow",
 ];
-const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "resolved", "evidenceUrl"]);
+const ALLOWED_KEYS = new Set([...REQUIRED_KEYS, "knownRef", "resolved", "evidenceUrl", "alternates"]);
+// An alternate is another fact set from the same reply (a digest with several categories).
+const ALTERNATE_KEYS = new Set(["title", ...FACT_KEYS, "knownRef"]);
+const MAX_ALTERNATES = 4;
+const SLUG = /^[a-z][a-z0-9-]{1,59}$/u;
+const MAX_SAMPLE = 500;
+// Longest Why and Also line, counted after neutralize.
+const MAX_DERIVED_LINE = 300;
+// Longest attachment fallback text the Slack patch sanitizer accepts.
+const MAX_FALLBACK = 4000;
 
 // Buttons a human may press. High/Medium/Low reset the priority, Resolved closes it.
 const CHOICES = new Map([
@@ -149,7 +176,19 @@ export function readEvidenceHref(value, { isRecorded, project } = {}) {
 function invalidCardField(card) {
   const checks = [
     ["priority", PRIORITY_LABELS.has(card.priority)],
-    ["provisional", typeof card.provisional === "boolean"],
+    ["why", isBoundedLine(card.why, 1000)],
+    [
+      "also",
+      Array.isArray(card.also) &&
+        card.also.length <= MAX_ALTERNATES &&
+        card.also.every(
+          (item) =>
+            item !== null &&
+            typeof item === "object" &&
+            isBoundedLine(item.title, 120) &&
+            PRIORITY_LABELS.has(item.priority),
+        ),
+    ],
     ["resolved", typeof card.resolved === "boolean"],
     ["title", isBoundedLine(card.title, 120)],
     ["summary", isBoundedLine(card.summary, 600)],
@@ -168,8 +207,95 @@ function invalidCardField(card) {
 
 const validCard = (card) => invalidCardField(card) === undefined;
 
-/** Parse the envelope into `{ card }` or `{ reason }`; the reason is a fixed code, never content. */
-function parseSummary(text, evidenceOptions) {
+const isSampleCount = (value, max) => Number.isInteger(value) && value >= 0 && value <= max;
+
+/** Name of the first invalid fact in `value`, or undefined when all facts are valid. */
+function invalidFactField(value) {
+  const checks = [
+    ["alertClass", typeof value.alertClass === "string" && SLUG.test(value.alertClass)],
+    ["service", typeof value.service === "string" && SLUG.test(value.service)],
+    ["alertSeverity", ["error", "warning", "info"].includes(value.alertSeverity)],
+    ["sustained", typeof value.sustained === "boolean"],
+    ["known", ["no", "ongoing", "fixed", "harmless"].includes(value.known)],
+    ["sampleChecked", isSampleCount(value.sampleChecked, MAX_SAMPLE)],
+    ["sampleAffected", isSampleCount(value.sampleAffected, value.sampleChecked)],
+    ["scope", ["single", "multiple", "unknown"].includes(value.scope)],
+    ["traffic", ["live", "test", "unknown"].includes(value.traffic)],
+    ["clientEffectVerified", typeof value.clientEffectVerified === "boolean"],
+    ["knownRef", value.knownRef === undefined || isBoundedLine(value.knownRef, 200)],
+  ];
+  return checks.find(([, ok]) => !ok)?.[0];
+}
+
+/** The fact keys of a validated envelope or alternate (knownRef only when present). */
+function factsFrom(value) {
+  const facts = Object.fromEntries(FACT_KEYS.map((key) => [key, value[key]]));
+  return value.knownRef === undefined ? facts : { ...facts, knownRef: value.knownRef };
+}
+
+/** True when `alternates` is absent or a list of valid `{ title, ...facts, knownRef? }` objects. */
+function validAlternates(alternates) {
+  if (alternates === undefined) {
+    return true;
+  }
+  return (
+    Array.isArray(alternates) &&
+    alternates.length <= MAX_ALTERNATES &&
+    alternates.every(
+      (item) =>
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        Object.keys(item).every((key) => ALTERNATE_KEYS.has(key)) &&
+        FACT_KEYS.every((key) => key in item) &&
+        isBoundedLine(item.title, 120) &&
+        invalidFactField(item) === undefined,
+    )
+  );
+}
+
+/** The facts part of the Why line (before neutralize): client effect, known state and the alert. */
+function factsLine(facts, rating, reads, policy) {
+  const checked = facts.sampleChecked;
+  const affected = facts.sampleAffected;
+  const why = reads?.degraded
+    ? ", a read was capped or failed"
+    : rating.fewOutcomes
+      ? `, fewer than ${policy.minSample} outcome reads`
+      : "";
+  const effect =
+    rating.clientEffect === "yes"
+      ? `clients affected (${affected} of ${checked} sampled)`
+      : rating.clientEffect === "no"
+        ? `no client effect found (${checked} sampled)`
+        : `client effect not verified (${affected} of ${checked} sampled${why})`;
+  // rating.known is "no" unless the reference was accepted (validKnownRef), so knownRef is set.
+  const known = rating.known === "no" ? "no" : `${rating.known} (${facts.knownRef})`;
+  return `${effect} · known: ${known} · alert: ${facts.alertSeverity}${facts.sustained ? ", recurring" : ""}`;
+}
+
+/** The policy notes of a rating (fixed strings), so a discounted or raised level is visible. */
+const notesOf = (rating) => rating.notes.join("; ");
+
+/** Cut to `max` characters, never inside a surrogate pair. */
+function cutText(text, max) {
+  if (text.length <= max) {
+    return text;
+  }
+  const cut = text.slice(0, max);
+  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+// Longest stored Why text (card validation allows 1000); the rendered line is cut to 300.
+const MAX_WHY = 1000;
+
+const DEFAULT_READS = Object.freeze({ ok: 0, degraded: false, outcomes: 0 });
+
+/**
+ * Parse the envelope into `{ card }` or `{ reason }`; the reason is a fixed code, never content.
+ * The priority is computed from the facts with `rating.policy` and `rating.reads`.
+ */
+function parseSummary(text, evidenceOptions, rating) {
   // Read only the compact JSON line. Evidence belongs to the native assistant
   // transcript and must never be copied into the replacement Slack payload.
   const envelope = /^\S+\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
@@ -186,18 +312,7 @@ function parseSummary(text, evidenceOptions) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return { reason: "bad json" };
   }
-  const {
-    title,
-    signature,
-    priority,
-    provisional,
-    summary,
-    nextAction,
-    owner,
-    checkedWindow,
-    evidenceUrl,
-    resolved,
-  } = value;
+  const { title, signature, summary, nextAction, owner, checkedWindow, evidenceUrl, resolved, alternates } = value;
   if (!Object.keys(value).every((key) => ALLOWED_KEYS.has(key))) {
     return { reason: "unknown key" };
   }
@@ -211,20 +326,48 @@ function parseSummary(text, evidenceOptions) {
   if (href === undefined) {
     return { reason: "invalid field evidenceUrl" };
   }
-  if (typeof priority !== "string") {
-    return { reason: "invalid field priority" };
-  }
   if (!isBoundedLine(signature, 160)) {
     return { reason: "invalid field signature" };
   }
   if (resolved !== undefined && typeof resolved !== "boolean") {
     return { reason: "invalid field resolved" };
   }
+  if (!isBoundedLine(title, 120)) {
+    return { reason: "invalid field title" };
+  }
+  const invalidFact = invalidFactField(value);
+  if (invalidFact) {
+    return { reason: `invalid field ${invalidFact}` };
+  }
+  if (!validAlternates(alternates)) {
+    return { reason: "invalid field alternates" };
+  }
+  // Rate every fact set. The card keeps the main title and facts; its priority is the highest
+  // rating (a tie keeps the main one), and an alternate that set it is named on the Why line.
+  const policy = rating?.policy ?? DEFAULT_POLICY;
+  const reads = rating?.reads ?? DEFAULT_READS;
+  const [main, ...others] = [value, ...(alternates ?? [])].map((item) => {
+    const facts = factsFrom(item);
+    return { title: item.title, facts, rating: computePriority(facts, policy, reads) };
+  });
+  let setter = main;
+  for (const entry of others) {
+    if (PRIORITY_ORDER.indexOf(entry.rating.priority) > PRIORITY_ORDER.indexOf(setter.rating.priority)) {
+      setter = entry;
+    }
+  }
+  const mainLine = factsLine(main.facts, main.rating, reads, policy);
+  const why =
+    setter === main
+      ? `${mainLine} · ${notesOf(main.rating)}`
+      : `${mainLine} · rated by: ${setter.title} · ${notesOf(setter.rating)}`;
   const card = {
-    title,
+    title: main.title,
     signature,
-    priority,
-    provisional,
+    priority: setter.rating.priority,
+    rating: setter.rating,
+    why: cutText(why, MAX_WHY),
+    also: others.map((entry) => ({ title: entry.title, priority: entry.rating.priority })),
     resolved: resolved === true,
     summary,
     nextAction,
@@ -237,12 +380,15 @@ function parseSummary(text, evidenceOptions) {
 }
 
 /** Parse the `MARKER\n{json}\n\nfull report` envelope into a validated card. */
-export function readSummary(text, evidenceOptions) {
-  return parseSummary(text, evidenceOptions).card;
+export function readSummary(text, evidenceOptions, rating) {
+  return parseSummary(text, evidenceOptions, rating).card;
 }
 
-/** True when the text carries a canonical first-line marker and the marker line exists. */
-export function classifyEnvelope(rawText, evidenceOptions) {
+/**
+ * `{ marked, card, reason }`: marked when the text carries a marker line; `card` only for a
+ * canonical, valid envelope. `rating` is `{ policy, reads }` (default policy, no reads).
+ */
+export function classifyEnvelope(rawText, evidenceOptions, rating) {
   const text = typeof rawText === "string" ? rawText.trimStart() : "";
   if (!text || !MARKED_LINE.test(text)) {
     return { marked: false };
@@ -253,7 +399,7 @@ export function classifyEnvelope(rawText, evidenceOptions) {
   if (!canonical) {
     return { marked: true, card: undefined, reason: "bad layout" };
   }
-  const { card, reason } = parseSummary(text, evidenceOptions);
+  const { card, reason } = parseSummary(text, evidenceOptions, rating);
   return { marked: true, card, reason };
 }
 
@@ -277,8 +423,19 @@ function neutralize(text) {
 }
 
 function priorityText(card) {
-  const label = PRIORITY_LABELS.get(card.priority);
-  return card.provisional && card.priority !== "unknown" ? `${label} (provisional)` : label;
+  return PRIORITY_LABELS.get(card.priority);
+}
+
+/** Model-derived text for one line: neutralized, then cut (never inside a surrogate pair). */
+function derivedLine(text) {
+  return cutText(neutralize(text), MAX_DERIVED_LINE);
+}
+
+/** The context line naming the fact sets that did not become the card, or undefined. */
+function alsoLine(card) {
+  return card.also.length
+    ? derivedLine(`Also: ${card.also.map((item) => `${item.title} — ${PRIORITY_LABELS.get(item.priority)}`).join("; ")}`)
+    : undefined;
 }
 
 function markerOf(card) {
@@ -308,6 +465,7 @@ function sectionTexts(card) {
   return [
     `*Title:* ${neutralize(card.title)}`,
     priorityLine(card),
+    `*Why:* ${derivedLine(card.why)}`,
     `*Next action:* ${neutralize(card.nextAction)} (Owner: ${neutralize(card.owner)})`,
     `*Summary:* ${neutralize(card.summary)}`,
     evidenceLine(card),
@@ -327,15 +485,15 @@ export function applyChoice(card, choice) {
   if (choice === "resolved") {
     return { ...card, resolved: true };
   }
-  // A human reset is no longer provisional and reopens a resolved card.
-  return { ...card, priority: choice, provisional: false, resolved: false };
+  // A human reset reopens a resolved card.
+  return { ...card, priority: choice, resolved: false };
 }
 
 /** The buttons a card offers, omitting a no-op for the card's current state. */
 export function availableChoices(card) {
   const choices = [];
   for (const choice of ["high", "medium", "low"]) {
-    if (!card.resolved && card.priority === choice && !card.provisional) {
+    if (!card.resolved && card.priority === choice) {
       continue;
     }
     choices.push(choice);
@@ -355,7 +513,7 @@ export function colorOf(card) {
   if (card.resolved) {
     return REPORT_COLORS.resolved;
   }
-  if (card.priority === "critical" || card.priority === "high") {
+  if (card.priority === "high") {
     return REPORT_COLORS.high;
   }
   return card.priority === "medium" ? REPORT_COLORS.medium : REPORT_COLORS.default;
@@ -369,6 +527,7 @@ export function colorOf(card) {
  */
 export function renderBlocks(card, controls) {
   const [title, ...rest] = sectionTexts(card);
+  const also = alsoLine(card);
   const blocks = [section(title)];
   if (controls?.length) {
     blocks.push({
@@ -392,8 +551,17 @@ export function renderBlocks(card, controls) {
       {
         color: colorOf(card),
         // Plain text: the only live link is the Evidence section's.
-        fallback: sectionTexts(card).join("\n").replace(/<[^>|]*\|([^>]*)>/gu, "$1"),
-        blocks: [...rest.map(section), { type: "context", elements: [plainText(FULL_EVIDENCE_HINT)] }],
+        // Cut so the Slack patch sanitizer never drops the coloured attachment for its length.
+        fallback: cutText(
+          [...sectionTexts(card), ...(also ? [also] : [])].join("\n").replace(/<[^>|]*\|([^>]*)>/gu, "$1"),
+          MAX_FALLBACK,
+        ),
+        // Context elements stay plain_text: patch-slack-attachments.mjs accepts nothing else.
+        blocks: [
+          ...rest.map(section),
+          { type: "context", elements: [plainText(FULL_EVIDENCE_HINT)] },
+          ...(also ? [{ type: "context", elements: [plainText(also)] }] : []),
+        ],
       },
     ],
   };
@@ -454,7 +622,8 @@ function tagFor(key, body, bind) {
 export function encodeState(card, bind, key) {
   const row = [
     card.priority,
-    card.provisional ? 1 : 0,
+    card.why,
+    card.also.map((item) => [item.title, item.priority]),
     card.resolved ? 1 : 0,
     card.title,
     card.summary,
@@ -498,12 +667,12 @@ export function decodeState(token, bind, key) {
       maxOutputLength: MAX_STATE_BYTES,
     }).toString("utf8");
     const row = JSON.parse(json);
-    if (!Array.isArray(row) || row.length !== 9) {
+    if (!Array.isArray(row) || row.length !== 10) {
       return undefined;
     }
-    const [priority, provisional, resolved, title, summary, nextAction, owner, checkedWindow, href] =
+    const [priority, why, alsoRows, resolved, title, summary, nextAction, owner, checkedWindow, href] =
       row;
-    if (![0, 1].includes(provisional) || ![0, 1].includes(resolved)) {
+    if (![0, 1].includes(resolved) || !Array.isArray(alsoRows) || !alsoRows.every((item) => Array.isArray(item) && item.length === 2)) {
       return undefined;
     }
     // A token minted before the evidence guard may carry a link the guard now drops.
@@ -513,7 +682,8 @@ export function decodeState(token, bind, key) {
     }
     const card = {
       priority,
-      provisional: provisional === 1,
+      why,
+      also: alsoRows.map(([itemTitle, itemPriority]) => ({ title: itemTitle, priority: itemPriority })),
       resolved: resolved === 1,
       title,
       summary,
@@ -675,6 +845,20 @@ const MAX_EVIDENCE_URLS_PER_SESSION = 200;
 const MAX_EVIDENCE_ENTRIES_SCANNED = 500;
 const EVIDENCE_TTL_MS = 3 * 60 * 60_000;
 const MAX_RESULT_TEXT = 256 * 1024;
+// Process-wide hand-off of computed priorities to the memory plugin. Several plugin instances
+// can load in one process, so the registry is created once and then shared.
+const PRIORITY_REGISTRY = Symbol.for("livex.priority-engine.v1");
+const REGISTRY_TTL_MS = 30 * 60_000;
+
+function priorityRegistry() {
+  const existing = globalThis[PRIORITY_REGISTRY];
+  if (existing !== null && typeof existing === "object" && existing.results instanceof Map) {
+    return existing;
+  }
+  const created = { results: new Map() };
+  globalThis[PRIORITY_REGISTRY] = created;
+  return created;
+}
 
 /** The tool result's structured details, else the JSON in its first text block. */
 function readToolDetails(result) {
@@ -693,6 +877,33 @@ function readToolDetails(result) {
   } catch {
     return undefined;
   }
+}
+
+/** True when a read lost entries. A "field"-only cut shortened text inside an entry. */
+function readLostEntries(details) {
+  const reasons = Array.isArray(details.truncationReasons) ? details.truncationReasons : [];
+  if (reasons.length > 0) {
+    return reasons.some((reason) => reason !== "field");
+  }
+  return details.truncated === true;
+}
+
+const ID_PARAMS = ["conversationId", "jobId", "roomId", "traceId", "insertId", "insertIds"];
+
+/** True only when the params name at least one id (unknown params are not). */
+function carriesIds(params) {
+  return params !== null && typeof params === "object" && isIdScoped(params);
+}
+
+/** A read keyed on ids has its own outcome to protect; a listing is only a sample. Unknown: scoped. */
+function isIdScoped(params) {
+  if (params === null || typeof params !== "object") {
+    return true;
+  }
+  return ID_PARAMS.some((name) => {
+    const value = params[name];
+    return Array.isArray(value) ? value.length > 0 : typeof value === "string" ? value !== "" : value != null;
+  });
 }
 
 function boundedSet(map, key, limit) {
@@ -714,7 +925,7 @@ function boundedSet(map, key, limit) {
  * cards render without controls and no click handler is needed. `warn` receives
  * diagnostics (never token or key contents).
  */
-export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} } = {}) {
+export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {}, policy = DEFAULT_POLICY } = {}) {
   const gates = readConfig(rawConfig);
   const config = { ...gates, buttons: gates.buttons && Buffer.isBuffer(key) && key.length === 32 };
   // sessionKey -> ts values of cards this plugin rendered and Slack confirmed.
@@ -725,6 +936,77 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
   const overrides = new Map();
   // sessionKey -> Map(evidence url -> recorded at), from livex_gcp_logs_read results.
   const evidenceUrls = new Map();
+  // sessionKey -> { ok, degraded, outcomes, at }: how this thread's logs reads turned out.
+  // outcomes counts the successful, non-lossy reads that show an outcome: id-scoped or a complete count.
+  const readStats = new Map();
+
+  /** Logs-read outcome for a thread; zeros for an unknown or expired session. */
+  function readStatsFor(sessionKey) {
+    const stats = readStats.get(sessionKey);
+    if (!stats || now() - stats.at > EVIDENCE_TTL_MS) {
+      return { ok: 0, degraded: false, outcomes: 0 };
+    }
+    return { ok: stats.ok, degraded: stats.degraded, outcomes: stats.outcomes };
+  }
+
+  function noteRead(sessionKey, { ok, degraded, outcome = false }) {
+    const at = now();
+    const prior = readStats.get(sessionKey);
+    const live = prior && at - prior.at <= EVIDENCE_TTL_MS ? prior : { ok: 0, degraded: false, outcomes: 0 };
+    readStats.delete(sessionKey);
+    readStats.set(sessionKey, {
+      ok: live.ok + (ok ? 1 : 0),
+      degraded: live.degraded || degraded,
+      outcomes: live.outcomes + (outcome ? 1 : 0),
+      at,
+    });
+    while (readStats.size > MAX_SESSIONS) {
+      readStats.delete(readStats.keys().next().value);
+    }
+  }
+
+  /** What the priority is computed with for one session: the policy and its logs reads. */
+  const ratingFor = (sessionKey) => ({ policy, reads: readStatsFor(sessionKey) });
+
+  /** Rates `facts` for a session, card or no card. Invalid facts throw, like the envelope check. */
+  function computeFor(sessionKey, facts) {
+    if (facts === null || typeof facts !== "object" || invalidFactField(facts) !== undefined) {
+      throw new TypeError("livex-slack-summary: invalid facts");
+    }
+    return computePriority(factsFrom(facts), policy, readStatsFor(sessionKey));
+  }
+
+  try {
+    // The memory plugin rates a case with this when no card was rendered for the session.
+    // Several instances can load in one process: the one installed last wins.
+    priorityRegistry().computeFor = computeFor;
+  } catch {
+    notice("priority engine not published: registry write failed");
+  }
+
+  /**
+   * Publishes the card's computed result for other plugins in this process (the memory
+   * plugin reads it when it saves the case). `compute` rates another fact set the same way.
+   */
+  function publishResult(sessionKey, runId, card) {
+    const results = priorityRegistry().results;
+    const at = now();
+    for (const [entryKey, entry] of results) {
+      if (!(at - entry?.at <= REGISTRY_TTL_MS)) {
+        results.delete(entryKey);
+      }
+    }
+    results.delete(sessionKey);
+    results.set(sessionKey, {
+      runId,
+      at,
+      primary: { signature: card.signature, priority: card.priority, ruleId: card.rating.ruleId },
+      compute: (facts) => computeFor(sessionKey, facts),
+    });
+    while (results.size > MAX_SESSIONS) {
+      results.delete(results.keys().next().value);
+    }
+  }
 
   /** Evidence options for one session: exact recorded match, plus the configured project. */
   function evidenceOptionsFor(sessionKey) {
@@ -744,13 +1026,28 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       const sessionKey = ctx?.sessionKey;
       if (
         event?.toolName !== EVIDENCE_TOOL ||
-        event.error ||
         typeof sessionKey !== "string" ||
         !DEBUGGER_SLACK_THREAD.test(sessionKey)
       ) {
         return;
       }
+      if (event.error) {
+        // "Invalid ..." means the tool rejected the arguments and read nothing.
+        const text = typeof event.error === "string" ? event.error : event.error?.message;
+        if (!(typeof text === "string" && text.startsWith("Invalid"))) {
+          noteRead(sessionKey, { ok: false, degraded: true });
+        }
+        return;
+      }
       const details = readToolDetails(event.result);
+      if (details !== undefined) {
+        const degraded =
+          details.complete === false || (readLostEntries(details) && isIdScoped(event.params));
+        const outcome =
+          (carriesIds(event.params) && !degraded) ||
+          (event.params?.mode === "count" && details.complete === true);
+        noteRead(sessionKey, { ok: true, degraded, outcome });
+      }
       const project = details?.project;
       if (typeof project !== "string" || (config.gcpProject && project !== config.gcpProject)) {
         return;
@@ -822,6 +1119,19 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
     config.buttons && Boolean(session) && channelAllowed(config, session.channelId);
 
   // ------------------------------------------------------ reply_payload_sending
+  /** Restates the envelope rule on every debugger turn in an alert thread. */
+  function beforePromptBuild(event, ctx) {
+    try {
+      const sessionKey = ctx?.sessionKey ?? event?.sessionKey;
+      if (typeof sessionKey !== "string" || !DEBUGGER_SLACK_THREAD.test(sessionKey)) {
+        return undefined;
+      }
+      return { prependContext: ENVELOPE_REMINDER };
+    } catch {
+      return undefined;
+    }
+  }
+
   function replyPayloadSending(event, ctx) {
     let marked = false;
     let route = {};
@@ -839,7 +1149,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       ) {
         return undefined;
       }
-      const envelope = classifyEnvelope(payload.text, evidenceOptionsFor(sessionKey));
+      const envelope = classifyEnvelope(payload.text, evidenceOptionsFor(sessionKey), ratingFor(sessionKey));
       if (!envelope.marked) {
         return undefined;
       }
@@ -851,14 +1161,22 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         notice(`summary card replaced by notice: ${envelope.reason ?? "invalid card"}`);
         return { payload: { ...route, text: INVALID_SUMMARY } };
       }
+      const runId = typeof (event.runId ?? ctx?.runId) === "string" ? (event.runId ?? ctx?.runId) : undefined;
       const session = parseSession(sessionKey);
       const controls = buttonsAllowed(session) ? controlsFor(card, session) : undefined;
+      const rendered = renderBlocks(card, controls);
+      try {
+        publishResult(sessionKey, runId, card);
+      } catch {
+        // The card still posts; the memory plugin then stores the case unrated.
+        notice("priority result not published: registry write failed");
+      }
       // Prune expired entries and re-insert the session as most recent (bounded LRU).
       const queue = (pending.get(sessionKey) ?? []).filter((entry) => now() - entry.at <= PENDING_TTL_MS);
       queue.push({
         at: now(),
         headline: headlineOf(card),
-        runId: typeof (event.runId ?? ctx?.runId) === "string" ? (event.runId ?? ctx?.runId) : undefined,
+        runId,
       });
       pending.delete(sessionKey);
       pending.set(sessionKey, queue.slice(-MAX_PENDING));
@@ -866,7 +1184,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         pending.delete(pending.keys().next().value);
       }
       return {
-        payload: { ...route, channelData: { slack: renderBlocks(card, controls) } },
+        payload: { ...route, channelData: { slack: rendered } },
       };
     } catch {
       // Never let a rendering fault pass the marked JSON and evidence through.
@@ -927,6 +1245,14 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
 
   // -------------------------------------------------------------- before_tool_call
   const block = (reason) => ({ block: true, blockReason: reason });
+  // No valid card to edit: the right way out is a new card, never a plain-text ending.
+  const NEW_CARD_FALLBACK =
+    `Do not retry the edit. End your reply with a new ${SUMMARY_MARKER} summary and the full ` +
+    "report instead; the Gateway posts it as a new card.";
+  // A fixable argument or envelope refusal: one corrected retry, then a new card.
+  const RETRY_ONCE =
+    "Correct this and call edit once more; if it is refused again, end your reply with a new " +
+    `${SUMMARY_MARKER} summary instead.`;
 
   function beforeToolCall(event, ctx) {
     try {
@@ -962,10 +1288,10 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       // Target: any supplied target must be this thread's channel, and one must be present.
       const channel = params.channel;
       if (channel !== undefined && String(channel).trim().toLowerCase() !== "slack") {
-        return block("Report amendments are limited to this Slack thread.");
+        return block(`Report amendments are limited to this Slack thread. ${RETRY_ONCE}`);
       }
       if (params.targets !== undefined) {
-        return block("Report amendments take a single target in this thread's channel.");
+        return block(`Report amendments take a single target in this thread's channel. ${RETRY_ONCE}`);
       }
       const targets = ["target", "to", "channelId"]
         .map((key) => params[key])
@@ -974,7 +1300,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         targets.length === 0 ||
         !targets.every((value) => readChannelId(value) === session.channelId)
       ) {
-        return block("Report amendments must target this thread's channel.");
+        return block(`Report amendments must target this thread's channel. ${RETRY_ONCE}`);
       }
 
       // Message: one well-formed ts that this plugin recorded as a card in this session.
@@ -988,29 +1314,40 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         !SLACK_TS.test(messageId) ||
         !ids.every((value) => value === messageId)
       ) {
-        return block("messageId must be the timestamp of your own summary card in this thread.");
+        return block(
+          `messageId must be the timestamp of your own summary card in this thread. ${RETRY_ONCE}`,
+        );
       }
       if (!cards.get(sessionKey)?.has(messageId)) {
         return block(
-          "Only a LiveX summary card this bot posted in this thread can be amended. " +
-            "That message is not one (or this gateway has restarted since it was posted).",
+          "This message cannot be amended (it is not a summary card this Gateway posted in this " +
+            `thread, or the Gateway restarted since). ${NEW_CARD_FALLBACK}`,
         );
       }
 
       // Content: the same envelope the first reply used, through the same renderer.
-      const envelope = classifyEnvelope(params.message, evidenceOptionsFor(sessionKey));
+      const envelope = classifyEnvelope(params.message, evidenceOptionsFor(sessionKey), ratingFor(sessionKey));
       if (!envelope.marked || !envelope.card) {
-        notice(`amendment refused: ${envelope.marked ? (envelope.reason ?? "invalid card") : "no summary envelope"}`);
+        // The reason is a fixed phrase or a field name, never envelope content.
+        const why = envelope.marked ? (envelope.reason ?? "invalid card") : "no summary envelope";
+        notice(`amendment refused: ${why}`);
         return block(
-          `Amended content must use the summary envelope: ${SUMMARY_MARKER}, one JSON line with ` +
-            "the summary fields, a blank line, then the full report. Nothing else is accepted.",
+          `Amended content is not a valid summary envelope (${why}): it must be ${SUMMARY_MARKER}, ` +
+            `one JSON line with the summary fields, a blank line, then the full report. ${RETRY_ONCE}`,
         );
       }
       let card = envelope.card;
+      const runId = typeof (event.runId ?? ctx?.runId) === "string" ? (event.runId ?? ctx?.runId) : undefined;
+      try {
+        // The memory plugin must see the amended rating, not the first card's.
+        publishResult(sessionKey, runId, card);
+      } catch {
+        notice("priority result not published: registry write failed");
+      }
       const human = overrides.get(`${session.channelId}:${messageId}`);
       if (human) {
         // A person's button choice outranks the agent's re-assessment.
-        card = { ...card, priority: human.priority, provisional: human.provisional, resolved: human.resolved };
+        card = { ...card, priority: human.priority, resolved: human.resolved };
       }
       const controls = buttonsAllowed(session) ? controlsFor(card, session) : undefined;
       return {
@@ -1078,7 +1415,6 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       overrides.delete(cardKey);
       overrides.set(cardKey, {
         priority: next.priority,
-        provisional: next.provisional,
         resolved: next.resolved,
       });
       while (overrides.size > MAX_OVERRIDES) {
@@ -1090,5 +1426,5 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
     }
   }
 
-  return { config, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, interactive };
+  return { config, beforePromptBuild, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, readStatsFor, interactive };
 }

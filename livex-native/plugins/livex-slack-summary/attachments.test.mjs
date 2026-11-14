@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
+import { classifyEnvelope, decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
 import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
-import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, recordEvidence, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, recordOutcomes, recordRead, linked as summary } from "./test-helpers.mjs";
 
 const slackOf = (result) => result.payload.channelData.slack;
 const pick = (slack, label) => buttonsOf(slack.blocks).find((button) => button.text.text === label).value;
@@ -20,18 +20,18 @@ test("the card is a Title block plus buttons at top level and one coloured attac
   assert.match(attachment.color, /^#[0-9A-F]{6}$/u);
   assert.deepEqual(
     attachment.blocks.map((block) => block.type),
-    ["section", "section", "section", "section", "context"],
+    ["section", "section", "section", "section", "section", "context"],
   );
   assert.deepEqual(
-    attachment.blocks.slice(0, 4).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
-    ["Priority", "Next action", "Summary", "Evidence"],
+    attachment.blocks.slice(0, 5).map((block) => block.text.text.match(/^\*([^:]+):\*/u)[1]),
+    ["Priority", "Why", "Next action", "Summary", "Evidence"],
   );
   assert.ok(attachment.blocks.length <= 10);
   // Priority keeps its emoji in the attachment.
-  assert.equal(attachment.blocks[0].text.text, "*Priority:* \u{1F7E1} Medium (provisional)");
+  assert.equal(attachment.blocks[0].text.text, "*Priority:* \u{1F7E1} Medium");
   assert.equal(attachment.fallback.includes("<http"), false);
   assert.match(attachment.fallback, /^\*Title:\* .*\n\*Priority:\* /u);
-  assert.deepEqual(buttonsOf(slack.blocks).map((button) => button.text.text), ["High", "Medium", "Low", "Resolved"]);
+  assert.deepEqual(buttonsOf(slack.blocks).map((button) => button.text.text), ["High", "Low", "Resolved"]);
 });
 
 test("without controls the Title is the only top-level block", () => {
@@ -40,15 +40,17 @@ test("without controls the Title is the only top-level block", () => {
   assert.equal(slack.attachments.length, 1);
 });
 
-test("the colour bar mirrors PR 1: high and critical red, medium amber, resolved green, else grey", () => {
-  const colorFor = (fields) => slackOf(postCard(load(), { fields: { ...summary, ...fields } })).attachments[0].color;
-  assert.equal(colorFor({ priority: "high", provisional: false }), "#D92D20");
-  assert.equal(colorFor({ priority: "critical", provisional: false }), "#D92D20");
-  assert.equal(colorFor({ priority: "medium" }), "#D99A00");
-  assert.equal(colorFor({ priority: "low" }), "#9CA3AF");
-  assert.equal(colorFor({ priority: "unknown" }), "#9CA3AF");
+test("the colour bar follows the computed priority: high red, medium amber, low grey, resolved green", () => {
+  const colorFor = (fields) => {
+    const loaded = load();
+    recordOutcomes(loaded);
+    return slackOf(postCard(loaded, { fields: { ...summary, ...fields } })).attachments[0].color;
+  };
+  assert.equal(colorFor({ sampleAffected: 4 }), "#D92D20");
+  assert.equal(colorFor({ sampleAffected: 1 }), "#D99A00");
+  assert.equal(colorFor({ sampleAffected: 0 }), "#9CA3AF");
   // Verified resolution outranks the priority colour.
-  assert.equal(colorFor({ priority: "high", resolved: true }), "#2E8B57");
+  assert.equal(colorFor({ sampleAffected: 4, resolved: true }), "#2E8B57");
 });
 
 test("a priority click passes blocks and a recoloured attachment to editMessage", async () => {
@@ -72,6 +74,7 @@ test("a priority click passes blocks and a recoloured attachment to editMessage"
 
 test("an amendment keeps the first post's split: Title and buttons as presentation, colour bar as livexAttachments", () => {
   const loaded = load();
+  recordRead(loaded);
   const first = slackOf(postCard(loaded));
   const result = loaded.hooks.get("before_tool_call")(
     {
@@ -81,7 +84,7 @@ test("an amendment keeps the first post's split: Title and buttons as presentati
         channel: "slack",
         target: CHANNEL,
         messageId: CARD_TS,
-        message: `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ ...summary, priority: "high", provisional: false })}\n\nfull`,
+        message: `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify({ ...summary, sampleAffected: 4 })}\n\nfull`,
       },
     },
     { sessionKey: SESSION },
@@ -93,7 +96,9 @@ test("an amendment keeps the first post's split: Title and buttons as presentati
   assert.equal(params.livexAttachments.length, 1);
   assert.equal(params.livexAttachments[0].color, "#D92D20");
   // Same attachment content as the first post of the same card, apart from the new priority.
-  const same = slackOf(postCard(load(), { fields: { ...summary, priority: "high", provisional: false } }));
+  const fresh = load();
+  recordRead(fresh);
+  const same = slackOf(postCard(fresh, { fields: { ...summary, sampleAffected: 4 } }));
   assert.deepEqual(params.livexAttachments, same.attachments);
   // The shallow merge of the hook's params over the original keeps the route and adds ours.
   const merged = { ...{ action: "edit", channel: "slack", target: CHANNEL }, ...params };
@@ -140,7 +145,7 @@ test("evidence links must open an entry or a bounded time range in Logs Explorer
 test("a dropped evidence link still posts the card with 'No verified evidence link'", () => {
   const generic = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=resource.type%3D%22k8s_container%22";
   const slack = slackOf(postCard(load(), { fields: { ...summary, evidenceUrl: generic } }));
-  const evidence = slack.attachments[0].blocks[3].text.text;
+  const evidence = slack.attachments[0].blocks[4].text.text;
   assert.equal(evidence, `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`);
   assert.doesNotMatch(JSON.stringify(slack), /<https?:|k8s_container/u);
 });
@@ -151,7 +156,8 @@ test("a button token minted with a now-dropped link still decodes, without the l
   const generic = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=resource.type%3D%22k8s_container%22";
   const card = {
     priority: "medium",
-    provisional: true,
+    why: "client effect not verified (1 of 5 sampled) · known: no · alert: error",
+    also: [{ title: "other issue", priority: "low" }],
     resolved: false,
     title: "t",
     summary: "s",
@@ -162,14 +168,14 @@ test("a button token minted with a now-dropped link still decodes, without the l
   };
   const token = encodeState(card, bind, key);
   assert.deepEqual(decodeState(token, bind, key), { ...card, evidenceHref: null });
-  assert.equal(renderBlocks({ ...card, evidenceHref: null }, undefined).attachments[0].blocks[3].text.text.includes("No verified"), true);
+  assert.equal(renderBlocks({ ...card, evidenceHref: null }, undefined).attachments[0].blocks[4].text.text.includes("No verified"), true);
 });
 
 // ---------------------------------------------------------------- evidence provenance
 
 const BASE = "https://console.cloud.google.com/logs/query";
 const link = (query, project = PROJECT) => `${BASE}?project=${project}&query=${encodeURIComponent(query)}`;
-const evidenceOf = (result) => slackOf(result).attachments[0].blocks[3].text.text;
+const evidenceOf = (result) => slackOf(result).attachments[0].blocks[4].text.text;
 const NO_LINK = `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`;
 const amendCtx = { sessionKey: SESSION, agentId: "debugger", toolName: "message" };
 const amend = (loaded, evidenceUrl) =>
@@ -177,7 +183,7 @@ const amend = (loaded, evidenceUrl) =>
     { toolName: "message", params: { action: "edit", target: `channel:${CHANNEL}`, messageId: CARD_TS, message: envelope({ ...summary, evidenceUrl }) } },
     amendCtx,
   );
-const amendedEvidence = (result) => result.params.livexAttachments[0].blocks[3].text.text;
+const amendedEvidence = (result) => result.params.livexAttachments[0].blocks[4].text.text;
 
 // Each of these passes the substring shape check (insertId= or both timestamp bounds) but was never
 // returned by the log tool.
@@ -361,5 +367,165 @@ test("recorded links expire, and each session and the session count are bounded"
     assert.equal(sessionKept(500), true);
   } finally {
     Date.now = realNow;
+  }
+});
+
+test("read stats expire after the evidence TTL and the session count is bounded", () => {
+  let clock = 2_000_000;
+  const realNow = Date.now;
+  Date.now = () => clock;
+  try {
+    const loaded = load(baseConfig);
+    recordOutcomes(loaded, 1);
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+    clock += 3 * 60 * 60_000;
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+    clock += 1;
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false, outcomes: 0 });
+    // A read after expiry starts a fresh count.
+    recordOutcomes(loaded, 1);
+    assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 1 });
+
+    // 501 sessions: the least recently read one is evicted.
+    const sessionOf = (index) => `agent:debugger:slack:channel:c0alerts1:thread:1768990000.${String(index).padStart(6, "0")}`;
+    for (let index = 0; index < 501; index += 1) {
+      recordOutcomes(loaded, 1, sessionOf(index));
+    }
+    assert.equal(readStats(loaded, sessionOf(0)).ok, 0);
+    assert.equal(readStats(loaded, sessionOf(1)).ok, 1);
+    assert.equal(readStats(loaded, sessionOf(500)).ok, 1);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("logs reads are counted per thread and a capped, incomplete or failed read marks it degraded", () => {
+  const loaded = load();
+  const call = (target, event) => target.hooks.get("after_tool_call")(event, { sessionKey: SESSION });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false, outcomes: 0 });
+  call(loaded, { toolName: "livex_gcp_logs_read", result: { details: { entries: [], truncated: false, truncationReasons: [] } } });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 0 });
+  call(loaded, { toolName: "livex_repository_read", result: { details: { truncated: true } } });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false, outcomes: 0 });
+  const fieldOnly = load();
+  call(fieldOnly, { toolName: "livex_gcp_logs_read", result: { details: { truncated: true, truncationReasons: ["field"] } } });
+  assert.deepEqual(readStats(fieldOnly, SESSION), { ok: 1, degraded: false, outcomes: 0 });
+  for (const details of [
+    { truncated: true },
+    { complete: false },
+    { truncationReasons: ["row-limit"] },
+    { truncationReasons: ["result-byte-limit"] },
+    { truncated: true, truncationReasons: ["field", "row-limit"] },
+  ]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", result: { details } });
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true, outcomes: 0 });
+  }
+  const row = { truncationReasons: ["row-limit"] };
+  for (const [params, degraded] of [
+    [{ query: "x" }, false],
+    [{ conversationId: "c1" }, true],
+    [{ insertIds: ["a"] }, true],
+    [{ insertIds: [] }, false],
+    [undefined, true],
+  ]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", ...(params ? { params } : {}), result: { details: row } });
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded, outcomes: 0 }, JSON.stringify(params));
+  }
+  const countIncomplete = load();
+  call(countIncomplete, { toolName: "livex_gcp_logs_read", params: { query: "x" }, result: { details: { complete: false } } });
+  assert.deepEqual(readStats(countIncomplete, SESSION), { ok: 1, degraded: true, outcomes: 0 });
+  // Outcome reads: a clean read keyed on ids, or a complete count. Unknown params are not one.
+  for (const [params, details, outcomes] of [
+    [{ conversationId: "c1" }, { entries: [] }, 1],
+    [{ jobId: "j1" }, { truncated: true, truncationReasons: ["field"] }, 1],
+    [{ roomId: "r1" }, { entries: [] }, 1],
+    [{ traceId: "t1" }, { entries: [] }, 1],
+    [{ insertId: "i1" }, { entries: [] }, 1],
+    [{ insertIds: ["a"] }, { entries: [] }, 1],
+    [{ insertIds: [] }, { entries: [] }, 0],
+    [{ query: "x" }, { entries: [] }, 0],
+    [undefined, { entries: [] }, 0],
+    [{ conversationId: "c1" }, { truncationReasons: ["row-limit"] }, 0],
+    [{ mode: "count", phrases: ["x"] }, { complete: true }, 1],
+    [{ mode: "count", phrases: ["x"] }, { complete: false }, 0],
+  ]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", ...(params ? { params } : {}), result: { details } });
+    assert.equal(readStats(fresh, SESSION).outcomes, outcomes, JSON.stringify([params, details]));
+  }
+  for (const [error, expected] of [
+    ["boom", { ok: 0, degraded: true, outcomes: 0 }],
+    ["Cloud log read exceeded its output limit", { ok: 0, degraded: true, outcomes: 0 }],
+    ["Invalid end: use ISO UTC", { ok: 0, degraded: false, outcomes: 0 }],
+    [new Error("Invalid end: use ISO UTC"), { ok: 0, degraded: false, outcomes: 0 }],
+  ]) {
+    const failed = load();
+    call(failed, { toolName: "livex_gcp_logs_read", error });
+    assert.deepEqual(readStats(failed, SESSION), expected, String(error));
+  }
+  assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false, outcomes: 0 });
+});
+
+test("card plugin and memory plugin accept and reject the same V3 envelopes", async () => {
+  const lite = await import("../livex-investigations-lite/core.mjs");
+  const variants = [{}, { priority: "high" }, { sampleAffected: 9 }, { known: "maybe" }, { alertClass: "Bad Class" }, { knownRef: "x".repeat(201) }, { scope: "many" }, { extra: 1 }];
+  for (const v of variants) {
+    const text = envelope({ ...summary, ...v });
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), JSON.stringify(v));
+  }
+});
+
+test("card plugin and memory plugin agree on alternates, evidence links and optional fields", async () => {
+  const lite = await import("../livex-investigations-lite/core.mjs");
+  const facts = Object.fromEntries(
+    ["alertClass", "service", "alertSeverity", "sustained", "known", "sampleChecked", "sampleAffected", "scope", "traffic", "clientEffectVerified"].map((key) => [key, summary[key]]),
+  );
+  const alternate = { title: "Other category", ...facts, known: "ongoing", knownRef: "LX-1234" };
+  const variants = [
+    { alternates: [alternate] },
+    { alternates: [] },
+    { alternates: Array(4).fill(alternate) },
+    { alternates: Array(5).fill(alternate) },
+    { alternates: [{ ...alternate, signature: "x | y" }] },
+    { alternates: [{ ...alternate, title: "" }] },
+    { alternates: [{ ...alternate, sampleAffected: 6 }] },
+    { alternates: [{ ...alternate, knownRef: undefined }] },
+    { alternates: [{ ...alternate, scope: undefined }] },
+    { alternates: [null] },
+    { alternates: [[]] },
+    { alternates: {} },
+    { evidenceUrl: null },
+    { evidenceUrl: "https://example.com/not-a-logs-link" },
+    { evidenceUrl: "not a url" },
+    { evidenceUrl: 7 },
+    { resolved: true },
+    { resolved: "yes" },
+    { knownRef: "INC-7", known: "fixed" },
+    { knownRef: "" },
+    { sampleChecked: 501, sampleAffected: 0 },
+    { sampleChecked: 0, sampleAffected: 0 },
+    { sampleChecked: 1.5 },
+    { sustained: "no" },
+    { clientEffectVerified: null },
+    { alertSeverity: "critical" },
+    { traffic: "staging" },
+    { service: "a" },
+    { title: "t".repeat(121) },
+    { signature: "s".repeat(161) },
+    { summary: "x".repeat(601) },
+    { nextAction: "line\nbreak" },
+    { owner: " " },
+    { checkedWindow: "w".repeat(81) },
+    { provisional: false },
+  ];
+  for (const v of variants) {
+    const text = envelope({ ...summary, ...v });
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), JSON.stringify(v));
+  }
+  const { alertClass, ...missing } = summary;
+  for (const text of [envelope(missing), envelope(summary, undefined, "LIVEX_ALERT_SUMMARY_V2"), ` \n${envelope(summary)}`, `x\n${envelope(summary)}`]) {
+    assert.equal(Boolean(classifyEnvelope(text).card), Boolean(lite.readSummaryEnvelope(text).record), text.slice(0, 30));
   }
 });

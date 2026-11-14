@@ -24,6 +24,10 @@
         "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$",
         "description": "Optional GCP project id (same value as livex-gcp-readonly). When set, evidence links must belong to this project."
       },
+      "priorityPolicyPath": {
+        "type": "string",
+        "description": "Path of the priority policy JSON (config/priority-policy.json). Unset uses the built-in default; a missing or invalid file logs a warning and uses the default."
+      },
       "allowedSenderId": {
         "type": "string",
         "description": "Slack user ID allowed to press the priority buttons. Same semantics as livex-gcp-readonly. An unresolved placeholder leaves the cards without buttons."

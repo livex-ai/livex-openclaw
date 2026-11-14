@@ -6,8 +6,40 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Test-only: capture each createPlugin() instance so tests can read its internals.
+const plugins = [];
+globalThis.__livexSlackSummaryPlugins = plugins;
+// Test-only: the card object behind each rendered Slack payload (see cardOf).
+const renderedCards = new WeakMap();
+globalThis.__livexSlackSummaryCards = renderedCards;
 const sdkHook = registerHooks({
+  load(url, context, nextLoad) {
+    const result = nextLoad(url, context);
+    if (!url.endsWith("/core.mjs?capture") || result.source == null) {
+      return result;
+    }
+    const source = String(result.source)
+      .replace("export function createPlugin(", "function createPluginInner(")
+      .replace("export function renderBlocks(", "function renderBlocksInner(") + `
+export function createPlugin(...args) {
+  const plugin = createPluginInner(...args);
+  globalThis.__livexSlackSummaryPlugins.push(plugin);
+  return plugin;
+}
+export function renderBlocks(card, controls) {
+  const rendered = renderBlocksInner(card, controls);
+  globalThis.__livexSlackSummaryCards.set(rendered, card);
+  return rendered;
+}
+`;
+    return { ...result, source };
+  },
   resolve(specifier, context, nextResolve) {
+    if (specifier === "./core.mjs" && context.parentURL?.endsWith("/index.ts")) {
+      // A separate instance of core.mjs for the entry, so its createPlugin() can be captured.
+      const resolved = nextResolve(specifier, context);
+      return { ...resolved, url: `${resolved.url}?capture` };
+    }
     if (specifier !== "openclaw/plugin-sdk/plugin-entry") {
       return nextResolve(specifier, context);
     }
@@ -23,21 +55,32 @@ export const SENDER = "U0ALLOWED";
 export const THREAD = "1768996800.000001";
 export const SESSION = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:${THREAD}`;
 export const CARD_TS = "1768996900.000100";
-export const MARK = "LIVEX_ALERT_SUMMARY_V2";
+export const MARK = "LIVEX_ALERT_SUMMARY_V3";
+export const EVIDENCE_URL = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22";
 
 export const summary = {
   title: "checkout-api upstream timeouts",
   signature: "checkout-api | create order | upstream timeout",
-  priority: "medium",
-  provisional: true,
+  alertClass: "gke-application-errors", service: "chat-engine", alertSeverity: "error", sustained: false,
+  known: "no", sampleChecked: 5, sampleAffected: 1, scope: "single", traffic: "live", clientEffectVerified: true,
   summary: "An upstream timeout was recovered by the request retry.",
   nextAction: "Confirm whether later requests needed retries.",
   owner: "Unassigned",
   checkedWindow: "2026-01-21 12:20–12:25 UTC",
-  evidenceUrl: "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22",
 };
-export const envelope = (fields = summary, full = "Full report with private IDs.") =>
-  `${MARK}\n${JSON.stringify(fields)}\n\n${full}`;
+/** `summary` citing the evidence link; the default card of postCard and envelope. */
+export const linked = { ...summary, evidenceUrl: EVIDENCE_URL };
+
+const FACT_KEYS = [
+  "alertClass", "service", "alertSeverity", "sustained", "known",
+  "sampleChecked", "sampleAffected", "scope", "traffic", "clientEffectVerified",
+];
+/** The fact keys of an envelope (plus knownRef when present). */
+export const factsOf = (fields) =>
+  Object.fromEntries([...FACT_KEYS, "knownRef"].filter((key) => key in fields).map((key) => [key, fields[key]]));
+
+export const envelope = (fields = linked, full = "Full report with private IDs.", marker = MARK) =>
+  `${marker}\n${JSON.stringify(fields)}\n\n${full}`;
 
 export const baseConfig = { allowedChannelId: CHANNEL, allowedSenderId: SENDER };
 
@@ -52,6 +95,7 @@ export function load(pluginConfig = baseConfig, { stateDir = newStateDir(), runt
   const hooks = new Map();
   const registrations = [];
   const warnings = [];
+  const before = plugins.length;
   entry.register({
     pluginConfig,
     runtime: runtime ?? { state: { resolveStateDir: () => stateDir } },
@@ -64,19 +108,19 @@ export function load(pluginConfig = baseConfig, { stateDir = newStateDir(), runt
       registrations.push(registration);
     },
   });
-  return { hooks, registrations, interactive: registrations[0], entry, warnings, stateDir };
+  return { hooks, registrations, interactive: registrations[0], entry, warnings, stateDir, plugin: plugins[before] };
 }
 
 /**
  * Send the final reply through the render hook and confirm it like Slack would.
  * `evidence` URLs are first recorded as if the log tool returned them in this session.
  */
-export function postCard(loaded, { sessionKey = SESSION, ts = CARD_TS, fields = summary, content = "", runId, evidence = [] } = {}) {
+export function postCard(loaded, { sessionKey = SESSION, ts = CARD_TS, fields = linked, marker = MARK, content = "", runId, evidence = [] } = {}) {
   if (evidence.length) {
     recordEvidence(loaded, { entryUrls: evidence, sessionKey });
   }
   const result = loaded.hooks.get("reply_payload_sending")(
-    { kind: "final", channel: "slack", sessionKey, runId, payload: { text: envelope(fields) } },
+    { kind: "final", channel: "slack", sessionKey, runId, payload: { text: envelope(fields, undefined, marker) } },
     { channelId: "slack", sessionKey },
   );
   loaded.hooks.get("message_sent")(
@@ -140,4 +184,32 @@ export function recordEvidence(
     { toolName, params: {}, result, ...(error ? { error } : {}) },
     { toolName, sessionKey, agentId: "debugger" },
   );
+}
+
+/** The plugin's recorded logs-read outcome for a thread session. */
+export const readStats = (loaded, sessionKey) => loaded.plugin.readStatsFor(sessionKey);
+
+/** Feed one livex_gcp_logs_read result (no links) to after_tool_call: a counted logs read. */
+export function recordRead(loaded, details = { entries: [], truncated: false, truncationReasons: [] }, sessionKey = SESSION, params = {}) {
+  const toolName = "livex_gcp_logs_read";
+  return loaded.hooks.get("after_tool_call")(
+    { toolName, params, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } },
+    { toolName, sessionKey, agentId: "debugger" },
+  );
+}
+
+/** The card object the plugin rendered into this reply_payload_sending result. */
+export const cardOf = (result) => renderedCards.get(result.payload.channelData.slack);
+
+/** Every text on the rendered card (sections and context elements), one per line. */
+export const cardText = (result) =>
+  flat(result.payload.channelData.slack)
+    .map((block) => block.text?.text ?? block.elements?.map((element) => element.text?.text ?? element.text).join(" ") ?? "")
+    .join("\n");
+
+/** Feed `count` clean, id-scoped logs reads: each one an outcome read for the client-effect check. */
+export function recordOutcomes(loaded, count = 3, sessionKey = SESSION) {
+  for (let index = 0; index < count; index += 1) {
+    recordRead(loaded, undefined, sessionKey, { insertIds: [`outcome${index}`] });
+  }
 }

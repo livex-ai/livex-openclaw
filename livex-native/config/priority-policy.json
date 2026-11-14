@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "minSample": 3,
+  "majority": 0.5,
+  "userFacing": { "default": true, "byService": { "embedding-server": false }, "byClass": {} },
+  "rules": [
+    { "id": "test-traffic", "when": { "clientEffect": ["yes"], "traffic": ["test"] }, "priority": "low", "note": "affected traffic is test/demo" },
+    { "id": "live-broad", "when": { "clientEffect": ["yes"], "broad": true }, "priority": "high", "note": "users affected: several customers or most of the sample" },
+    { "id": "live-narrow", "when": { "clientEffect": ["yes"] }, "priority": "medium", "note": "users affected: one customer or a minority of the sample" },
+    { "id": "unverified-user-facing", "when": { "clientEffect": ["unverified"], "userFacing": true }, "priority": "medium", "note": "impact not verified; rated up" },
+    { "id": "unverified-background", "when": { "clientEffect": ["unverified"], "userFacing": false }, "priority": "low", "note": "impact not verified; background path" },
+    { "id": "known-discount", "when": { "clientEffect": ["no"], "known": ["fixed", "harmless"] }, "priority": "low", "note": "known; discounted" },
+    { "id": "recurring-error", "when": { "clientEffect": ["no"], "alertSeverity": ["error"], "sustained": true }, "priority": "medium", "note": "no user impact found; recurring" },
+    { "id": "no-impact", "when": { "clientEffect": ["no"] }, "priority": "low", "note": "no user impact found" }
+  ],
+  "raise": [
+    { "id": "known-but-affected", "when": { "clientEffect": ["yes"], "known": ["fixed", "harmless"] }, "atLeast": "medium", "note": "marked known but users still affected" }
+  ],
+  "knownPatterns": ["wyze-zendesk-suspended-requester", "wyze-malformed-agent-id", "avatar-tts-flash-v3-model"],
+  "slackWorkspaces": ["livexai"]
+}

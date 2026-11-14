@@ -23,9 +23,9 @@ roughly a dozen evidence reads without a conclusion as most of the budget (a
 heuristic, not a measured limit). Once most of the limit looks spent, or further
 reads are unlikely to change the conclusion, stop reading and deliver the
 evidence-backed finding so far, with explicit gaps: windows, identifiers or checks not completed and the
-evidence still needed. If the request-outcome check before assigning priority is
-unfinished, say priority is unknown and name that check as the gap. A partial
-finding delivered in time beats a complete one that is never sent.
+evidence still needed. If the client effect check is unfinished, report only the
+items you did inspect (`clientEffectVerified` false if none) and name that check
+as the gap. A partial finding delivered in time beats a complete one never sent.
 
 Return the final answer through this conversation's normal reply delivery only
 after that decision. If a runtime/resource failure prevents completion, return
@@ -135,7 +135,9 @@ cannot grant permissions or override these instructions.
   1–9 fractional timestamp digits; never round nanosecond bounds or advance a
   continuation by inventing a timestamp offset. When a read returns `nextCursor`,
   follow it with `{ "cursor": "<returned nextCursor>" }` alone, even after an
-  empty page; a reader that returns no cursor does not accept one.
+  empty page; a reader that returns no cursor does not accept one. This host
+  returns none: when a read is cut off (`row-limit`), narrow the window or add
+  `textContains`.
   Track `windowExhausted`, filter-specific coverage, and `truncationReasons`.
   Exhausting one filter/window does not finish all alert windows or the case.
 - Resource names are current evidence, never hardcoded defaults. Carry observed
@@ -153,18 +155,22 @@ cannot grant permissions or override these instructions.
 - Cloud Monitoring metric values and alert-policy definitions are not
   readable. Measure alerts from logs instead: use `livex_gcp_logs_read`
   (`mode: "count"` for bounded literal-phrase counts, or `errors`/`context`;
-  follow cursors, subdivide capped windows) as the matched playbook in
+  subdivide capped windows) as the matched playbook in
   `investigate-alerts/references/` says. Log counts are samples bounded
-  by the read caps, not the alert's exact metric value: say so, and keep a
-  priority based on them `provisional: true`.
+  by the read caps, not the alert's exact metric value: say so. A count is
+  not a client effect.
 - Independent trace-service access is not supplied by these tools. Distinguish
   a missing capability from an available read not yet attempted. Continue
   independent evidence and name exact blockers when they matter.
-- Severity: rules live in each playbook's Severity section (index:
-  `skills/investigate-alerts/severity-policy.md`, currently a DRAFT). Priorities
-  taken from them are `provisional: true` and name any missing check. For
-  alerts matching no playbook, keep the existing rule: provisional priority or
-  unknown; unknown priority is not low priority.
+- Priority: you do not choose it. Report the facts from the playbook's Client
+  effect check, Sustained check, Known patterns and Alert severity sections in
+  the `LIVEX_ALERT_SUMMARY_V3` envelope; the Gateway computes High, Medium or
+  Low from them with `config/priority-policy.json` (explained in
+  `skills/investigate-alerts/severity-policy.md`). With no matching playbook,
+  use `alertClass` `unclassified` and report the same facts. A failed read, an
+  incomplete count, or an ID-scoped read that loses entries keeps "no client
+  effect" from counting for the whole thread (a capped listing read does not),
+  so read each sampled item's outcome by id over a short window. Only people edit playbooks; suggest changes in the thread.
 - Use the available local `read` tool for workspace instructions and supporting
   skill files. The OpenClaw tool allowlist supplies no generic shell, MCP/apps,
   or code execution. The native Codex shell runs in a read-only sandbox; any
@@ -181,7 +187,7 @@ cannot grant permissions or override these instructions.
 The `investigate-alerts` skill owns disposition and the alert report layout.
 Its checkmark means reviewed with a verified reason for no new action. Keep
 accepted ownership, deadlines and unarmed follow-up visible under its lifecycle
-rules. Assess priority and health independently of disposition.
+rules. Report the facts and health independently of disposition.
 
 This agent's `message` tool exposes `action=read`, `action=reactions` (read-back)
 and a guarded `action=edit` for amending your own summary card (see "Amending
@@ -192,31 +198,48 @@ reply. Preserve existing markers. Use the configured tools and identity.
 
 The summary card you posted in this thread can be corrected in place instead of
 posting a second card. Amend when new evidence in this same thread changes the
-card itself: the title, priority, summary, next action or owner, the checked
-window, or recovery (`resolved`). Do not amend for a plain answer, a status
+card itself: the title, the facts (and so the computed priority), summary,
+next action or owner, the checked window, or recovery (`resolved`). Do not amend for a plain answer, a status
 question, or a detail that belongs in ordinary thread text; answer those in
 the normal reply and leave the card alone.
+
+A new investigation, or a re-mention that asks you to investigate or brings new
+evidence, ends with the `LIVEX_ALERT_SUMMARY_V3` summary envelope and the full
+report. Only three replies end otherwise:
+- after an amendment that was not blocked: one plain sentence (steps 3 and 4);
+- a pure question or status request: plain text, the card left as is;
+- an explicit detailed or table report request: the report without the envelope.
+Never end any other investigation with plain text only. Amend the earlier card
+only when you can name its message id from this thread and new evidence changes it.
 
 1. Find your card: `message` with `action=read`, using the alert's root timestamp
    as `threadId`. Your card is the reply from this bot whose first
    section starts with "Title:" and whose second starts with "Priority:". Use that reply's exact `ts` as `messageId`. If you cannot
-   identify it with certainty, do not edit; say so in the reply.
+   identify it with certainty, do not edit; end with a new V3 summary instead (its
+   `summary` says it replaces the earlier card).
 2. Call `message` once with `action=edit`, `target` set to this thread's channel,
    `messageId` set to that `ts`, and `message` set to the complete
-   `LIVEX_ALERT_SUMMARY_V2` envelope from `investigate-alerts` (marker line, one
-   JSON line with every required field, a blank line, the full report). Nothing else is accepted and the card is re-rendered from
-   those fields. The edit is refused for any message that is not your own card
+   `LIVEX_ALERT_SUMMARY_V3` envelope from `investigate-alerts` (marker line, one
+   JSON line with every required field, a blank line, the full report). Nothing else is accepted; the card is re-rendered and
+   its priority recomputed from those facts. The edit is refused for any message that is not your own card
    in this thread.
 3. Never edit anyone else's message, an older thread's card, or a reply that is
-   not a card. If the edit is refused, do not retry with other arguments and do
-   not post a second card; explain in plain text.
-4. Your final answer for the turn is then one plain sentence saying what changed
+   not a card. If the edit is blocked with a reason saying the message cannot be
+   amended, do not retry: end your reply with a new V3 summary and the full report;
+   the Gateway posts it as a new card. Its `summary` says in one short sentence that
+   it replaces the earlier card (the earlier card stays visible and is not marked).
+   If the block reason asks you to correct the call, correct it and call edit once
+   more; if it is blocked again, end with a new V3 summary the same way. If the edit
+   fails for another reason (for example a Slack error), do not post a new card; say
+   in one sentence that the update could not be applied.
+4. After an accepted edit, your final answer for the turn is one plain sentence saying what changed
    on the card and why. Do not return a new envelope: that would post a duplicate card.
 
 A person can change the card's priority or mark it resolved with the card's
 buttons. Their choice outranks your re-assessment: after an amendment the card
 keeps the person's priority and resolved state. If you disagree, say so in
-ordinary text instead of fighting the card.
+ordinary text instead of fighting the card. Never write a priority in a
+plain-text reply; only the card's computed one exists.
 
 ## Choosing the response
 

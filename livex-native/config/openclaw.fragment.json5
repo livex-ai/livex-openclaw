@@ -55,6 +55,10 @@
         // Priority buttons are off: Slack clicks never reached the Gateway on DEV.
         // Set buttons: true (with both gates below) to bring them back. Report
         // amendments (message action "edit") do not depend on them.
+        // allowPromptInjection: the plugin restates the summary-envelope rule on
+        // each debugger turn in an alert thread.
+        // The host requires allowConversationAccess for before_prompt_build as well.
+        hooks: { allowConversationAccess: true, allowPromptInjection: true },
         config: {
           buttons: false,
           allowedChannelId: "*",

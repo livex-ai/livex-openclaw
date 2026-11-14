@@ -215,7 +215,9 @@ test("the real LiveX summary card attachment passes every patched sanitizer unch
   const dir = applyBoth();
   const card = {
     priority: "high",
-    provisional: false,
+    why: "clients affected (4 of 5 sampled) · known: no · alert: error",
+    // An alternate adds the Also context line, which must pass the sanitizer too.
+    also: [{ title: "avatar sessions silent", priority: "medium" }],
     resolved: false,
     title: "checkout-api upstream timeouts",
     summary: "An upstream timeout was recovered by the request retry.",

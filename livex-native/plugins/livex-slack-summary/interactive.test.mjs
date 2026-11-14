@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { deflateRawSync } from "node:zlib";
 import { loadSigningKey } from "./core.mjs";
-import { CHANNEL, SENDER, THREAD, baseConfig, buttonsOf, fakeClick, labelsOf, load, newStateDir, flat, postCard, summary } from "./test-helpers.mjs";
+import { CHANNEL, SENDER, THREAD, baseConfig, buttonsOf, fakeClick, labelsOf, load, newStateDir, flat, postCard, recordRead, linked as summary } from "./test-helpers.mjs";
 
 const blocksOf = (result) => flat(result.payload.channelData.slack);
 const pick = (blocks, label) => buttonsOf(blocks).find((button) => button.text.text === label).value;
@@ -29,20 +29,21 @@ test("a configured card carries priority buttons and registers one Slack handler
   assert.equal(typeof loaded.interactive.handler, "function");
 
   const blocks = blocksOf(postCard(loaded));
-  assert.equal(blocks.length, 7);
-  assert.equal(priorityOf(blocks), "*Priority:* \u{1F7E1} Medium (provisional)");
-  // Medium is provisional, so confirming it stays available.
-  assert.deepEqual(labelsOf(blocks), ["High", "Medium", "Low", "Resolved"]);
+  assert.equal(blocks.length, 8);
+  // No logs read in the thread: the user-facing alert is rated up to Medium.
+  assert.equal(priorityOf(blocks), "*Priority:* \u{1F7E1} Medium");
+  // The current priority is not offered again.
+  assert.deepEqual(labelsOf(blocks), ["High", "Low", "Resolved"]);
   const buttons = buttonsOf(blocks);
   assert.deepEqual(
     buttons.map((button) => button.action_id),
-    [1, 2, 3, 4].map((n) => `openclaw:callback_button:1:${n}`),
+    [1, 2, 3].map((n) => `openclaw:callback_button:1:${n}`),
   );
   for (const button of buttons) {
     assert.match(button.value, /^livex-priority:(high|medium|low|resolved):i[A-Za-z0-9_-]+$/u);
     assert.ok(button.value.length <= 2000);
   }
-  assert.equal(buttons[3].style, "primary");
+  assert.equal(buttons[2].style, "primary");
 });
 
 test("buttons are absent without both gates, outside the allowed channel, and the card is otherwise unchanged", () => {
@@ -50,11 +51,11 @@ test("buttons are absent without both gates, outside the allowed channel, and th
   for (const config of configs) {
     const loaded = load(config);
     assert.equal(loaded.registrations.length, 0, JSON.stringify(config));
-    assert.equal(blocksOf(postCard(loaded)).length, 6);
+    assert.equal(blocksOf(postCard(loaded)).length, 7);
   }
   const wrongChannel = load({ allowedChannelId: "C0OTHER9", allowedSenderId: SENDER });
-  assert.equal(blocksOf(postCard(wrongChannel)).length, 6);
-  assert.equal(blocksOf(postCard(load({ allowedChannelId: "*", allowedSenderId: SENDER }))).length, 7);
+  assert.equal(blocksOf(postCard(wrongChannel)).length, 7);
+  assert.equal(blocksOf(postCard(load({ allowedChannelId: "*", allowedSenderId: SENDER }))).length, 8);
 });
 
 test("a click from anyone but the allowed sender is refused, changes nothing and logs a warning", async () => {
@@ -81,7 +82,7 @@ test("a priority click edits the card in place with the new priority and refresh
   assert.equal(edited.text, "\u{1F534} checkout-api upstream timeouts");
   assert.equal(priorityOf(flat(edited)), "*Priority:* \u{1F534} High");
   // Everything but the priority line and the buttons is untouched.
-  assert.deepEqual(flat(edited).slice(2, 6), blocks.slice(2, 6));
+  assert.deepEqual(flat(edited).slice(2, 7), blocks.slice(2, 7));
   assert.deepEqual(flat(edited)[0], blocks[0]);
   assert.deepEqual(labelsOf(flat(edited)), ["Medium", "Low", "Resolved"]);
   assert.deepEqual(loaded.warnings, []);
@@ -94,7 +95,9 @@ test("a priority click edits the card in place with the new priority and refresh
 
 test("Resolved closes the card, keeps the priority it had, and a priority click reopens it", async () => {
   const loaded = load();
-  const blocks = blocksOf(postCard(loaded, { fields: { ...summary, priority: "high", provisional: false } }));
+  recordRead(loaded);
+  const blocks = blocksOf(postCard(loaded, { fields: { ...summary, sampleAffected: 4 } }));
+  assert.equal(priorityOf(blocks), "*Priority:* \u{1F534} High");
   assert.deepEqual(labelsOf(blocks), ["Medium", "Low", "Resolved"]);
   const click = fakeClick({ value: pick(blocks, "Resolved") });
   await loaded.interactive.handler(click.ctx);
@@ -112,7 +115,7 @@ test("a tampered, malformed or oversized value is refused with no respond call",
   const loaded = load();
   const good = pick(blocksOf(postCard(loaded)), "High");
   const row = (patch) => {
-    const base = ["medium", 1, 0, "title", "summary", "next", "owner", "window", null];
+    const base = ["medium", "why", [["other", "low"]], 0, "title", "summary", "next", "owner", "window", null];
     return `i${deflateRawSync(Buffer.from(JSON.stringify(patch(base)))).toString("base64url")}`;
   };
   const tokens = [
@@ -122,17 +125,27 @@ test("a tampered, malformed or oversized value is refused with no respond call",
     "i" + "A".repeat(3000),
     "r" + "unknown_reference",
     "i!!!not-base64!!!",
-    row((r) => r.slice(0, 8)),
+    row((r) => r.slice(0, 9)),
     row((r) => [...r, "extra"]),
     row((r) => ["urgent", ...r.slice(1)]),
-    row((r) => [r[0], 2, ...r.slice(2)]),
-    row((r) => [r[0], "1", ...r.slice(2)]),
-    row((r) => [r[0], r[1], null, ...r.slice(3)]),
-    row((r) => [...r.slice(0, 4), "x".repeat(601), ...r.slice(5)]),
-    row((r) => [...r.slice(0, 3), "line\nbreak", ...r.slice(4)]),
-    row((r) => [...r.slice(0, 8), "https://evil.example/logs"]),
-    row((r) => [...r.slice(0, 8), "http://console.cloud.google.com/logs"]),
-    row((r) => [...r.slice(0, 8), 42]),
+    // Priorities that no longer exist.
+    row((r) => ["unknown", ...r.slice(1)]),
+    row((r) => ["critical", ...r.slice(1)]),
+    // The retired provisional flag in its old slot.
+    row((r) => [r[0], 1, ...r.slice(2)]),
+    row((r) => [r[0], "why\nbreak", ...r.slice(2)]),
+    row((r) => [r[0], r[1], "none", ...r.slice(3)]),
+    row((r) => [r[0], r[1], [["other", "urgent"]], ...r.slice(3)]),
+    row((r) => [r[0], r[1], [["other"]], ...r.slice(3)]),
+    row((r) => [r[0], r[1], Array.from({ length: 5 }, () => ["other", "low"]), ...r.slice(3)]),
+    row((r) => [...r.slice(0, 3), 2, ...r.slice(4)]),
+    row((r) => [...r.slice(0, 3), "1", ...r.slice(4)]),
+    row((r) => [...r.slice(0, 3), null, ...r.slice(4)]),
+    row((r) => [...r.slice(0, 5), "x".repeat(601), ...r.slice(6)]),
+    row((r) => [...r.slice(0, 4), "line\nbreak", ...r.slice(5)]),
+    row((r) => [...r.slice(0, 9), "https://evil.example/logs"]),
+    row((r) => [...r.slice(0, 9), "http://console.cloud.google.com/logs"]),
+    row((r) => [...r.slice(0, 9), 42]),
     // A bomb inflates far past the 8 KiB state cap.
     `i${deflateRawSync(Buffer.alloc(200_000, 65)).toString("base64url")}`,
   ];
@@ -178,12 +191,12 @@ test("a card too large for a button value renders without buttons and logs", () 
   const fields = maximalFields(noiseOf("seed", 2700));
   const blocks = blocksOf(postCard(loaded, { fields, evidence: [new URL(fields.evidenceUrl).href] }));
   assert.deepEqual(buttonsOf(blocks), []);
-  assert.equal(blocks.length, 6);
-  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D/u);
+  assert.equal(blocks.length, 7);
+  assert.match(blocks[5].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D/u);
   assert.equal(loaded.warnings.length, 1);
   assert.match(loaded.warnings[0], /too large/u);
   // A card whose state does fit keeps its buttons.
-  assert.equal(buttonsOf(blocksOf(postCard(loaded))).length, 4);
+  assert.equal(buttonsOf(blocksOf(postCard(loaded))).length, 3);
 });
 
 test("a Slack edit failure never throws, never replies, and logs", async () => {
@@ -227,7 +240,7 @@ test("warnings reach console.warn without a logger and never contain the token o
 
 test("a well-formed but unsigned token is refused", async () => {
   const loaded = load();
-  const forged = `i${deflateRawSync(Buffer.from(JSON.stringify(["high", 0, 0, "title", "summary", "next", "owner", "window", null]))).toString("base64url")}`;
+  const forged = `i${deflateRawSync(Buffer.from(JSON.stringify(["high", "why", [], 0, "title", "summary", "next", "owner", "window", null]))).toString("base64url")}`;
   for (const token of [forged, `${forged}${"A".repeat(22)}`]) {
     await refused(loaded, fakeClick({ value: `livex-priority:high:${token}` }));
   }

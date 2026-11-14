@@ -38,20 +38,17 @@ Window W = alert notification time minus 10 min to plus 2 min (UTC). The
 Monitoring value cannot be read; the alert's own number is only the threshold
 context.
 
-1. **Top messages.** `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, start, end}` over W; follow
-   `nextCursor`. If `truncationReasons` includes `row-limit` and no `nextCursor`
-   is returned, split the window or add `textContains`. Group entries by message shape (strip ids). Note the top 3
+1. **Top messages.** `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, start, end, limit:50}` over W.
+   This listing read (no id) may be capped at 50 (`row-limit`; this host returns
+   no `nextCursor`); that is fine, it is a sample frame. For more shapes, split
+   the window or add `textContains`. Group entries by message shape (strip ids). Note the top 3
    shapes and 2-5 literal phrases that identify them.
 2. **Size and onset.** `livex_gcp_logs_read {mode:"count", resourceType, resourceLabels, phrases:[<top phrases>], start: W.start - 5h, end: W.end}` (6 h
-   maximum). Read `buckets` for onset and recurrence. If `complete:false`, say
-   the totals are lower bounds. Stop here if one phrase explains the alert
-   and it is a known harmless shape in the service section below.
-3. **Impact sample (N=5 conversations or requests, proposed).** Take up to 5
-   distinct conversation, session or request ids from step 1, spread across
-   the window. For each: `livex_gcp_logs_read {mode:"context", ... , conversationId | traceId}` and check whether the user-facing operation
-   still succeeded (service sections say what success looks like). Record
-   `n_failed / n_checked`. Skip ids marked `test_run`, `test_suite` or demo
-   agents from the live count and say so.
+   maximum; start shorter, such as W.start - 1h, on a busy workload). Read `buckets` for onset and recurrence. If `complete:false`, say
+   the totals are lower bounds, and an incomplete count keeps "no client effect"
+   from counting for the rest of this thread. If one phrase explains the alert and it matches a
+   Known patterns row, go straight to step 3.
+3. **Client effect sample.** Run the Client effect check below.
 4. **Recurrence and neighbours.** Other alerts in the same 30 min from other
    workloads are separate until a shared trace id or a shared dependency is
    shown. Do not sum counts across workloads.
@@ -66,8 +63,8 @@ does not usually carry a conversation id; use the request path and trace id.
 
 | If you see | And | It usually means | Then |
 | --- | --- | --- | --- |
-| `panic recovered` with `nil pointer dereference` and a stack naming a controller file | HTTP 500 on that route in the same request | a handler bug on one route; Gin recovered the process, the request still failed | Name route and agent id, count 500s on that route, sample N requests; "panic recovered" is not request success. Priority from the Severity section. *(seen 1×: https://livexai.slack.com/archives/C079BU33H0W/p1794586439158319 - bot finding, no human reply; the panic dump alone produced 43 lines, so counts overstate requests)* |
-| Hundreds of entries in one 10 min bucket, app-error filter returns none in the same window | plain-text fragments (stack lines) share timestamps | one event printed as many lines; the alert count and the application-error read do not reconcile | Report the count discrepancy; use the request outcomes for severity, not the entry count. *(seen 1×: https://livexai.slack.com/archives/C079BU33H0W/p1794459133056959 - 127 entries, bot finding, owner never accepted)* |
+| `panic recovered` with `nil pointer dereference` and a stack naming a controller file | HTTP 500 on that route in the same request | a handler bug on one route; Gin recovered the process, the request still failed | Name route and agent id, count 500s on that route, sample N requests; "panic recovered" is not request success. *(seen 1×: https://livexai.slack.com/archives/C079BU33H0W/p1794586439158319 - bot finding, no human reply; the panic dump alone produced 43 lines, so counts overstate requests)* |
+| Hundreds of entries in one 10 min bucket, app-error filter returns none in the same window | plain-text fragments (stack lines) share timestamps | one event printed as many lines; the alert count and the application-error read do not reconcile | Report the count discrepancy; use the request outcomes for the client effect check, not the entry count. *(seen 1×: https://livexai.slack.com/archives/C079BU33H0W/p1794459133056959 - 127 entries, bot finding, owner never accepted)* |
 | 4xx on one route from many ids | a client (storefront, widget) sends a malformed id | caller bug, not a gateway fault | Route to the caller's owner; no gateway change. *(unverified for gateway; the same shape on chat-engine is in the chat-engine section)* |
 | Upstream 5xx or timeout lines naming chat-engine, embedding-server or another service | that service also alerted in the window | dependency failure surfacing at the gateway | Investigate the dependency's workload first; one investigation. *(unverified)* |
 
@@ -100,7 +97,7 @@ Success = the session produced speech or video output after the error
 | TTS error `model_not_found` for one agent's language | zero audio frames, no fallback, other languages fine | an invalid `tts_model_id` in the agent's voice config | Name the agent and language; config fix by the agent owner. *(seen 1×: Fernando fixed `eleven_flash_v3` to `eleven_v3` on 2026-11-13 12:29 PST in https://livexai.slack.com/archives/C079BU33H0W/p1794544244431139; code: conversation-agent@origin/main app/tts/tts_factory.py:82 `tts_model_id`)* |
 | `Timeout during LLM language detection` in `chat-engine-avatar` | the session spoke | same noise as chat-engine | See chat-engine row. *(seen 2×: digest of 2026-11-12/13)* |
 | Reconnect-timeout or room-disconnect lines | one device or room repeats | a device or network problem, not a service fault | Check whether one device id dominates. *(unverified)* |
-| Errors only on agents named test, demo or "EXPERIMENT NOT PRODUCTION" | | non-customer traffic | Say so; Low. *(seen 1×: digest threads of 2026-11-12)* |
+| Errors only on agents named test, demo or "EXPERIMENT NOT PRODUCTION" | | non-customer traffic | Say so; `traffic: test`. *(seen 1×: digest threads of 2026-11-12)* |
 
 ## embedding-server
 
@@ -112,7 +109,7 @@ service returns `{}` with HTTP 200, so a 200 does not prove success.
 | --- | --- | --- | --- |
 | `Gemini ... 503 UNAVAILABLE` or `model failed with exception` then `All embedding attempts failed for models` | the next batch succeeded | an upstream provider blip; one failure chain is several log lines | Count `All embedding attempts failed` (chains), not total lines; check whether the caller (ingestion or search) retried. *(seen 1×: bot finding for 15 entries = 3 batch chains, thread linked from https://livexai.slack.com/archives/C079BU33H0W; the card link was not retained, so (unverified) beyond the code)* |
 | `Embedding error, <model>, <texts>` | one customer's content repeats | content-specific rejection | Name the content owner; sample the caller. *(unverified)* |
-| Redis `get`/`set` errors | embeddings still returned | cache degraded, not a failure | Low. *(code: embedding_server@origin/main app/embedding_cache/embeddeding_cache.py:195-262)* |
+| Redis `get`/`set` errors | embeddings still returned | cache degraded, not a failure | Not affected: embeddings were still returned. *(code: embedding_server@origin/main app/embedding_cache/embeddeding_cache.py:195-262)* |
 
 ## Known causes
 
@@ -123,25 +120,49 @@ message shape. A hit is a lead: confirm the same message shape and the same
 workload in the current window, treat its priority and "resolved" as stale,
 and carry its owner only if a human accepted it.
 
-## Severity
+## Client effect check
 
-Priority is `provisional: true` whenever any number below is used.
+Sample N=5 by default (proposed) of the items below (conversations, requests
+or sessions): distinct ids from step 1's listing read, spread across W, live
+agents first. Read each item's outcome with one ID-scoped read,
+`livex_gcp_logs_read {mode:"context", resourceType, resourceLabels, conversationId | traceId, start, end, limit:50}`,
+over a few minutes around the failing turn (or add `textContains` for the
+outcome phrase) so it returns fewer than 50 rows: an ID-scoped read that loses
+entries (`row-limit` or `result-byte`) makes "no client effect" unreachable for
+the whole thread, and narrowing afterwards does not undo it. An item is
+**affected** when its user-facing operation failed by the service section's
+Success definition: api-gateway request not 2xx/3xx; chat-engine turn with no
+saved answer other than the generic error text; avatar session with no speech
+or video output after the error, or ended by a reconnect timeout;
+embedding-server caller got `{}` and no retry returned a vector. Never count
+an item whose outcome you did not read; name it in Coverage. If step 1 shows no
+usable ids, list them with `textContains:<top phrase>` over a 10 min slice of W.
 
-- **High**: the impact sample shows user-facing failures in at least 3 of 5
-  checked conversations or requests (proposed), or the same failure repeats
-  across at least 3 consecutive 10 min buckets (proposed), on live (not test)
-  traffic; or any panic on an authenticated customer route with no 2xx retry.
-- **Medium**: some sampled operations failed (1-2 of 5, proposed) or failures
-  are confined to one agent or customer, or recovery of a failed operation is
-  unverified.
-- **Low**: every sampled operation succeeded or recovered, the error is a known
-  harmless shape above, or the traffic is test/demo.
-- **Unknown**: the impact sample could not be taken. Name the check and the
-  evidence needed. Unknown is not Low.
+## Sustained check
 
-The conversation-avatar row of the former severity policy is folded in here
-(Medium or above if sessions end without audio or more than 3 sessions fail,
-proposed; Low for recoverable errors or client-cancel noise).
+`sustained` is true when step 2's hourly `buckets` show the top phrase in at
+least 2 consecutive hours, or step 5's latest complete 10 min window still
+shows it 30 minutes or more after W (proposed). Otherwise false.
+
+## Known patterns
+
+`knownRef` is the id cell, copied verbatim; `known` is the row's state, except
+that a `fixed` row is `ongoing` while the symptom is in the latest completed
+window. Only people edit this
+table; suggest a new row in the thread.
+
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
+| --- | --- | --- | --- | --- |
+| `pattern:wyze-zendesk-suspended-requester` | `Error creating tickets in create_zendesk_ticket` 4xx for the Wyze agent, "suspended requester" | harmless | 2026-11-06 | https://livexai.slack.com/archives/C09N85B5664/p1793993173960419 (Tanmesh: known, does not count) |
+| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | ongoing | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin named the remedy, widget trim fix chatbox-js PR 1528 and a Wyze theme fix; not confirmed shipped) |
+| `pattern:avatar-tts-flash-v3-model` | TTS `model_not_found` for `eleven_flash_v3` in the English avatar voice config (Sojitz/Pier One) | fixed | 2026-11-13 | https://livexai.slack.com/archives/C079BU33H0W/p1794544244431139 (Fernando changed it to `eleven_v3`) |
+
+## Alert severity
+
+The alert text carries none: use `alertSeverity: "error"`. `alertClass` is
+`gke-application-errors`; `service` is the namespace from the title:
+`api-gateway`, `chat-engine`, `chat-engine-avatar`, `conversation-avatar` or
+`embedding-server`.
 
 ## Owner
 

@@ -35,13 +35,11 @@ The digest's own Logs link carries the window; use its timestamps as
 1. **Inventory.** List every category in the digest with its count and service.
    Mark pairs that share a count (likely the same events at two layers).
 2. **Rank by user impact, not by count.** Check the category sections below for
-   whether the handler fails the user's request. Pick the top 3 to verify.
+   whether the handler fails the user's request. Pick at most 2 to verify.
 3. **Size and onset.** For each picked category,
    `livex_gcp_logs_read {mode:"count", resourceType, resourceLabels, phrases:[<literal phrase>], start, end}`
    over the digest window; `buckets` show whether it is a burst or steady.
-4. **Impact sample (N=5 conversations per picked category, proposed).**
-   `mode:"errors", textContains:"<phrase>"` for ids, then `mode:"context"` per
-   id; record `n_failed / n_checked` for the user-facing operation.
+4. **Client effect sample** per picked category: run the Client effect check below.
 5. **Test versus live.** Agents named test, demo, `EXPERIMENT NOT PRODUCTION`,
    `test_run` or `test_suite` are not customer exposure.
 
@@ -59,7 +57,7 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
   with `No model-race winner` or `Request timed out` points at the LLM provider
   or the self-hosted model (see below). A human noted it is "back" and tagged
   Yao Zhao on 2026-11-09 (https://livexai.slack.com/archives/C09N85B5664/p1794240015992969) without a recorded conclusion.
-- Severity: Low unless the impact sample shows lost answers. Owner: Unassigned (TBD).
+- Affected: the turn has no saved answer other than the generic error text. Owner: Unassigned (TBD).
 
 ### No model-race winner after timeout budget / TimeoutError: No model-race winner after budget
 
@@ -67,8 +65,7 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
 - Handler: raises; the user gets the generic error answer. *(code: chat-engine@origin/main app/agent/parallel_tool_agent.py:907; budget 10 s, app/schemas/agent_config/tool_agent_config.py:35)*
 - Check: affected conversations (count once), live versus `test_run`, whether
   the models' providers were failing. *(seen 1×: https://livexai.slack.com/archives/C09N85B5664/p1794240015992969 - bot finding, sampled conversation was a test run)*
-- Severity: Medium if live conversations got the error text; High if at least
-  3 of 5 sampled conversations failed (proposed). Owner: Unassigned (TBD).
+- Affected: the conversation got the generic error answer. Owner: Unassigned (TBD).
 
 ### Request timed out / APITimeoutError
 
@@ -77,7 +74,7 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
   answers. Precedent: self-hosted Qwen stopped answering for about 8 h on
   2026-11-12 (Dagang Wei, https://livexai.slack.com/archives/C0BM1L6D755/p1794510349507229, LX-12525).
   Whether a later burst has the same cause is unverified.
-- Severity: as the race row. Owner: Dagang Wei responded to the Qwen outage; otherwise Unassigned (TBD).
+- Affected: no model answered the turn (the generic error answer was saved). Owner: Dagang Wei responded to the Qwen outage; otherwise Unassigned (TBD).
 
 ### You have reached your specified API usage limits
 
@@ -88,7 +85,7 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
   answer; the El Camino Mountain View agent is marked experimental.
   Tracking: LX-12524 (a dedicated alert for Anthropic spend-limit errors,
   filed by Tanmesh, https://livexai.slack.com/archives/C09N85B5664/p1794509383598319). Do not claim a shared account from similar text alone.
-- Severity: High if no model answered for live agents (proposed); otherwise Medium. Owner: Unassigned (TBD).
+- Affected: no model answered the turn. Owner: Unassigned (TBD).
 
 ### Input should be a valid string for avatai.voice_id
 
@@ -99,7 +96,7 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
   *(code: chat-engine@origin/main app/schemas/agent_config/base.py:667; seen 1×: https://livexai.slack.com/archives/C09N85B5664/p1794607813481969 - bot finding; Dagang Wei reported publishing that config at 21:53 UTC, causation not established)*
 - Check: first and last occurrence, distinct conversation starts that failed
   versus refresh repeats, whether the config was republished.
-- Severity: Medium (provisional) if conversation starts failed; Low if only refresh logs. Owner: Unassigned (TBD).
+- Affected: a conversation start failed; a config refresh log alone is not. Owner: Unassigned (TBD).
 
 ### Could not find agent with id
 
@@ -111,35 +108,79 @@ Each: phrase; handler behaviour; what to check; Slack provenance.
   `snippets/wyze-livex-agent-id.liquid`). Hugo Yin: no backend change needed;
   a widget trim fix (chatbox-js PR 1528) and a Wyze theme fix.
   *(seen 1×: https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 - Hugo Yin, Fernando, Rahul Dhiman, Tanmesh)*
-- Severity: Low (affects suggested questions only, unverified for other callers). Owner: Hugo Yin responded.
+- Affected: the caller got the 404 (suggested questions only, unverified for other callers). Owner: Hugo Yin responded.
 
 ### Agent config validation: llm_config.backup_trigger_delay, role_template
 
 - Phrases: `Input should be a valid number for llm_config.backup_trigger_delay`, `Input should be a valid string for role_template`, `Failed to create workflow: Could not initialize workflow`.
 - Handler: workflow initialisation fails for that agent. *(seen 1×: the 2026-11-11 digest; a human thread asked whether it is critical, no conclusion recorded)*
 - Check: one agent id versus many; whether a publish preceded it.
-- Severity: Medium if the agent is live (proposed). Owner: Unassigned (TBD).
+- Affected: a conversation with that agent failed to start or answer. Owner: Unassigned (TBD).
 
 ### NoneType errors (`object of type 'NoneType' has no len()`, `no attribute 'startswith'`)
 
 - Handler: a background task or conversation update is lost. *(unverified: the cards named a test agent, Puma LiveX Test)*
 - Check: agent name; whether the conversation still answered.
-- Severity: Low for a test agent. Owner: Unassigned (TBD).
+- Affected: the conversation did not answer. Owner: Unassigned (TBD).
 
 ### Others in the digests (unmined)
 
-`Connection timeout to host`, `Invalid JSON in request`, `Error in new_conversation, getting payload`, `Could not load product knowledge for account`, `Could not find asset snippets/...` (Wyze theme, see above), `NotFoundError`. First check: the same impact sample; Low until a failed user operation is shown.
+`Connection timeout to host`, `Invalid JSON in request`, `Error in new_conversation, getting payload`, `Could not load product knowledge for account`, `Could not find asset snippets/...` (Wyze theme, see above), `NotFoundError`. First check: the same client effect sample; affected only when a failed user operation is shown.
 
 ## Known causes
 
 Call `investigation_lookup` with `chat-engine | <operation> | <category in plain words>` (for example `chat-engine | generate answer | api usage limit`). A hit is a lead: re-confirm the phrase, the agent and the window, and ignore its resolved state.
 
-## Severity
+## Client effect check
 
-Per category above; all numbers proposed, priority `provisional: true`.
-Digest-level rule: the digest priority is the highest priority among
-categories whose impact was verified; unverified categories are listed, not
-ranked above verified ones.
+Per picked category (at most 2), sample 3 conversations, so a run stays near a
+dozen reads. List ids
+with `livex_gcp_logs_read {mode:"errors", resourceType, resourceLabels, textContains:"<phrase>", start, end, limit:50}`
+over one hour of the digest window, then read each one's outcome with one
+`mode:"context"` read by `conversationId` over that turn plus a few minutes.
+Each outcome read is ID-scoped, so keep it to a few minutes (or add
+`textContains` for the outcome phrase) so it returns fewer than 50 rows: an
+ID-scoped read that loses entries (`row-limit` or `result-byte`) makes "no
+client effect" unreachable for the whole thread, and narrowing afterwards does
+not undo it. The listing read that finds ids may be capped; that is fine. Count a conversation once even when two categories name it,
+and never count one whose outcome you did not read. A conversation is
+**affected** as the category's "Affected" line says; for an unmined category,
+when the user did not get an answer. Live agents first; `traffic: "test"` only
+when every affected item is on a test or demo agent, shown by an explicit
+marker (`test_run`, `test_suite`, `EXPERIMENT NOT PRODUCTION`) or the whole
+word `test` or `demo` in the agent name; event and kiosk agents are live.
+
+Put the category you investigated most fully in the envelope's main fields and
+the other picked category in `alternates`, with its own `title` and facts (and
+`knownRef` when known); the Gateway shows the higher level. List any remaining
+categories in the report.
+
+## Sustained check
+
+Per category, `sustained` is true when it was also in the previous digest for
+the same service, or its `count` buckets show it in at least 3 hours of this
+digest's window (proposed). A burst confined to one or two hours is false.
+On a busy workload start with a 1-hour count window: `complete: false` gives
+lower bounds and blocks "no client effect" for the thread.
+
+## Known patterns
+
+`knownRef` is the id cell, copied verbatim; `known` is the row's state, except
+that a `fixed` row is `ongoing` while the symptom is in the latest completed
+window: a `count` of its phrase over the last complete hour before now. A
+ticket a person filed
+(for example LX-12524 for API usage limits) is `known: "ongoing"` with the
+ticket id. Only people edit this table; suggest a new row in the thread.
+
+| id | pattern | state (fixed, harmless or ongoing) | since | source |
+| --- | --- | --- | --- | --- |
+| `pattern:wyze-malformed-agent-id` | `Could not find agent with id` with a malformed id (leading newline or Liquid error text) from the Wyze storefront | ongoing | 2026-11-10 | https://livexai.slack.com/archives/C09N85B5664/p1794271228221859 (Hugo Yin named the remedy, widget trim fix chatbox-js PR 1528 and a Wyze theme fix; not confirmed shipped) |
+
+## Alert severity
+
+The digest carries none: use `alertSeverity: "error"` for every category.
+`alertClass` is `error-digest-categories`; `service` is the namespace of the
+digest label: `chat-engine` or `chat-engine-avatar`.
 
 ## Owner
 

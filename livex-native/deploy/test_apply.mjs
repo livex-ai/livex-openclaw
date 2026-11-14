@@ -196,11 +196,14 @@ test("fresh install registers the Debugger route and enables its Slack summary",
   assert.deepEqual(config.bindings, [slackRoute("debugger")]);
   assert.ok(config.plugins.allow.includes("livex-slack-summary"));
   assert.equal(config.plugins.entries["livex-slack-summary"].enabled, true);
-  assert.deepEqual(config.plugins.entries["livex-slack-summary"].config, {
+  const { priorityPolicyPath, ...cardConfig } = config.plugins.entries["livex-slack-summary"].config;
+  assert.deepEqual(cardConfig, {
     buttons: false,
     allowedChannelId: "*",
     allowedSenderId: "${SLACK_SENDER_ID}",
   });
+  assert.match(priorityPolicyPath, /\/config\/priority-policy\.json$/);
+  assert.equal(config.plugins.entries["livex-slack-summary"].config.buttons, false);
   assert.ok(config.agents.entries.debugger.tools.message.actions.allow.includes("edit"));
   // No Monitoring read role on the service account: the metrics tool stays off the allowlist.
   assert.ok(!config.agents.entries.debugger.tools.allow.includes("livex_gcp_metrics_read"));

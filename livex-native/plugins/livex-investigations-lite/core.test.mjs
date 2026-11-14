@@ -11,13 +11,14 @@ import {
   normalizeSignature,
   parseSummaryEnvelope,
   parseSession,
+  readSummaryEnvelope,
   renderSeenBefore,
   sanitizeLine,
   signatureKey,
   storeOptions,
   validateConfig,
 } from "./core.mjs";
-import { baseConfig, CHANNEL, memoryStore, SENDER, SESSION, THREAD, toolContext } from "./test-helpers.mjs";
+import { baseConfig, CHANNEL, memoryStore, SENDER, SESSION, THREAD, toolContext, v3Envelope, v3Facts } from "./test-helpers.mjs";
 
 const config = validateConfig(baseConfig);
 
@@ -31,7 +32,7 @@ function setup({ now = () => Date.parse("2026-11-10T12:00:00Z"), cfg = config } 
 const storedNotes = (c) => c.notes.map((n) => n.text).join("\n");
 const params = (over = {}) => ({
   signature: "Checkout-API | create order | upstream timeout",
-  priority: "high",
+  ...v3Facts,
   resolved: false,
   finding: "Payment provider timed out for 4 minutes.",
   ...over,
@@ -294,25 +295,30 @@ test("recurrence merges, adds deterministic trend notes, bounds occurrences and 
     sendFinal(env, { key, runId: thread });
     await sent(env, { key, messageId: `${thread.slice(0, 10)}.999999` });
   };
+  // The engine rates every thread: high when more than one sampled request was affected.
+  const restore = withEngine((facts) => ({ priority: facts.sampleAffected > 1 ? "high" : "medium", ruleId: "test" }));
   await run("1767000000.000001", {});
   t += 3 * 86_400_000;
-  await run("1767300000.000001", { priority: "critical", trend: "now affects all tenants" });
+  await run("1767300000.000001", { sampleAffected: 4, trend: "now affects all tenants" });
   t += 86_400_000;
-  await run("1767400000.000001", { resolved: true });
+  await run("1767400000.000001", { sampleAffected: 4, resolved: true });
   const stored = await env.store.lookup(signatureKey("checkout-api | create-order | upstream-timeout"));
   assert.equal(stored.totalOccurrences, 3);
   assert.equal(stored.occurrences.length, 2);
   assert.equal(stored.firstSeen, "2026-11-01T12:00:00.000Z");
   assert.equal(stored.notes.length, 4);
-  assert.match(storedNotes(stored), /priority critical to high/);
+  assert.match(storedNotes(stored), /priority medium to high/);
   assert.match(storedNotes(stored), /recurrence #3, 1d after 2026-11-04/);
   assert.match(storedNotes(stored), /resolved/);
 
   // Same thread again refines in place instead of adding an occurrence.
-  await run("1767400000.000001", { finding: "Confirmed fixed after rollback." });
+  await run("1767400000.000001", { sampleAffected: 4, finding: "Confirmed fixed after rollback." });
   const again = await env.store.lookup(signatureKey("checkout-api | create-order | upstream-timeout"));
   assert.equal(again.totalOccurrences, 3);
   assert.equal(again.occurrences.at(-1).finding, "Confirmed fixed after rollback.");
+  assert.equal(again.occurrences.at(-1).priority, "high");
+  assert.equal(again.occurrences.at(-1).ruleId, "test");
+  restore();
 });
 
 test("lookup: exact signature first, then deterministic token-overlap match", async () => {
@@ -342,7 +348,8 @@ test("lookup: exact signature first, then deterministic token-overlap match", as
   const tool = createLookupTool(config, toolContext(), () => env.store);
   const out = await tool.execute("l", { signature: "checkout api | create order | upstream timeout" });
   assert.equal(out.details.cases[0].match, "exact");
-  assert.equal(out.details.cases[0].occurrences[0].priority, "high");
+  assert.equal(out.details.cases[0].occurrences[0].priority, "unrated", "no engine in this test");
+  assert.equal(out.details.cases[0].occurrences[0].known, "no");
   await assert.rejects(tool.execute("l", {}), /Provide signature or query/);
 });
 
@@ -356,7 +363,7 @@ test("before_prompt_build injects a bounded prior-case block only for matching d
   assert.match(hit.prependContext, /^<<<PRIOR_CASES: untrusted history/);
   assert.match(hit.prependContext, /PRIOR_CASES>>>$/);
   assert.match(hit.prependContext, /checkout-api \| create-order \| upstream-timeout/);
-  assert.match(hit.prependContext, /latest high open; last seen 2026-11-10; 1 seen/);
+  assert.match(hit.prependContext, /latest unrated open \(known: no\); last seen 2026-11-10; 1 seen/);
   assert.ok(!hit.prependContext.includes("Payment provider timed out"), "free-text finding stays out of the block");
   assert.ok(hit.prependContext.length <= config.seenBeforeMaxChars);
 
@@ -452,7 +459,9 @@ test("tool caller gate refuses wrong sender, channel, surface, agent or missing 
 test("record validates input and caps staged records per reply", async () => {
   const env = setup();
   const tool = createRecordTool(config, toolContext(), env.memory);
-  await assert.rejects(tool.execute("t", params({ priority: "urgent" })), /priority must be/);
+  await assert.rejects(tool.execute("t", params({ known: "maybe" })), /known is missing or invalid/);
+  await assert.rejects(tool.execute("t", params({ sampleAffected: 9 })), /sampleAffected is missing or invalid/);
+  await assert.rejects(tool.execute("t", params({ alertClass: undefined })), /alertClass is missing or invalid/);
   await assert.rejects(tool.execute("t", params({ resolved: "yes" })), /resolved must be/);
   await assert.rejects(tool.execute("t", params({ finding: " " })), /finding is required/);
   await assert.rejects(tool.execute("t", params({ signature: "1234" })), /too generic/);
@@ -633,13 +642,12 @@ test("L-b: notes and title written in another channel never reach a lookup or th
   assert.ok(!legacy.includes("legacy note"));
 });
 
-// ------------------------------------------------------------ V2 envelope
+// ------------------------------------------------------------ V3 envelope
 
 const summary = (over = {}) => ({
   title: "Checkout order timeouts",
   signature: "checkout-api | create order | upstream timeout",
-  priority: "high",
-  provisional: false,
+  ...v3Facts,
   resolved: false,
   summary: "Payment provider timed out for 4 minutes.",
   nextAction: "Page the payments owner.",
@@ -647,7 +655,7 @@ const summary = (over = {}) => ({
   checkedWindow: "last 30 minutes",
   ...over,
 });
-const envelope = (obj = summary(), marker = "LIVEX_ALERT_SUMMARY_V2") =>
+const envelope = (obj = summary(), marker = "LIVEX_ALERT_SUMMARY_V3") =>
   `${marker}\n${typeof obj === "string" ? obj : JSON.stringify(obj)}\n\nFull report with evidence.`;
 
 function loggerEnv() {
@@ -677,7 +685,8 @@ test("envelope auto-record: staged on send, committed only after delivery, paylo
   const [{ value }] = await env.store.entries();
   assert.equal(value.signature, normalizeSignature("checkout-api | create order | upstream timeout"));
   assert.equal(value.title, "Checkout order timeouts");
-  assert.equal(value.occurrences[0].priority, "high");
+  assert.equal(value.occurrences[0].priority, "unrated", "no engine in this test");
+  assert.deepEqual(value.occurrences[0].facts, v3Facts);
   assert.equal(value.occurrences[0].resolved, false);
   assert.equal(value.occurrences[0].finding, "Payment provider timed out for 4 minutes.");
   assert.deepEqual(value.notes, []);
@@ -690,27 +699,31 @@ test("envelope auto-record: staged on send, committed only after delivery, paylo
 test("envelope resolved:true maps directly", async () => {
   const env = loggerEnv();
   await startTurn(env, SESSION, "run-1");
-  sendFinal(env, { payload: { text: envelope(summary({ resolved: true, priority: "low" })) } });
+  sendFinal(env, { payload: { text: envelope(summary({ resolved: true })) } });
   await sent(env);
   const [{ value }] = await env.store.entries();
   assert.equal(value.occurrences[0].resolved, true);
-  assert.equal(value.occurrences[0].priority, "low");
 });
 
-test("invalid envelopes and a V1 marker record nothing", async () => {
+test("invalid envelopes and older markers record nothing", async () => {
   const bad = [
     envelope(summary(), "LIVEX_ALERT_SUMMARY_V1"),
+    envelope(summary(), "LIVEX_ALERT_SUMMARY_V2"),
     envelope("{not json}"),
     envelope({ ...summary(), title: undefined }),
-    envelope(summary({ priority: "urgent" })),
-    envelope(summary({ provisional: "no" })),
+    envelope({ ...summary(), known: undefined }),
+    envelope(summary({ priority: "high" })),
+    envelope(summary({ provisional: false })),
+    envelope(summary({ known: "maybe" })),
+    envelope(summary({ sampleAffected: 6 })),
+    envelope(summary({ alternates: [{ title: "Other", ...v3Facts, scope: "many" }] })),
     envelope(summary({ resolved: "yes" })),
     envelope(summary({ signature: "x".repeat(161) })),
     envelope(summary({ summary: "" })),
     envelope(summary({ signature: "1234 | 5678" })),
     envelope({ ...summary(), extra: 1 }),
     `x${envelope()}`,
-    `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify(summary())}`,
+    `LIVEX_ALERT_SUMMARY_V3\n${JSON.stringify(summary())}`,
     "plain reply",
   ];
   for (const text of bad) {
@@ -735,7 +748,7 @@ test("a tool record and the envelope merge; same signature keeps the tool findin
   assert.equal(rows.length, 2);
   const shared = rows.find((r) => r.value.signature.startsWith("checkout"));
   assert.equal(shared.value.occurrences[0].finding, "Tool finding wins.");
-  assert.equal(shared.value.occurrences[0].priority, "high");
+  assert.equal(shared.value.occurrences[0].priority, "unrated", "no engine in this test");
 });
 
 test("a failed final drops the envelope record and an other-sender envelope is ignored", async () => {
@@ -806,12 +819,12 @@ test("createLog falls back to console when the logger lacks the method", () => {
   assert.deepEqual(seen, ["[livex-investigations-lite] store open failed: x"]);
 });
 
-test("rejected V2 envelopes log only a reason, never content", async () => {
+test("rejected V3 envelopes log only a reason, never content", async () => {
   const cases = [
     [envelope(summary({ signature: "1234 | 5678" })), /signature too generic/u],
     [envelope({ ...summary(), title: undefined }), /invalid envelope: missing key/u],
     [envelope("{not json}"), /JSON not parseable/u],
-    [envelope(summary({ priority: "urgent" })), /invalid field priority/u],
+    [envelope(summary({ known: "maybe" })), /invalid field known/u],
     [envelope({ ...summary(), extra: 1 }), /unknown key/u],
   ];
   for (const [text, reason] of cases) {
@@ -822,12 +835,13 @@ test("rejected V2 envelopes log only a reason, never content", async () => {
     assert.equal(warns.length, 1, text.slice(0, 50));
     assert.match(warns[0], /^\[livex-investigations-lite\] summary envelope not recorded: /u);
     assert.match(warns[0], reason);
-    assert.ok(!/checkout|Payment|payments|1234|urgent|extra/u.test(warns[0].replace(/invalid field priority|unknown key/gu, "")));
+    assert.ok(!/checkout|Payment|payments|1234|maybe|extra/u.test(warns[0].replace(/invalid field known|unknown key/gu, "")));
   }
-  // Non-V2 text (plain reply, V1 marker) stays silent.
+  // Non-V3 text (plain reply, V1 and V2 markers) stays silent.
   const env = loggerEnv();
   await startTurn(env, SESSION, "run-1");
   sendFinal(env, { payload: { text: envelope(summary(), "LIVEX_ALERT_SUMMARY_V1") } });
+  sendFinal(env, { payload: { text: envelope(summary(), "LIVEX_ALERT_SUMMARY_V2") } });
   sendFinal(env, { payload: { text: "plain" } });
   assert.deepEqual(env.lines.filter(([l]) => l === "warn"), []);
 });
@@ -858,7 +872,7 @@ test("decision points are logged once each: staged, tagged, committed, and drops
   const env3 = loggerEnv();
   await startTurn(env3, SESSION, "run-1");
   sendFinal(env3, { runId: "run-1", payload: { text: "plain" } });
-  assert.match(log2(env3), /final reply has no V2 envelope \(text present\)/u);
+  assert.match(log2(env3), /final reply has no V3 envelope \(text present\)/u);
   assert.match(log2(env3), /reply not tagged: nothing staged/u);
 });
 
@@ -900,4 +914,272 @@ test("createLog.notOffered rate limits per tool and reason with the injected clo
     "[livex-investigations-lite] tool not offered: agent mismatch (t)",
     "[livex-investigations-lite] tool not offered: channel not allowed (t)",
   ]);
+});
+
+// ------------------------------------------------------------ V3 envelope and computed priority
+
+/**
+ * Install a priority engine whose result exists for every session (runId "any", so the
+ * card's own priority never applies) and rates facts with `compute`, through the
+ * registry's `computeFor` (a stale entry is not used). Returns a restore.
+ */
+function withEngine(compute) {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const entry = { runId: "any", at: Date.now(), primary: { signature: "none | none", priority: "low", ruleId: "none" }, compute };
+  class EverySession extends Map {
+    get() {
+      return entry;
+    }
+  }
+  globalThis[engine] = { results: new EverySession(), computeFor: (_sessionKey, facts) => compute(facts) };
+  return () => delete globalThis[engine];
+}
+
+/** Hooks with a capturing logger: `lines` holds every logged line. */
+function hooksFor() {
+  const lines = [];
+  const log = createLog({ warn: (m) => lines.push(m), info: (m) => lines.push(m) });
+  const store = memoryStore({ maxEntries: config.maxCases });
+  const openStore = () => store;
+  const memory = createMemory(config, { openStore, now: () => Date.parse("2026-11-10T12:00:00Z"), log });
+  return { store, memory, lines, hooks: createHooks(config, memory, openStore, log) };
+}
+
+test("V3 envelope: facts are staged and the committed case takes the engine's priority", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary: { signature: "checkout-api | create order | upstream timeout", priority: "medium", ruleId: "live-narrow" }, compute: () => ({ priority: "high", ruleId: "live-broad" }) }]]) };
+  const { hooks, store, memory } = hooksFor();
+  hooks.replyPayloadSending({ kind: "final", channel: "slack", sessionKey: SESSION, runId: "r1", payload: { text: v3Envelope() } }, { sessionKey: SESSION, senderId: SENDER, runId: "r1" });
+  await hooks.messageSent({ sessionKey: SESSION, success: true, messageId: "1768996900.000100" }, { sessionKey: SESSION });
+  await memory.settled();
+  const [row] = await store.entries();
+  const last = row.value.occurrences.at(-1);
+  assert.equal(last.priority, "medium");
+  assert.equal(last.ruleId, "live-narrow");
+  assert.equal(last.facts.sampleAffected, 1);
+  delete globalThis[engine];
+});
+
+test("without the engine the case is stored unrated and says so once", async () => {
+  delete globalThis[Symbol.for("livex.priority-engine.v1")];
+  const { hooks, store, memory, lines } = hooksFor();
+  hooks.replyPayloadSending({ kind: "final", channel: "slack", sessionKey: SESSION, runId: "r1", payload: { text: v3Envelope() } }, { sessionKey: SESSION, senderId: SENDER, runId: "r1" });
+  await hooks.messageSent({ sessionKey: SESSION, success: true, messageId: "1768996900.000100" }, { sessionKey: SESSION });
+  await memory.settled();
+  assert.equal((await store.entries())[0].value.occurrences.at(-1).priority, "unrated");
+  assert.equal(lines.filter((l) => l.includes("priority engine unavailable")).length, 1);
+});
+
+test("V2 envelopes, model-written priority and impossible samples record nothing", () => {
+  for (const text of [v3Envelope().replace("_V3", "_V2"), v3Envelope({ priority: "high" }), v3Envelope({ sampleAffected: 9 })]) {
+    assert.equal(readSummaryEnvelope(text).record, undefined);
+  }
+});
+
+test("other records take compute(facts); a stale run's card priority is not reused; a throwing compute stores unrated", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const primary = { signature: "checkout-api | create order | upstream timeout", priority: "medium", ruleId: "live-narrow" };
+  const compute = (facts) => {
+    if (facts.service === "billing-api") throw new TypeError("livex-slack-summary: invalid facts");
+    return { priority: "high", ruleId: "live-broad" };
+  };
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary, compute }]]) };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    const tool = createRecordTool(config, toolContext(), env.memory);
+    await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+    await tool.execute("t", params({ signature: "billing-api | charge | declined", service: "billing-api", finding: "Declined." }));
+    sendFinal(env, { runId: "r1", payload: { text: v3Envelope() } });
+    await sent(env);
+    const bySig = Object.fromEntries((await env.store.entries()).map((r) => [r.value.signature.split(" ")[0], r.value.occurrences.at(-1)]));
+    assert.deepEqual([bySig["checkout-api"].priority, bySig["checkout-api"].ruleId], ["medium", "live-narrow"]);
+    assert.deepEqual([bySig["other-svc"].priority, bySig["other-svc"].ruleId], ["high", "live-broad"]);
+    assert.equal(bySig["billing-api"].priority, "unrated");
+    assert.equal(bySig["billing-api"].ruleId, undefined);
+    assert.deepEqual(env.lines.filter((l) => /case stored unrated/u.test(l)), [
+      "[livex-investigations-lite] priority compute failed; case stored unrated",
+    ]);
+
+    // The registry entry belongs to another run: neither the card's priority nor the stale
+    // entry's compute is used; the registry's computeFor rates the facts.
+    globalThis[engine].computeFor = () => ({ priority: "low", ruleId: "no-effect" });
+    const stale = hooksFor();
+    sendFinal(stale, { runId: "r2", payload: { text: v3Envelope() } });
+    await sent(stale);
+    const last = (await stale.store.entries())[0].value.occurrences.at(-1);
+    assert.deepEqual([last.priority, last.ruleId], ["low", "no-effect"]);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("no card rendered: tool records are rated by the registry's computeFor", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const calls = [];
+  const computeFor = (sessionKey, facts) => {
+    calls.push(sessionKey);
+    return { priority: facts.sampleAffected > 1 ? "high" : "medium", ruleId: facts.sampleAffected > 1 ? "live-broad" : "live-narrow" };
+  };
+  // A Gateway restart: no card was rendered for this session, so there is no results entry.
+  globalThis[engine] = { results: new Map(), computeFor };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    const tool = createRecordTool(config, toolContext(), env.memory);
+    await tool.execute("t", params({ signature: "checkout-api | create order | upstream timeout", sampleAffected: 4 }));
+    await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+    await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+    // The reply ended in plain text: no envelope, no card.
+    sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+    await sent(env);
+    const bySig = Object.fromEntries((await env.store.entries()).map((r) => [r.value.signature.split(" ")[0], r.value.occurrences.at(-1)]));
+    assert.deepEqual([bySig["checkout-api"].priority, bySig["checkout-api"].ruleId], ["high", "live-broad"]);
+    assert.deepEqual([bySig["other-svc"].priority, bySig["other-svc"].ruleId], ["medium", "live-narrow"]);
+    assert.deepEqual([bySig["billing-api"].priority, bySig["billing-api"].ruleId], ["medium", "live-narrow"]);
+    assert.deepEqual(calls, [SESSION, SESSION, SESSION]);
+    assert.deepEqual(env.lines.filter((l) => /unrated/u.test(l)), []);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("no card rendered and computeFor throws: the records are stored unrated with one line", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  globalThis[engine] = { results: new Map(), computeFor: () => { throw new TypeError("livex-slack-summary: invalid facts"); } };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    const tool = createRecordTool(config, toolContext(), env.memory);
+    await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+    await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+    sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+    await sent(env);
+    const occurrences = (await env.store.entries()).map((r) => r.value.occurrences.at(-1));
+    assert.equal(occurrences.length, 2);
+    for (const occurrence of occurrences) {
+      assert.equal(occurrence.priority, "unrated");
+      assert.equal(occurrence.ruleId, undefined);
+    }
+    assert.equal(env.lines.filter((l) => /case stored unrated/u.test(l)).length, 1);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("no card rendered and no registry: the records are stored unrated as before", async () => {
+  delete globalThis[Symbol.for("livex.priority-engine.v1")];
+  const env = hooksFor();
+  await startTurn(env, SESSION, "r1");
+  const tool = createRecordTool(config, toolContext(), env.memory);
+  await tool.execute("t", params({ signature: "other-svc | sync | disk full", finding: "Disk full." }));
+  await tool.execute("t", params({ signature: "billing-api | charge | declined", finding: "Declined." }));
+  sendFinal(env, { runId: "r1", payload: { text: "Plain text reply." } });
+  await sent(env);
+  const occurrences = (await env.store.entries()).map((r) => r.value.occurrences.at(-1));
+  assert.deepEqual(occurrences.map((o) => o.priority), ["unrated", "unrated"]);
+  assert.deepEqual(env.lines.filter((l) => /case stored unrated/u.test(l)), [
+    "[livex-investigations-lite] priority engine unavailable; case stored unrated",
+  ]);
+});
+
+test("an envelope with alternates stages only the main record", async () => {
+  const alternate = { title: "Other category", ...v3Facts, service: "billing-api", known: "ongoing", knownRef: "LX-1234" };
+  const { record } = readSummaryEnvelope(v3Envelope({ alternates: [alternate], knownRef: "INC-7" }));
+  assert.deepEqual(record.facts, { ...v3Facts, knownRef: "INC-7" });
+  const env = hooksFor();
+  sendFinal(env, { runId: "r1", payload: { text: v3Envelope({ alternates: [alternate] }) } });
+  await sent(env);
+  const rows = await env.store.entries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].value.signature, normalizeSignature("checkout-api | create order | upstream timeout"));
+  assert.equal(readSummaryEnvelope(v3Envelope({ alternates: Array(5).fill(alternate) })).record, undefined);
+  assert.equal(readSummaryEnvelope(v3Envelope({ alternates: [{ ...alternate, signature: "x | y" }] })).record, undefined);
+});
+
+test("a card whose priority came from an alternate is stored with the registry's primary priority", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  // The card plugin keeps the main signature and publishes the displayed level and the rule that set it.
+  const primary = { signature: "checkout-api | create order | upstream timeout", priority: "high", ruleId: "live-broad" };
+  const compute = () => ({ priority: "medium", ruleId: "live-narrow" });
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary, compute }]]) };
+  try {
+    const alternate = { title: "Other category", ...v3Facts, sampleAffected: 4 };
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    sendFinal(env, { runId: "r1", payload: { text: v3Envelope({ alternates: [alternate] }) } });
+    await sent(env);
+    const rows = await env.store.entries();
+    assert.equal(rows.length, 1);
+    const last = rows[0].value.occurrences.at(-1);
+    assert.deepEqual([last.priority, last.ruleId], ["high", "live-broad"]);
+  } finally {
+    delete globalThis[engine];
+  }
+});
+
+test("stored V2 occurrences (priority, no facts) still load and render as stored", async () => {
+  const env = setup();
+  await env.store.register(signatureKey("checkout-api | create-order | upstream-timeout"), {
+    signature: "checkout-api | create-order | upstream-timeout",
+    title: "t",
+    firstSeen: "2026-11-01T00:00:00.000Z",
+    lastSeen: "2026-11-01T00:00:00.000Z",
+    totalOccurrences: 1,
+    occurrences: [{ at: "2026-11-01T00:00:00.000Z", priority: "critical", resolved: false, finding: "f", thread: { channel: CHANNEL, threadTs: THREAD } }],
+    notes: [],
+  });
+  const block = (await env.hooks.beforePromptBuild({ prompt: "checkout-api create order upstream timeout" }, turn(SESSION, "r1"))).prependContext;
+  assert.match(block, /latest critical open; last seen 2026-11-01/u);
+  const out = await createLookupTool(config, toolContext(), () => env.store).execute("l", { signature: "checkout-api | create order | upstream timeout" });
+  assert.equal(out.details.cases[0].occurrences[0].priority, "critical");
+  assert.equal("known" in out.details.cases[0].occurrences[0], false);
+  // A new V3 occurrence in another thread merges onto it.
+  const other = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:1768997000.000001`;
+  sendFinal(env, { key: other, runId: "r2", payload: { text: v3Envelope() } });
+  await sent(env, { key: other });
+  const merged = await env.store.lookup(signatureKey("checkout-api | create-order | upstream-timeout"));
+  assert.equal(merged.totalOccurrences, 2);
+  assert.doesNotMatch(storedNotes(merged), /priority/u, "a change to unrated is not a priority change");
+  assert.match(storedNotes(merged), /recurrence #2/u);
+});
+
+test("mergeCase writes no priority note when either side is unrated", () => {
+  const staged = (priority) => ({ signature: "a-b | c", title: "t", priority, resolved: false, finding: "f", trend: "", thread: { channel: CHANNEL, threadTs: THREAD } });
+  const opts = (now) => ({ now, replyTs: undefined, limits: config });
+  const first = mergeCase(undefined, staged("unrated"), opts(0));
+  const second = mergeCase(first, staged("high"), opts(1));
+  const third = mergeCase(second, staged("unrated"), opts(2));
+  const fourth = mergeCase(third, staged("low"), opts(3));
+  const fifth = mergeCase(fourth, staged("medium"), opts(4));
+  assert.deepEqual(fifth.notes.map((n) => n.text), ["1970-01-01 priority low to medium"]);
+});
+
+test("a tool record for the card's own signature stores the card's priority, the envelope's facts and the tool's finding", async () => {
+  const engine = Symbol.for("livex.priority-engine.v1");
+  const primary = { signature: "checkout-api | create order | upstream timeout", priority: "medium", ruleId: "live-narrow" };
+  // compute would rate the tool's facts (sampleAffected 4) high; it must not be used for the card's case.
+  const compute = (facts) => ({ priority: facts.sampleAffected > 1 ? "high" : "low", ruleId: "computed" });
+  globalThis[engine] = { results: new Map([[SESSION, { runId: "r1", at: Date.now(), primary, compute }]]) };
+  try {
+    const env = hooksFor();
+    await startTurn(env, SESSION, "r1");
+    await createRecordTool(config, toolContext(), env.memory).execute(
+      "t",
+      params({ signature: "checkout-api | create order | upstream timeout", sampleAffected: 4, finding: "Tool finding text.", trend: "tool trend" }),
+    );
+    sendFinal(env, { runId: "r1", payload: { text: v3Envelope() } });
+    await sent(env);
+    const rows = await env.store.entries();
+    assert.equal(rows.length, 1);
+    const last = rows[0].value.occurrences.at(-1);
+    assert.equal(last.priority, "medium");
+    assert.equal(last.ruleId, "live-narrow");
+    assert.deepEqual(last.facts, v3Facts, "the envelope's facts, not the tool's");
+    assert.equal(last.finding, "Tool finding text.");
+    assert.equal(rows[0].value.title, "checkout-api upstream timeouts", "the envelope's title");
+    assert.match(storedNotes(rows[0].value), /tool trend/u);
+  } finally {
+    delete globalThis[engine];
+  }
 });
