@@ -725,6 +725,32 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
   const overrides = new Map();
   // sessionKey -> Map(evidence url -> recorded at), from livex_gcp_logs_read results.
   const evidenceUrls = new Map();
+  // sessionKey -> { ok, degraded, at }: how this thread's logs reads turned out.
+  const readStats = new Map();
+
+  /** Logs-read outcome for a thread; zeros for an unknown or expired session. */
+  function readStatsFor(sessionKey) {
+    const stats = readStats.get(sessionKey);
+    if (!stats || now() - stats.at > EVIDENCE_TTL_MS) {
+      return { ok: 0, degraded: false };
+    }
+    return { ok: stats.ok, degraded: stats.degraded };
+  }
+
+  function noteRead(sessionKey, { ok, degraded }) {
+    const at = now();
+    const prior = readStats.get(sessionKey);
+    const live = prior && at - prior.at <= EVIDENCE_TTL_MS ? prior : { ok: 0, degraded: false };
+    readStats.delete(sessionKey);
+    readStats.set(sessionKey, {
+      ok: live.ok + (ok ? 1 : 0),
+      degraded: live.degraded || degraded,
+      at,
+    });
+    while (readStats.size > MAX_SESSIONS) {
+      readStats.delete(readStats.keys().next().value);
+    }
+  }
 
   /** Evidence options for one session: exact recorded match, plus the configured project. */
   function evidenceOptionsFor(sessionKey) {
@@ -744,13 +770,25 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       const sessionKey = ctx?.sessionKey;
       if (
         event?.toolName !== EVIDENCE_TOOL ||
-        event.error ||
         typeof sessionKey !== "string" ||
         !DEBUGGER_SLACK_THREAD.test(sessionKey)
       ) {
         return;
       }
+      if (event.error) {
+        noteRead(sessionKey, { ok: false, degraded: true });
+        return;
+      }
       const details = readToolDetails(event.result);
+      if (details !== undefined) {
+        noteRead(sessionKey, {
+          ok: true,
+          degraded:
+            details.truncated === true ||
+            details.complete === false ||
+            (Array.isArray(details.truncationReasons) && details.truncationReasons.length > 0),
+        });
+      }
       const project = details?.project;
       if (typeof project !== "string" || (config.gcpProject && project !== config.gcpProject)) {
         return;
@@ -1090,5 +1128,5 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
     }
   }
 
-  return { config, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, interactive };
+  return { config, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, readStatsFor, interactive };
 }

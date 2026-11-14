@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
 import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
-import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, recordEvidence, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, readStats, recordEvidence, summary } from "./test-helpers.mjs";
 
 const slackOf = (result) => result.payload.channelData.slack;
 const pick = (slack, label) => buttonsOf(slack.blocks).find((button) => button.text.text === label).value;
@@ -362,4 +362,23 @@ test("recorded links expire, and each session and the session count are bounded"
   } finally {
     Date.now = realNow;
   }
+});
+
+test("logs reads are counted per thread and a capped, incomplete or failed read marks it degraded", () => {
+  const loaded = load();
+  const call = (target, event) => target.hooks.get("after_tool_call")(event, { sessionKey: SESSION });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 0, degraded: false });
+  call(loaded, { toolName: "livex_gcp_logs_read", result: { details: { entries: [], truncated: false, truncationReasons: [] } } });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
+  call(loaded, { toolName: "livex_repository_read", result: { details: { truncated: true } } });
+  assert.deepEqual(readStats(loaded, SESSION), { ok: 1, degraded: false });
+  for (const details of [{ truncated: true }, { complete: false }, { truncationReasons: ["row-limit"] }]) {
+    const fresh = load();
+    call(fresh, { toolName: "livex_gcp_logs_read", result: { details } });
+    assert.deepEqual(readStats(fresh, SESSION), { ok: 1, degraded: true });
+  }
+  const failed = load();
+  call(failed, { toolName: "livex_gcp_logs_read", error: "boom" });
+  assert.deepEqual(readStats(failed, SESSION), { ok: 0, degraded: true });
+  assert.deepEqual(readStats(loaded, "agent:debugger:slack:channel:c0other:thread:1.2"), { ok: 0, degraded: false });
 });

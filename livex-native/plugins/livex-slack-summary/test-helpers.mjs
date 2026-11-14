@@ -6,8 +6,33 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Test-only: capture each createPlugin() instance so tests can read its internals.
+const plugins = [];
+globalThis.__livexSlackSummaryPlugins = plugins;
 const sdkHook = registerHooks({
+  load(url, context, nextLoad) {
+    const result = nextLoad(url, context);
+    if (!url.endsWith("/core.mjs?capture") || result.source == null) {
+      return result;
+    }
+    const source = String(result.source).replace(
+      "export function createPlugin(",
+      "function createPluginInner(",
+    ) + `
+export function createPlugin(...args) {
+  const plugin = createPluginInner(...args);
+  globalThis.__livexSlackSummaryPlugins.push(plugin);
+  return plugin;
+}
+`;
+    return { ...result, source };
+  },
   resolve(specifier, context, nextResolve) {
+    if (specifier === "./core.mjs" && context.parentURL?.endsWith("/index.ts")) {
+      // A separate instance of core.mjs for the entry, so its createPlugin() can be captured.
+      const resolved = nextResolve(specifier, context);
+      return { ...resolved, url: `${resolved.url}?capture` };
+    }
     if (specifier !== "openclaw/plugin-sdk/plugin-entry") {
       return nextResolve(specifier, context);
     }
@@ -52,6 +77,7 @@ export function load(pluginConfig = baseConfig, { stateDir = newStateDir(), runt
   const hooks = new Map();
   const registrations = [];
   const warnings = [];
+  const before = plugins.length;
   entry.register({
     pluginConfig,
     runtime: runtime ?? { state: { resolveStateDir: () => stateDir } },
@@ -64,7 +90,7 @@ export function load(pluginConfig = baseConfig, { stateDir = newStateDir(), runt
       registrations.push(registration);
     },
   });
-  return { hooks, registrations, interactive: registrations[0], entry, warnings, stateDir };
+  return { hooks, registrations, interactive: registrations[0], entry, warnings, stateDir, plugin: plugins[before] };
 }
 
 /**
@@ -141,3 +167,6 @@ export function recordEvidence(
     { toolName, sessionKey, agentId: "debugger" },
   );
 }
+
+/** The plugin's recorded logs-read outcome for a thread session. */
+export const readStats = (loaded, sessionKey) => loaded.plugin.readStatsFor(sessionKey);
