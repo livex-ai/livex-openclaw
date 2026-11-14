@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { renderBlocks } from "../plugins/livex-slack-summary/core.mjs";
 import { EDITS, patchSlackAttachments } from "./patch-slack-attachments.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -120,7 +121,8 @@ function loadMonitorSanitizer(dir) {
   return new Function(`${source.slice(start, end)}\nreturn livexSanitizeSlackAttachments;`)();
 }
 
-const section = (text) => ({ type: "section", text: { type: "mrkdwn", text } });
+const section = (text) => ({ type: "section", text: { type: "mrkdwn", text, verbatim: true } });
+const context = (text) => ({ type: "context", elements: [{ type: "plain_text", text }] });
 const attachment = { color: "#D92D20", fallback: "fallback", blocks: [section("a"), section("b")] };
 const post = (extra) => ({ channelId: "C1", text: "t", blocks: [section("title")], ...extra });
 
@@ -155,6 +157,38 @@ test("attachments are dropped unless they are one {color, blocks, fallback} atta
     [{ ...attachment, blocks: Array.from({ length: 11 }, () => section("x")) }],
     [{ ...attachment, blocks: ["not a block"] }],
     [{ ...attachment, blocks: [{ text: "no type" }] }],
+    // Only what renderBlocks emits: no image, actions, rich_text, header, divider or unknown block.
+    [{ ...attachment, blocks: [{ type: "image", image_url: "https://evil.example/x.png", alt_text: "x" }] }],
+    [{ ...attachment, blocks: [{ type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "go" }, url: "https://evil.example" }] }] }],
+    [{ ...attachment, blocks: [{ type: "rich_text", elements: [] }] }],
+    [{ ...attachment, blocks: [{ type: "header", text: { type: "plain_text", text: "h" } }] }],
+    [{ ...attachment, blocks: [{ type: "divider" }] }],
+    [{ ...attachment, blocks: [section("ok"), { type: "image", image_url: "https://evil.example/x.png", alt_text: "x" }] }],
+    // A section must be verbatim mrkdwn with only type and text.
+    [{ ...attachment, blocks: [{ type: "section", text: { type: "mrkdwn", text: "no verbatim" } }] }],
+    [{ ...attachment, blocks: [{ type: "section", text: { type: "mrkdwn", text: "x", verbatim: false } }] }],
+    [{ ...attachment, blocks: [{ type: "section", text: { type: "plain_text", text: "x", verbatim: true } }] }],
+    [{ ...attachment, blocks: [{ type: "section", text: { type: "mrkdwn", text: "x", verbatim: true, extra: 1 } }] }],
+    [{ ...attachment, blocks: [{ ...section("x"), accessory: { type: "image", image_url: "https://evil.example/x.png", alt_text: "x" } }] }],
+    [{ ...attachment, blocks: [{ ...section("x"), fields: [{ type: "mrkdwn", text: "f" }] }] }],
+    [{ ...attachment, blocks: [{ ...section("x"), block_id: "b" }] }],
+    [{ ...attachment, blocks: [{ type: "section" }] }],
+    [{ ...attachment, blocks: [{ type: "section", text: "x" }] }],
+    [{ ...attachment, blocks: [section("")] }],
+    [{ ...attachment, blocks: [section("x".repeat(3001))] }],
+    [{ ...attachment, blocks: [section(5)] }],
+    // A context is 1-10 plain_text elements.
+    [{ ...attachment, blocks: [{ type: "context", elements: [] }] }],
+    [{ ...attachment, blocks: [{ type: "context" }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: Array.from({ length: 11 }, () => ({ type: "plain_text", text: "x" })) }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: "x" }] }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "image", image_url: "https://evil.example/x.png", alt_text: "x" }] }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "plain_text", text: "x", extra: true }] }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "plain_text", text: "x", emoji: "yes" }] }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "plain_text", text: "x".repeat(3001) }] }] }],
+    [{ ...attachment, blocks: [{ type: "context", elements: [{ type: "plain_text" }] }] }],
+    [{ ...attachment, blocks: [{ ...context("x"), block_id: "b" }] }],
+    [{ ...attachment, fallback: "x".repeat(4001) }],
     [null],
     [[attachment]],
   ];
@@ -165,10 +199,39 @@ test("attachments are dropped unless they are one {color, blocks, fallback} atta
   for (const sanitize of sanitizers) {
     assert.deepEqual(sanitize([attachment]), [attachment]);
     assert.deepEqual(sanitize([{ blocks: [section("only")] }]), [{ blocks: [section("only")] }]);
+    assert.deepEqual(sanitize([{ blocks: [context("hint")] }]), [{ blocks: [context("hint")] }]);
+    // Limits are inclusive: 3000-character text, a 4000-character fallback, 10 context elements.
+    assert.equal(sanitize([{ fallback: "f".repeat(4000), blocks: [section("s".repeat(3000)), context("c".repeat(3000))] }]).length, 1);
+    const emoji = { type: "context", elements: Array.from({ length: 10 }, () => ({ type: "plain_text", text: "e", emoji: false })) };
+    assert.deepEqual(sanitize([{ blocks: [emoji] }]), [{ blocks: [emoji] }]);
     assert.deepEqual(sanitize([{ ...attachment, blocks: Array.from({ length: 10 }, () => section("x")) }])[0].blocks.length, 10);
   }
   // The sanitizer copies only known keys and never passes the caller's object through.
   assert.notEqual(sanitizers[0]([attachment])[0], attachment);
+  assert.notEqual(sanitizers[0]([attachment])[0].blocks[0], attachment.blocks[0]);
+});
+
+test("the real LiveX summary card attachment passes every patched sanitizer unchanged", { skip }, async () => {
+  const dir = applyBoth();
+  const card = {
+    priority: "high",
+    provisional: false,
+    resolved: false,
+    title: "checkout-api upstream timeouts",
+    summary: "An upstream timeout was recovered by the request retry.",
+    nextAction: "Confirm whether later requests needed retries.",
+    owner: "Unassigned",
+    checkedWindow: "2026-01-21 12:20-12:25 UTC",
+    evidenceHref: "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22",
+  };
+  const { attachments } = renderBlocks(card, undefined);
+  const { edit, updates } = loadEditMessage(dir);
+  for (const sanitize of [loadPostPayloadBuilder(dir).livexSanitizeSlackAttachments, loadMonitorSanitizer(dir)]) {
+    assert.deepEqual(sanitize(attachments), attachments);
+  }
+  assert.deepEqual(loadPostPayloadBuilder(dir).buildSlackPostMessagePayload(post({ attachments })).attachments, attachments);
+  await edit("C1", "1.2", "text", { blocks: [section("title")], attachments });
+  assert.deepEqual(updates[0].attachments, attachments);
 });
 
 test("attachments never ride on a message without blocks (text chunks)", { skip }, () => {

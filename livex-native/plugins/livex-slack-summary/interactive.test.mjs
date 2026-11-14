@@ -170,15 +170,16 @@ const maximalFields = (noise) => ({
   nextAction: noise.slice(720, 1020),
   owner: noise.slice(1020, 1100),
   checkedWindow: noise.slice(1100, 1180),
-  evidenceUrl: `https://console.cloud.google.com/logs/query?query=insertId%3D${noise.slice(1180, 2650)}`,
+  evidenceUrl: `https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D${noise.slice(1180, 2640)}`,
 });
 
 test("a card too large for a button value renders without buttons and logs", () => {
   const loaded = load();
-  const blocks = blocksOf(postCard(loaded, { fields: maximalFields(noiseOf("seed", 2700)) }));
+  const fields = maximalFields(noiseOf("seed", 2700));
+  const blocks = blocksOf(postCard(loaded, { fields, evidence: [new URL(fields.evidenceUrl).href] }));
   assert.deepEqual(buttonsOf(blocks), []);
   assert.equal(blocks.length, 6);
-  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?query=insertId%3D/u);
+  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D/u);
   assert.equal(loaded.warnings.length, 1);
   assert.match(loaded.warnings[0], /too large/u);
   // A card whose state does fit keeps its buttons.

@@ -25,6 +25,7 @@ const DEBUGGER_SLACK_THREAD =
   /^agent:debugger:slack:channel:(?:team:[a-z0-9%._-]+:channel:)?([cg][a-z0-9]+):thread:(\d+\.\d+)$/u;
 const SLACK_TS = /^\d{9,12}\.\d{3,9}$/u;
 const SENDER_ID = /^[UW][A-Z0-9]+$/u;
+const GCP_PROJECT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u;
 const CHANNEL_GATE = /^(?:\*|[CG][A-Z0-9]+)$/u;
 
 const PRIORITY_LABELS = new Map([
@@ -87,8 +88,11 @@ function isBoundedLine(value, maxLength) {
  * query: the `query` parameter must pin an entry (`insertId=`) or bound a time range
  * (`timestamp>=` and `timestamp<=`).
  */
-function isVerifiedEvidenceLink(url) {
+function isVerifiedEvidenceLink(url, project) {
   if (!EVIDENCE_HOSTS.includes(url.hostname) || url.port !== "" || url.pathname !== EVIDENCE_PATH) {
+    return false;
+  }
+  if (project !== undefined && url.searchParams.get("project") !== project) {
     return false;
   }
   const query = url.searchParams.get("query") ?? "";
@@ -98,8 +102,11 @@ function isVerifiedEvidenceLink(url) {
 /**
  * Returns undefined when invalid, null when the link is dropped (the card still
  * posts), or the normalized href. The href is stored unescaped; rendering escapes `&`.
+ * The shape check is substring-based and therefore forgeable by model text, so a session
+ * passes `isRecorded`: the link is kept only when it exactly equals a URL the evidence tool
+ * returned in this session (see afterToolCall). `project`, when given, must match too.
  */
-export function readEvidenceHref(value) {
+export function readEvidenceHref(value, { isRecorded, project } = {}) {
   if (value === null) {
     return null;
   }
@@ -122,7 +129,11 @@ export function readEvidenceHref(value) {
     ) {
       // A well-formed link to any other host, port, path or an unverified query is
       // dropped, not fatal: the card shows "No verified evidence link".
-      if (!isVerifiedEvidenceLink(url)) {
+      if (!isVerifiedEvidenceLink(url, project)) {
+        return null;
+      }
+      // Compared in canonical form: the same URL spelled with an explicit default port is the same link.
+      if (isRecorded && !isRecorded(url.href)) {
         return null;
       }
       return url.href;
@@ -150,7 +161,7 @@ function validCard(card) {
 }
 
 /** Parse the `MARKER\n{json}\n\nfull report` envelope into a validated card. */
-export function readSummary(text) {
+export function readSummary(text, evidenceOptions) {
   // Read only the compact JSON line. Evidence belongs to the native assistant
   // transcript and must never be copied into the replacement Slack payload.
   const envelope = /^\S+\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
@@ -180,7 +191,7 @@ export function readSummary(text) {
     resolved,
   } = value;
   // evidenceUrl is optional: absent and null both mean "no link".
-  const href = evidenceUrl === undefined ? null : readEvidenceHref(evidenceUrl);
+  const href = evidenceUrl === undefined ? null : readEvidenceHref(evidenceUrl, evidenceOptions);
   if (
     !Object.keys(value).every((key) => ALLOWED_KEYS.has(key)) ||
     !REQUIRED_KEYS.every((key) => key in value) ||
@@ -207,7 +218,7 @@ export function readSummary(text) {
 }
 
 /** True when the text carries a canonical first-line marker and the marker line exists. */
-export function classifyEnvelope(rawText) {
+export function classifyEnvelope(rawText, evidenceOptions) {
   const text = typeof rawText === "string" ? rawText.trimStart() : "";
   if (!text || !MARKED_LINE.test(text)) {
     return { marked: false };
@@ -215,7 +226,7 @@ export function classifyEnvelope(rawText) {
   // A misplaced marker still identifies an envelope. Fail closed instead
   // of passing the JSON and retained evidence through as an ordinary reply.
   const canonical = text.split(/\r?\n/u, 1)[0] === SUMMARY_MARKER;
-  return { marked: true, card: canonical ? readSummary(text) : undefined };
+  return { marked: true, card: canonical ? readSummary(text, evidenceOptions) : undefined };
 }
 
 // ------------------------------------------------------------------ rendering
@@ -584,7 +595,12 @@ export function readConfig(raw) {
     typeof record.allowedChannelId === "string" && CHANNEL_GATE.test(record.allowedChannelId)
       ? record.allowedChannelId
       : undefined;
-  return { senderId, channelId, buttons: Boolean(senderId && channelId) };
+  // Optional: the GCP project the evidence links must belong to (same value as livex-gcp-readonly).
+  const gcpProject =
+    typeof record.gcpProject === "string" && GCP_PROJECT.test(record.gcpProject)
+      ? record.gcpProject
+      : undefined;
+  return { senderId, channelId, gcpProject, buttons: Boolean(senderId && channelId) };
 }
 
 function channelAllowed(config, channelId) {
@@ -622,6 +638,31 @@ const MAX_PENDING = 8;
 const MAX_SESSIONS = 500;
 const MAX_CARDS_PER_SESSION = 25;
 const MAX_OVERRIDES = 1000;
+// Evidence links the log tool returned, per debugger thread session.
+const EVIDENCE_TOOL = "livex_gcp_logs_read";
+const MAX_EVIDENCE_URLS_PER_SESSION = 200;
+const MAX_EVIDENCE_ENTRIES_SCANNED = 500;
+const EVIDENCE_TTL_MS = 3 * 60 * 60_000;
+const MAX_RESULT_TEXT = 256 * 1024;
+
+/** The tool result's structured details, else the JSON in its first text block. */
+function readToolDetails(result) {
+  if (result?.details !== null && typeof result?.details === "object") {
+    return result.details;
+  }
+  const text = Array.isArray(result?.content)
+    ? result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text
+    : undefined;
+  if (typeof text !== "string" || text.length > MAX_RESULT_TEXT) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function boundedSet(map, key, limit) {
   let set = map.get(key);
@@ -651,6 +692,72 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
   const pending = new Map();
   // `${channel}:${ts}` -> priority state a human set with the buttons.
   const overrides = new Map();
+  // sessionKey -> Map(evidence url -> recorded at), from livex_gcp_logs_read results.
+  const evidenceUrls = new Map();
+
+  /** Evidence options for one session: exact recorded match, plus the configured project. */
+  function evidenceOptionsFor(sessionKey) {
+    return {
+      project: config.gcpProject,
+      isRecorded(url) {
+        const at = evidenceUrls.get(sessionKey)?.get(url);
+        return at !== undefined && now() - at <= EVIDENCE_TTL_MS;
+      },
+    };
+  }
+
+  // ------------------------------------------------------------- after_tool_call
+  /** Records the links the log tool itself produced; the card may cite only these. */
+  function afterToolCall(event, ctx) {
+    try {
+      const sessionKey = ctx?.sessionKey;
+      if (
+        event?.toolName !== EVIDENCE_TOOL ||
+        event.error ||
+        typeof sessionKey !== "string" ||
+        !DEBUGGER_SLACK_THREAD.test(sessionKey)
+      ) {
+        return;
+      }
+      const details = readToolDetails(event.result);
+      const project = details?.project;
+      if (typeof project !== "string" || (config.gcpProject && project !== config.gcpProject)) {
+        return;
+      }
+      const candidates = [
+        details.logsExplorerUrl,
+        ...(Array.isArray(details.entries)
+          ? details.entries.slice(0, MAX_EVIDENCE_ENTRIES_SCANNED).map((entry) => entry?.entryUrl)
+          : []),
+      ];
+      const at = now();
+      let urls = evidenceUrls.get(sessionKey);
+      for (const candidate of candidates) {
+        // Same shape and project rules as the card, so only a usable link is kept.
+        if (typeof candidate !== "string" || readEvidenceHref(candidate, { project }) !== candidate) {
+          continue;
+        }
+        if (!urls) {
+          urls = new Map();
+        }
+        urls.delete(candidate);
+        urls.set(candidate, at);
+        while (urls.size > MAX_EVIDENCE_URLS_PER_SESSION) {
+          urls.delete(urls.keys().next().value);
+        }
+      }
+      if (urls) {
+        // Re-insert as most recent session (bounded LRU).
+        evidenceUrls.delete(sessionKey);
+        evidenceUrls.set(sessionKey, urls);
+        while (evidenceUrls.size > MAX_SESSIONS) {
+          evidenceUrls.delete(evidenceUrls.keys().next().value);
+        }
+      }
+    } catch {
+      // Recording is best effort; a miss only drops the card's evidence link.
+    }
+  }
 
   function controlsFor(card, bind) {
     const token = encodeState(card, bind, key);
@@ -687,7 +794,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       ) {
         return undefined;
       }
-      const envelope = classifyEnvelope(payload.text);
+      const envelope = classifyEnvelope(payload.text, evidenceOptionsFor(sessionKey));
       if (!envelope.marked) {
         return undefined;
       }
@@ -778,16 +885,24 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       }
       const params = event.params;
       const action = typeof params?.action === "string" ? params.action.trim().toLowerCase() : "";
-      if (action !== "edit") {
-        return undefined;
-      }
       const sessionKey = ctx?.sessionKey;
       const debuggerSession =
         typeof sessionKey === "string" ? sessionKey.startsWith("agent:debugger:") : false;
+      // `livexAttachments` is the patched edit path's private colour-bar channel. Only this
+      // guard may fill it, and only for a validated card edit: strip it from every other
+      // call (any agent, any action) so a model cannot inject an attachment.
+      const stripAttachments = params?.livexAttachments !== undefined
+        ? { params: { livexAttachments: undefined } }
+        : undefined;
+      if (action !== "edit") {
+        return stripAttachments;
+      }
       if (!debuggerSession) {
         // Other agents keep their own policy. An edit with no session at all
         // cannot be tied to a thread, so it is refused for the debugger only.
-        return ctx?.agentId === "debugger" ? block("Editing is not available in this context.") : undefined;
+        return ctx?.agentId === "debugger"
+          ? block("Editing is not available in this context.")
+          : stripAttachments;
       }
       const session = parseSession(sessionKey);
       if (!session) {
@@ -833,7 +948,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
       }
 
       // Content: the same envelope the first reply used, through the same renderer.
-      const envelope = classifyEnvelope(params.message);
+      const envelope = classifyEnvelope(params.message, evidenceOptionsFor(sessionKey));
       if (!envelope.marked || !envelope.card) {
         return block(
           `Amended content must use the summary envelope: ${SUMMARY_MARKER}, one JSON line with ` +
@@ -923,5 +1038,5 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
     }
   }
 
-  return { config, replyPayloadSending, messageSent, beforeToolCall, interactive };
+  return { config, replyPayloadSending, messageSent, beforeToolCall, afterToolCall, interactive };
 }

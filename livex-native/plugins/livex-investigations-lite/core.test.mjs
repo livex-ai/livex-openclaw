@@ -861,3 +861,26 @@ test("decision points are logged once each: staged, tagged, committed, and drops
   assert.match(log2(env3), /final reply has no V2 envelope \(text present\)/u);
   assert.match(log2(env3), /reply not tagged: nothing staged/u);
 });
+
+test("a tool stage without a prompt-build runId is not adopted by a later reply; an envelope still commits", async () => {
+  // before_prompt_build carried no runId: the tool entry has no run to bind to.
+  const env = loggerEnv();
+  await env.hooks.beforePromptBuild({ prompt: "x" }, turn(SESSION, undefined));
+  await createRecordTool(config, toolContext(), env.memory).execute("t", params());
+  assert.equal(env.memory.pending.get(SESSION).stagedRunId, undefined);
+  sendFinal(env, { runId: "run-9", payload: { text: "plain reply" } });
+  assert.equal(env.memory.pending.size, 0);
+  await sent(env);
+  assert.equal(env.store.rows.size, 0);
+  assert.match(env.lines.map(([, m]) => m).join("\n"), /record dropped: no-run-id/u);
+
+  // the reply's own envelope, with its own runId, still records; the unbound tool record does not ride along
+  const env2 = loggerEnv();
+  await env2.hooks.beforePromptBuild({ prompt: "x" }, turn(SESSION, undefined));
+  await createRecordTool(config, toolContext(), env2.memory).execute("t", params({ signature: "other-svc | sync | disk full" }));
+  sendFinal(env2, { runId: "run-9", payload: { text: envelope() } });
+  await sent(env2);
+  const rows = await env2.store.entries();
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].value.signature, /^checkout/u);
+});

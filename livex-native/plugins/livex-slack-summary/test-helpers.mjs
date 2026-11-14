@@ -67,8 +67,14 @@ export function load(pluginConfig = baseConfig, { stateDir = newStateDir(), runt
   return { hooks, registrations, interactive: registrations[0], entry, warnings, stateDir };
 }
 
-/** Send the final reply through the render hook and confirm it like Slack would. */
-export function postCard(loaded, { sessionKey = SESSION, ts = CARD_TS, fields = summary, content = "", runId } = {}) {
+/**
+ * Send the final reply through the render hook and confirm it like Slack would.
+ * `evidence` URLs are first recorded as if the log tool returned them in this session.
+ */
+export function postCard(loaded, { sessionKey = SESSION, ts = CARD_TS, fields = summary, content = "", runId, evidence = [] } = {}) {
+  if (evidence.length) {
+    recordEvidence(loaded, { entryUrls: evidence, sessionKey });
+  }
   const result = loaded.hooks.get("reply_payload_sending")(
     { kind: "final", channel: "slack", sessionKey, runId, payload: { text: envelope(fields) } },
     { channelId: "slack", sessionKey },
@@ -111,3 +117,27 @@ export const labelsOf = (blocks) => buttonsOf(blocks).map((button) => button.tex
 
 /** The card's slack channelData in the legacy flat order: Title, attachment blocks, then the rest (buttons). */
 export const flat = (slack) => [slack.blocks[0], ...(slack.attachments?.[0]?.blocks ?? []), ...slack.blocks.slice(1)];
+
+export const PROJECT = "livex-copilot-prd";
+
+/**
+ * Feed a livex_gcp_logs_read result to the after_tool_call hook like the host does:
+ * `{ content: [text], details }` with the links the gcp plugin would produce.
+ */
+export function recordEvidence(
+  loaded,
+  { logsExplorerUrl, entryUrls = [], project = PROJECT, sessionKey = SESSION, toolName = "livex_gcp_logs_read", textOnly = false, error } = {},
+) {
+  const details = {
+    project,
+    ...(logsExplorerUrl ? { logsExplorerUrl } : {}),
+    entries: entryUrls.map((entryUrl, index) => ({ insertId: `id${index}`, timestamp: "2026-01-21T12:20:00Z", entryUrl })),
+  };
+  const result = textOnly
+    ? { content: [{ type: "text", text: JSON.stringify(details) }] }
+    : { content: [{ type: "text", text: JSON.stringify(details) }], details };
+  return loaded.hooks.get("after_tool_call")(
+    { toolName, params: {}, result, ...(error ? { error } : {}) },
+    { toolName, sessionKey, agentId: "debugger" },
+  );
+}

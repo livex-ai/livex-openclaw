@@ -32,6 +32,7 @@ entry.register({
   },
 });
 assert.deepEqual([...hooks.keys()].sort(), [
+  "after_tool_call",
   "before_tool_call",
   "message_sent",
   "reply_payload_sending",
@@ -58,12 +59,23 @@ const EVIDENCE_LINK = "https://console.cloud.google.com/logs/query?project=livex
 const flat = (slack) => [slack.blocks[0], ...slack.attachments[0].blocks, ...slack.blocks.slice(1)];
 const mrkdwn = (text) => ({ type: "section", text: { type: "mrkdwn", text, verbatim: true } });
 const envelope = (fields, full = evidence) => `${mark}\n${JSON.stringify(fields)}\n\n${full}`;
+// The evidence link counts only when the log tool returned it in the same session.
+const recordLink = (sessionKey) =>
+  hooks.get("after_tool_call")(
+    {
+      toolName: "livex_gcp_logs_read",
+      params: {},
+      result: { content: [], details: { project: "livex-copilot-prd", entries: [{ entryUrl: summary.evidenceUrl }] } },
+    },
+    { toolName: "livex_gcp_logs_read", sessionKey },
+  );
 const route = { replyToId: "1768996800.000001", replyToTag: true, replyToCurrent: false };
 const event = {
   kind: "final",
   channel: "slack",
   sessionKey: "agent:debugger:slack:channel:c123:thread:1768996800.000001",
 };
+recordLink(event.sessionKey);
 
 test("registered hook emits only a compact card and preserves the original evidence and route", () => {
   const text = envelope(summary);
@@ -212,6 +224,7 @@ test("renders the card for team-qualified Slack thread sessions", () => {
     "agent:debugger:slack:channel:c123:thread:1768996800.000001",
   ];
   for (const sessionKey of sessions) {
+    recordLink(sessionKey);
     const result = render({ ...event, sessionKey, payload: { ...route, text: envelope(summary) } });
     assert.equal(result.payload.channelData.slack.blocks[0].text.text, "*Title:* checkout-api upstream timeouts", sessionKey);
   }

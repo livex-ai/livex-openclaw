@@ -47,6 +47,8 @@ export default definePluginEntry({
     api.on("reply_payload_sending", (event, ctx) => plugin.replyPayloadSending(event, ctx));
     // Learns the Slack ts of each confirmed card (the amendment allow-list).
     api.on("message_sent", (event, ctx) => plugin.messageSent(event, ctx));
+    // Records the evidence links the log tool returned; a card may cite only those.
+    api.on("after_tool_call", (event, ctx) => plugin.afterToolCall(event, ctx));
     // Lets the debugger's message `edit` touch only its own card in this thread.
     api.on("before_tool_call", (event, ctx) => plugin.beforeToolCall(event, ctx));
 

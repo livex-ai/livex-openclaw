@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { decodeState, encodeState, readEvidenceHref, renderBlocks } from "./core.mjs";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, buttonsOf, fakeClick, flat, load, postCard, summary } from "./test-helpers.mjs";
+import { createLogsTool } from "../livex-gcp-readonly/core.mjs";
+import { CARD_TS, CHANNEL, PROJECT, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, flat, load, postCard, recordEvidence, summary } from "./test-helpers.mjs";
 
 const slackOf = (result) => result.payload.channelData.slack;
 const pick = (slack, label) => buttonsOf(slack.blocks).find((button) => button.text.text === label).value;
@@ -161,4 +162,155 @@ test("a button token minted with a now-dropped link still decodes, without the l
   const token = encodeState(card, bind, key);
   assert.deepEqual(decodeState(token, bind, key), { ...card, evidenceHref: null });
   assert.equal(renderBlocks({ ...card, evidenceHref: null }, undefined).attachments[0].blocks[3].text.text.includes("No verified"), true);
+});
+
+// ---------------------------------------------------------------- evidence provenance
+
+const BASE = "https://console.cloud.google.com/logs/query";
+const link = (query, project = PROJECT) => `${BASE}?project=${project}&query=${encodeURIComponent(query)}`;
+const evidenceOf = (result) => slackOf(result).attachments[0].blocks[3].text.text;
+const NO_LINK = `*Evidence:* No verified evidence link · Checked window: ${summary.checkedWindow}`;
+const amendCtx = { sessionKey: SESSION, agentId: "debugger", toolName: "message" };
+const amend = (loaded, evidenceUrl) =>
+  loaded.hooks.get("before_tool_call")(
+    { toolName: "message", params: { action: "edit", target: `channel:${CHANNEL}`, messageId: CARD_TS, message: envelope({ ...summary, evidenceUrl }) } },
+    amendCtx,
+  );
+const amendedEvidence = (result) => result.params.livexAttachments[0].blocks[3].text.text;
+
+// Each of these passes the substring shape check (insertId= or both timestamp bounds) but was never
+// returned by the log tool.
+const FORGED = [
+  link('resource.type="k8s_container" -- insertId='),
+  link('textPayload:"insertId="'),
+  link('jsonPayload.insertId="x"'),
+  link('timestamp>="2026-01-21T12:20:00Z" OR timestamp<="2026-01-21T12:25:00Z"'),
+  link('insertId="abc124"'),
+  link('insertId="abc123" OR severity>=ERROR'),
+  VERIFIED.replace("&query", "&extra=1&query"),
+];
+
+test("only a link the log tool returned in this session is kept on the card", () => {
+  const loaded = load();
+  recordEvidence(loaded, { entryUrls: [VERIFIED] });
+  for (const forged of FORGED) {
+    // The substring check alone would accept it; the recorded-link check drops it.
+    assert.equal(readEvidenceHref(forged) !== null, true, forged);
+    assert.equal(evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: forged } })), NO_LINK, forged);
+  }
+  assert.match(evidenceOf(postCard(loaded)), /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22\|Logs>/u);
+});
+
+test("a link recorded for one session is not accepted in another or before it is recorded", () => {
+  const loaded = load();
+  assert.equal(evidenceOf(postCard(loaded)), NO_LINK);
+  const other = "agent:debugger:slack:channel:c0alerts1:thread:1768990000.000009";
+  recordEvidence(loaded, { entryUrls: [VERIFIED], sessionKey: other });
+  assert.equal(evidenceOf(postCard(loaded)), NO_LINK);
+  recordEvidence(loaded, { logsExplorerUrl: VERIFIED });
+  assert.notEqual(evidenceOf(postCard(loaded)), NO_LINK);
+});
+
+test("amendments accept only recorded links too", () => {
+  const loaded = load();
+  recordEvidence(loaded, { entryUrls: [VERIFIED] });
+  postCard(loaded, { fields: { ...summary, evidenceUrl: VERIFIED } });
+  for (const forged of FORGED) {
+    assert.equal(amendedEvidence(amend(loaded, forged)), NO_LINK, forged);
+  }
+  assert.match(amendedEvidence(amend(loaded, VERIFIED)), /\|Logs>/u);
+});
+
+test("a foreign project is neither recorded nor accepted", () => {
+  const foreign = link('insertId="abc123"', "other-project-prd");
+  // Recorded under its own project but the card names another: the project check drops it.
+  const loaded = load({ ...baseConfig, gcpProject: PROJECT });
+  recordEvidence(loaded, { entryUrls: [foreign], project: "other-project-prd" });
+  assert.equal(evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: foreign } })), NO_LINK);
+  // A tool result for another project than the configured one is not recorded at all.
+  recordEvidence(loaded, { entryUrls: [VERIFIED], project: "other-project-prd" });
+  assert.equal(evidenceOf(postCard(loaded)), NO_LINK);
+  // Without a configured project the link must still belong to the project of its own result.
+  const open = load();
+  recordEvidence(open, { entryUrls: [foreign], project: PROJECT });
+  assert.equal(evidenceOf(postCard(open, { fields: { ...summary, evidenceUrl: foreign } })), NO_LINK);
+  // The configured project and the result agree: accepted.
+  recordEvidence(loaded, { entryUrls: [VERIFIED], project: PROJECT });
+  assert.notEqual(evidenceOf(postCard(loaded)), NO_LINK);
+});
+
+test("a real entryUrl and logsExplorerUrl from the log tool are accepted, text-only results too", async () => {
+  const config = { gcloudPath: "/sdk/bin/gcloud", cloudSdkConfig: "/private/cloud", gcloudAccount: "reader@example.test", project: "example-prd", allowedSenderId: SENDER, allowedChannelId: CHANNEL };
+  const context = { messageChannel: "slack", nativeChannelId: CHANNEL, requesterSenderId: SENDER, assertInvocationCurrent() {} };
+  const rows = [{ insertId: 'a"b\\c', timestamp: "2026-11-14T09:12:05.250Z", severity: "ERROR", textPayload: "boom" }];
+  const tool = createLogsTool(config, context, async () => ({ code: 0, termination: "exit", killed: false, stdout: JSON.stringify(rows), stderr: "" }));
+  const result = await tool.execute("read", { mode: "discover", insertId: "x", start: "2026-11-14T09:00:00Z", end: "2026-11-14T10:00:00Z", limit: 5 });
+  const { entryUrl } = result.details.entries[0];
+  const { logsExplorerUrl } = result.details;
+  assert.ok(entryUrl && logsExplorerUrl);
+  const fire = (loaded, toolResult) =>
+    loaded.hooks.get("after_tool_call")({ toolName: "livex_gcp_logs_read", params: {}, result: toolResult }, { sessionKey: SESSION, toolName: "livex_gcp_logs_read" });
+  for (const toolResult of [result, { content: result.content }]) {
+    for (const [name, url] of [["entryUrl", entryUrl], ["logsExplorerUrl", logsExplorerUrl]]) {
+      for (const pluginConfig of [baseConfig, { ...baseConfig, gcpProject: "example-prd" }]) {
+        const loaded = load(pluginConfig);
+        fire(loaded, toolResult);
+        const text = evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: url } }));
+        assert.match(text, /\|Logs>/u, name);
+      }
+    }
+  }
+  // With the other project configured the same real result is ignored.
+  const wrong = load({ ...baseConfig, gcpProject: "different-prd" });
+  fire(wrong, result);
+  assert.equal(evidenceOf(postCard(wrong, { fields: { ...summary, evidenceUrl: entryUrl } })), NO_LINK);
+});
+
+test("only successful livex_gcp_logs_read results in a debugger thread are recorded", () => {
+  const loaded = load();
+  recordEvidence(loaded, { entryUrls: [VERIFIED], toolName: "exec" });
+  recordEvidence(loaded, { entryUrls: [VERIFIED], error: "boom" });
+  recordEvidence(loaded, { entryUrls: [VERIFIED], sessionKey: "agent:main:slack:channel:c0alerts1:thread:1768996800.000001" });
+  recordEvidence(loaded, { entryUrls: [VERIFIED], sessionKey: null });
+  for (const result of [undefined, null, "x", { details: "x" }, { content: "x" }, { content: [{ type: "text", text: "{bad" }] }]) {
+    loaded.hooks.get("after_tool_call")({ toolName: "livex_gcp_logs_read", params: {}, result }, { sessionKey: SESSION });
+  }
+  assert.equal(loaded.hooks.get("after_tool_call")(undefined, undefined), undefined);
+  assert.equal(evidenceOf(postCard(loaded)), NO_LINK);
+});
+
+test("recorded links expire, and each session and the session count are bounded", () => {
+  let clock = 1_000_000;
+  // The plugin binds Date.now when it is created, so install the clock first.
+  const realNow = Date.now;
+  Date.now = () => clock;
+  try {
+    const loaded = load(baseConfig);
+    recordEvidence(loaded, { entryUrls: [VERIFIED] });
+    assert.notEqual(evidenceOf(postCard(loaded)), NO_LINK);
+    clock += 3 * 60 * 60_000 + 1;
+    assert.equal(evidenceOf(postCard(loaded)), NO_LINK);
+
+    // 250 links in one session keep only the newest 200.
+    const urls = Array.from({ length: 250 }, (_, index) => link(`insertId="n${index}"`));
+    recordEvidence(loaded, { entryUrls: urls });
+    const kept = (url) => !evidenceOf(postCard(loaded, { fields: { ...summary, evidenceUrl: url } })).includes("No verified");
+    assert.equal(kept(urls[0]), false);
+    assert.equal(kept(urls[49]), false);
+    assert.equal(kept(urls[50]), true);
+    assert.equal(kept(urls[249]), true);
+
+    // 501 sessions: the least recently recorded one is evicted.
+    const sessionOf = (index) => `agent:debugger:slack:channel:c0alerts1:thread:1768996800.${String(index).padStart(6, "0")}`;
+    for (let index = 0; index < 501; index += 1) {
+      recordEvidence(loaded, { entryUrls: [VERIFIED], sessionKey: sessionOf(index) });
+    }
+    const sessionKept = (index) =>
+      !evidenceOf(postCard(loaded, { sessionKey: sessionOf(index), ts: `1768997000.${String(index).padStart(6, "0")}` })).includes("No verified");
+    assert.equal(sessionKept(0), false);
+    assert.equal(sessionKept(1), true);
+    assert.equal(sessionKept(500), true);
+  } finally {
+    Date.now = realNow;
+  }
 });

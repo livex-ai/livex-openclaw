@@ -19,8 +19,10 @@
 // under new blocks.
 //
 // Every attachment goes through livexSanitizeSlackAttachments right before the Slack API call:
-// at most 1 attachment holding only `color` (#RRGGBB), `blocks` (1-10 block objects) and
-// `fallback` (string). Anything else is dropped (the message still posts with its blocks).
+// exactly 1 attachment holding only `color` (#RRGGBB), `fallback` (string, at most 4000
+// characters) and `blocks` (1-10 blocks, each a verbatim-mrkdwn `section` with only `type` and
+// `text` (at most 3000 characters) or a `context` of 1-10 `plain_text` elements). Anything else
+// is dropped (the message still posts with its blocks).
 // Attachments ride only with a message that has top-level blocks, so text chunks never carry
 // them, and they are attached to the first block message of a reply only.
 //
@@ -50,21 +52,41 @@ const DIGESTS = {
   ],
 };
 
-// Injected verbatim into send (chat.postMessage) and monitor (chat.update).
+// Injected verbatim into send (chat.postMessage), actions (chat.update) and monitor (chat.update).
+// The inner blocks are exactly what the LiveX summary card renders (renderBlocks in
+// livex-slack-summary/core.mjs) and nothing else: a verbatim mrkdwn `section` and a `context`
+// of plain_text elements. Images, actions, rich_text, accessories, fields and every other block
+// type or key drop the whole attachment. Accepted blocks are rebuilt from known keys.
 const SANITIZER = `function ${MARKER}(value) {
 \tif (!Array.isArray(value) || value.length !== 1) return void 0;
 \tconst attachment = value[0];
-\tif (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return void 0;
-\tif (!Object.keys(attachment).every((key) => key === "color" || key === "blocks" || key === "fallback")) return void 0;
+\tconst record = (item) => item !== null && typeof item === "object" && !Array.isArray(item);
+\tconst only = (item, keys) => Object.keys(item).every((key) => keys.includes(key));
+\tconst text = (item) => typeof item === "string" && item.length >= 1 && item.length <= 3000;
+\tif (!record(attachment)) return void 0;
+\tif (!only(attachment, ["color", "blocks", "fallback"])) return void 0;
 \tif (attachment.color !== void 0 && !(typeof attachment.color === "string" && /^#[0-9A-Fa-f]{6}$/.test(attachment.color))) return void 0;
-\tif (attachment.fallback !== void 0 && typeof attachment.fallback !== "string") return void 0;
+\tif (attachment.fallback !== void 0 && !(typeof attachment.fallback === "string" && attachment.fallback.length <= 4000)) return void 0;
 \tconst blocks = attachment.blocks;
 \tif (!Array.isArray(blocks) || blocks.length < 1 || blocks.length > 10) return void 0;
-\tif (!blocks.every((block) => block && typeof block === "object" && !Array.isArray(block) && typeof block.type === "string")) return void 0;
+\tconst section = (block) => only(block, ["type", "text"]) && record(block.text) && only(block.text, ["type", "text", "verbatim"]) && block.text.type === "mrkdwn" && block.text.verbatim === true && text(block.text.text);
+\tconst element = (item) => record(item) && only(item, ["type", "text", "emoji"]) && item.type === "plain_text" && text(item.text) && (item.emoji === void 0 || typeof item.emoji === "boolean");
+\tconst context = (block) => only(block, ["type", "elements"]) && Array.isArray(block.elements) && block.elements.length >= 1 && block.elements.length <= 10 && block.elements.every(element);
+\tif (!blocks.every((block) => record(block) && (block.type === "section" ? section(block) : block.type === "context" && context(block)))) return void 0;
 \treturn [{
 \t\t...attachment.color !== void 0 ? { color: attachment.color } : {},
 \t\t...attachment.fallback !== void 0 ? { fallback: attachment.fallback } : {},
-\t\tblocks
+\t\tblocks: blocks.map((block) => block.type === "section" ? {
+\t\t\ttype: "section",
+\t\t\ttext: { type: "mrkdwn", text: block.text.text, verbatim: true }
+\t\t} : {
+\t\t\ttype: "context",
+\t\t\telements: block.elements.map((item) => ({
+\t\t\t\ttype: "plain_text",
+\t\t\t\ttext: item.text,
+\t\t\t\t...item.emoji !== void 0 ? { emoji: item.emoji } : {}
+\t\t\t}))
+\t\t})
 \t}];
 }
 `;

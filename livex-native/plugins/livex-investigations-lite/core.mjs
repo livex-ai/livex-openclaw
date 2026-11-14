@@ -602,6 +602,12 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
       drop(entry.tagged ? "no-message_sent" : "expired");
     }
   };
+  // Session-and-window adoption needs a real staged run id that is still the latest
+  // prompt build's; an entry staged without one never matches anything.
+  const canAdopt = (entry, sessionKey) =>
+    typeof entry.stagedRunId === "string" &&
+    entry.stagedRunId.length > 0 &&
+    entry.stagedRunId === runs.get(sessionKey);
   const newEntry = (sessionKey, stagedRunId) => {
     if (pending.size >= MAX_PENDING_SESSIONS) pending.delete(pending.keys().next().value);
     const entry = { records: new Map(), stagedAt: now(), tagged: false, stagedRunId };
@@ -671,12 +677,12 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
       }
       let entry = pending.get(sessionKey);
       if (entry && entry.stagedRunId !== runId) {
-        if (entry.stagedRunId === runs.get(sessionKey)) {
+        if (canAdopt(entry, sessionKey)) {
           entry.stagedRunId = runId;
           log.info("run id differs between prompt build and reply; bound by session and time window");
         } else {
           pending.delete(sessionKey);
-          drop("run-mismatch");
+          drop(entry.stagedRunId ? "run-mismatch" : "no-run-id");
           entry = undefined;
         }
       }
@@ -712,12 +718,12 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
         return false;
       }
       if (runId !== entry.stagedRunId) {
-        if (entry.stagedRunId === runs.get(sessionKey)) {
+        if (canAdopt(entry, sessionKey)) {
           entry.stagedRunId = runId;
           log.info("run id differs between prompt build and reply; bound by session and time window");
         } else {
           pending.delete(sessionKey);
-          drop("run-mismatch");
+          drop(entry.stagedRunId ? "run-mismatch" : "no-run-id");
           return false;
         }
       }

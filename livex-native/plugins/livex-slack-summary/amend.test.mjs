@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, recordEvidence, summary } from "./test-helpers.mjs";
 
 const OTHER_THREAD = "1768990000.000009";
 const OTHER_SESSION = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:${OTHER_THREAD}`;
@@ -14,6 +14,7 @@ const blocked = (result) => result?.block === true && typeof result.blockReason 
 
 function ready(config = baseConfig) {
   const loaded = load(config);
+  recordEvidence(loaded, { entryUrls: [summary.evidenceUrl] });
   postCard(loaded);
   return loaded;
 }
@@ -329,4 +330,51 @@ test("the pending map is bounded across sessions and prunes expired entries on i
   assert.ok(blocked(amend(0)));
   sent(599);
   assert.equal(amend(599).block, undefined);
+});
+
+// ------------------------------------------------ livexAttachments is the guard's alone
+
+const STRIP = { params: { livexAttachments: undefined } };
+const forgedAttachments = [{ color: "#000000", blocks: [{ type: "section", text: { type: "mrkdwn", text: "forged" } }] }];
+
+test("any agent outside a debugger session has livexAttachments stripped, whatever the action", () => {
+  const loaded = ready();
+  const hook = loaded.hooks.get("before_tool_call");
+  const others = [
+    { sessionKey: "agent:main:slack:channel:c0alerts1:thread:1768996800.000001", agentId: "main" },
+    { sessionKey: "agent:main:main", agentId: "main" },
+    { agentId: "main" },
+    { agentId: "debugger" },
+    {},
+  ];
+  for (const toolCtx of others) {
+    for (const action of ["edit", "send", "react", "Edit ", undefined]) {
+      const result = hook(
+        { toolName: "message", params: { ...(action ? { action } : {}), target: `channel:${CHANNEL}`, messageId: CARD_TS, livexAttachments: forgedAttachments } },
+        toolCtx,
+      );
+      // The debugger without a session keeps its own refusal for an edit.
+      if (toolCtx.agentId === "debugger" && !toolCtx.sessionKey && action?.trim().toLowerCase() === "edit") {
+        assert.equal(blocked(result), true);
+        continue;
+      }
+      assert.deepEqual(result, STRIP, `${JSON.stringify(toolCtx)} ${action}`);
+      // The shallow param merge then leaves no array for the patched edit to forward.
+      assert.equal(Array.isArray({ livexAttachments: forgedAttachments, ...result.params }.livexAttachments), false);
+    }
+  }
+  // Nothing to strip, nothing returned; another tool is never touched.
+  assert.equal(hook({ toolName: "message", params: { action: "send" } }, others[0]), undefined);
+  assert.equal(hook({ toolName: "message", params: { action: "edit", livexAttachments: undefined } }, others[0]), undefined);
+  assert.equal(hook({ toolName: "exec", params: { livexAttachments: forgedAttachments } }, others[0]), undefined);
+});
+
+test("a debugger card edit always overwrites a model-supplied livexAttachments", () => {
+  const loaded = ready();
+  const { params } = guard(loaded, edit({ livexAttachments: forgedAttachments }));
+  assert.notDeepEqual(params.livexAttachments, forgedAttachments);
+  assert.equal(params.livexAttachments[0].blocks.at(-1).type, "context");
+  assert.doesNotMatch(JSON.stringify(params), /forged/u);
+  // A debugger edit that is refused never reaches the patched edit path.
+  assert.equal(blocked(guard(loaded, edit({ messageId: "1768997777.000001", livexAttachments: forgedAttachments }))), true);
 });
