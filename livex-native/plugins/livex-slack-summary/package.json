@@ -10,7 +10,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "test": "node --test index.test.mjs interactive.test.mjs amend.test.mjs"
+    "test": "node --test index.test.mjs interactive.test.mjs amend.test.mjs attachments.test.mjs"
   },
   "peerDependencies": {
     "openclaw": ">=2026.10.5"

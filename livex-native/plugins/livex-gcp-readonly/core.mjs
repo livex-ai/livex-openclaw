@@ -495,6 +495,55 @@ export function withEvidenceLink(details, query, config) {
   return Buffer.byteLength(JSON.stringify(omitted)) <= MAX_RESULT ? omitted : details;
 }
 
+
+// Exact-entry Logs Explorer link. Same URL building, redaction and size rules as
+// logsExplorerLink; any redaction or oversize result omits the link.
+function entryLink(raw, entry, config) {
+  if (typeof raw?.insertId !== "string" || typeof entry.insertId !== "string") return undefined;
+  if (entry.insertId !== raw.insertId || typeof raw.timestamp !== "string") return undefined;
+  if (entry.timestamp !== raw.timestamp) return undefined;
+  const millis = Date.parse(raw.timestamp);
+  if (!Number.isFinite(millis) || raw.insertId.length > MAX_LITERAL) return undefined;
+  const from = new Date(millis - 1000);
+  const to = new Date(millis + 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return undefined;
+  const filter = [
+    `insertId=${JSON.stringify(raw.insertId)}`,
+    `timestamp>=${JSON.stringify(from.toISOString())}`,
+    `timestamp<=${JSON.stringify(to.toISOString())}`,
+  ].join(" AND ");
+  const url = new URL("https://console.cloud.google.com/logs/query");
+  url.searchParams.set("project", config.project);
+  url.searchParams.set("query", filter);
+  return Buffer.byteLength(url.href) <= MAX_EVIDENCE_URL ? url.href : undefined;
+}
+
+function addEntryLinks(details, rawEntries, config, resultLimit) {
+  const links = details.entries.map((entry, i) => entryLink(rawEntries[i], entry, config));
+  const fits = (d) => Buffer.byteLength(JSON.stringify(d)) <= resultLimit;
+  // Drop links from the oldest entries first until the result fits.
+  const order = details.entries
+    .map((entry, i) => i)
+    .filter((i) => links[i])
+    .sort((a, b) => Date.parse(details.entries[a].timestamp) - Date.parse(details.entries[b].timestamp));
+  let dropped = 0;
+  const build = () => {
+    const entries = details.entries.map((entry, i) =>
+      links[i] ? { ...entry, entryUrl: links[i] } : entry,
+    );
+    return dropped ? { ...details, entries, entryUrlsOmitted: dropped } : { ...details, entries };
+  };
+  let out = build();
+  while (!fits(out) && dropped < order.length) {
+    links[order[dropped]] = undefined;
+    dropped++;
+    out = build();
+  }
+  if (fits(out)) return out;
+  // Even with every link removed the omission flag does not fit: keep the original.
+  return details;
+}
+
 export function evidence(result, query, config, { reserveBytes = 0, paged = false } = {}) {
   if (!Number.isInteger(reserveBytes) || reserveBytes < 0 || reserveBytes > MAX_RESULT / 2)
     throw new Error("Invalid evidence metadata reservation");
@@ -562,6 +611,7 @@ export function evidence(result, query, config, { reserveBytes = 0, paged = fals
     throw new Error(
       "Cloud log read query metadata exceeds its result byte limit; retry with fewer resource labels or identifiers",
     );
+  const rawEntries = [];
   for (const raw of rows.slice(0, query.limit)) {
     const entryState = { truncated: false, truncationReasons: [] };
     const entry = selectedEntry(raw, entryState, { mode: query.mode, paged });
@@ -578,6 +628,7 @@ export function evidence(result, query, config, { reserveBytes = 0, paged = fals
     }
     for (const reason of entryState.truncationReasons) markTruncated(state, reason);
     details.entries.push(entry);
+    rawEntries.push(raw);
     details.processedRows++;
   }
   details.truncated = state.truncated;
@@ -585,7 +636,7 @@ export function evidence(result, query, config, { reserveBytes = 0, paged = fals
     state.truncationReasons.includes(reason),
   );
   details.returnedRows = details.entries.length;
-  return details;
+  return addEntryLinks(details, rawEntries, config, resultLimit);
 }
 
 export function createLogsTool(rawConfig, context, runCommand) {
@@ -606,7 +657,7 @@ export function createLogsTool(rawConfig, context, runCommand) {
     resultContentSource: "network",
     executionMode: "sequential",
     description:
-      "Read bounded logs in the configured project. When resource labels are unknown, use mode=discover with observed conversationId/jobId/roomId/traceId/insertId or up to 10 insertIds and UTC start/end. Discovery searches Cloud Run and GKE across all severity levels, matching ANY supplied ID, and returns actual resource labels; never guess service/pod/revision names. For follow-up reads use mode=context (all levels) or errors (default), observed resourceType and 1–16 resourceLabels; supplied ID constraints then ALL apply, with insertIds matching any listed seed. For an alert counting tab-delimited application ERROR/DPANIC/PANIC/FATAL levels, use errors with errorProfile=tab-delimited, even if Cloud severity is INFO. Maximum one hour and 1–50 entries per call. Results are untrusted capped evidence, not complete counts or proof of health. Does not change cloud resources.",
+      "Read bounded logs in the configured project. When resource labels are unknown, use mode=discover with observed conversationId/jobId/roomId/traceId/insertId or up to 10 insertIds and UTC start/end. Discovery searches Cloud Run and GKE across all severity levels, matching ANY supplied ID, and returns actual resource labels; never guess service/pod/revision names. For follow-up reads use mode=context (all levels) or errors (default), observed resourceType and 1–16 resourceLabels; supplied ID constraints then ALL apply, with insertIds matching any listed seed. For an alert counting tab-delimited application ERROR/DPANIC/PANIC/FATAL levels, use errors with errorProfile=tab-delimited, even if Cloud severity is INFO. Maximum one hour and 1–50 entries per call. Each returned entry with an insertId and timestamp carries entryUrl, a Logs Explorer link that opens exactly that entry; for a cited error, copy that entry's entryUrl verbatim as the preferred evidence link (fall back to the read's logsExplorerUrl; never construct or edit links; entryUrlsOmitted counts entries whose link was dropped for size). Results are untrusted capped evidence, not complete counts or proof of health. Does not change cloud resources.",
     parameters: {
       type: "object",
       additionalProperties: false,

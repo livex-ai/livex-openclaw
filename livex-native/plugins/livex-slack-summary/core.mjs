@@ -18,6 +18,7 @@ const MAX_EVIDENCE_URL = 1600;
 // The shipped evidence tool only produces Logs Explorer links on this host. The
 // model writes the URL, so anything else (including lookalikes) is dropped.
 const EVIDENCE_HOSTS = ["console.cloud.google.com"];
+const EVIDENCE_PATH = "/logs/query";
 // `agent:debugger:slack:channel:<id>:thread:<ts>`, or with the team-qualified peer
 // `channel:team:<team>:channel:<id>` that Slack workspace routing produces.
 const DEBUGGER_SLACK_THREAD =
@@ -33,8 +34,8 @@ const PRIORITY_LABELS = new Map([
   ["low", "Low"],
   ["unknown", "Unknown"],
 ]);
-// Stock Slack outbound cannot send legacy attachment colour bars, so priority
-// colour is a leading emoji. Low and Unknown share the neutral marker.
+// The leading emoji of the Priority line (the colour bar is the attachment colour
+// below). Low and Unknown share the neutral marker.
 const PRIORITY_MARKERS = new Map([
   ["critical", "\u{1F534}"],
   ["high", "\u{1F534}"],
@@ -43,6 +44,9 @@ const PRIORITY_MARKERS = new Map([
   ["unknown", "⚪"],
 ]);
 const RESOLVED_MARKER = "\u{1F7E2}";
+// Attachment colour bar, mirroring PR #1 (livex-agents/plugins/livex-oncall-reports/style.ts).
+// Verified resolution outranks the displayed priority.
+const REPORT_COLORS = { high: "#D92D20", medium: "#D99A00", resolved: "#2E8B57", default: "#9CA3AF" };
 const REQUIRED_KEYS = [
   "title",
   "signature",
@@ -79,6 +83,19 @@ function isBoundedLine(value, maxLength) {
 }
 
 /**
+ * A link that opens the cited log entry or time slice, not a generic Logs Explorer
+ * query: the `query` parameter must pin an entry (`insertId=`) or bound a time range
+ * (`timestamp>=` and `timestamp<=`).
+ */
+function isVerifiedEvidenceLink(url) {
+  if (!EVIDENCE_HOSTS.includes(url.hostname) || url.port !== "" || url.pathname !== EVIDENCE_PATH) {
+    return false;
+  }
+  const query = url.searchParams.get("query") ?? "";
+  return query.includes("insertId=") || (query.includes("timestamp>=") && query.includes("timestamp<="));
+}
+
+/**
  * Returns undefined when invalid, null when the link is dropped (the card still
  * posts), or the normalized href. The href is stored unescaped; rendering escapes `&`.
  */
@@ -103,8 +120,9 @@ export function readEvidenceHref(value) {
       !url.password &&
       escapedUrl.length <= MAX_EVIDENCE_URL
     ) {
-      // A well-formed link to any other host or port is dropped, not fatal.
-      if (!EVIDENCE_HOSTS.includes(url.hostname) || url.port !== "") {
+      // A well-formed link to any other host, port, path or an unverified query is
+      // dropped, not fatal: the card shows "No verified evidence link".
+      if (!isVerifiedEvidenceLink(url)) {
         return null;
       }
       return url.href;
@@ -293,12 +311,26 @@ function buttonValue(choice, token) {
   return `${INTERACTIVE_NAMESPACE}:${choice}:${token}`;
 }
 
-/** Native Slack blocks for the card (the shape the initial reply is sent in). */
+/** The attachment colour bar: resolved, then priority (PR #1 compactReportColor). */
+export function colorOf(card) {
+  if (card.resolved) {
+    return REPORT_COLORS.resolved;
+  }
+  if (card.priority === "critical" || card.priority === "high") {
+    return REPORT_COLORS.high;
+  }
+  return card.priority === "medium" ? REPORT_COLORS.medium : REPORT_COLORS.default;
+}
+
+/**
+ * The card in the shape of PR #1: the Title (and the buttons, so they are always
+ * visible) in top-level `blocks`; Priority, Next action, Summary, Evidence and the
+ * hint in one coloured attachment. Sent as `channelData.slack.blocks` and
+ * `channelData.slack.attachments`, which needs patch-slack-attachments.mjs.
+ */
 export function renderBlocks(card, controls) {
-  const blocks = [
-    ...sectionTexts(card).map(section),
-    { type: "context", elements: [plainText(FULL_EVIDENCE_HINT)] },
-  ];
+  const [title, ...rest] = sectionTexts(card);
+  const blocks = [section(title)];
   if (controls?.length) {
     blocks.push({
       type: "actions",
@@ -315,36 +347,50 @@ export function renderBlocks(card, controls) {
       })),
     });
   }
-  return blocks;
+  return {
+    blocks,
+    attachments: [
+      {
+        color: colorOf(card),
+        // Plain text: the only live link is the Evidence section's.
+        fallback: sectionTexts(card).join("\n").replace(/<[^>|]*\|([^>]*)>/gu, "$1"),
+        blocks: [...rest.map(section), { type: "context", elements: [plainText(FULL_EVIDENCE_HINT)] }],
+      },
+    ],
+  };
 }
 
 /**
- * The same card as a message-tool presentation. The Slack `edit` action accepts
- * only `message` text and a portable `presentation`, never raw blocks
- * (extensions/slack/src/message-action-dispatch.ts:218-257), so an amendment is
- * re-rendered by the stock presentation renderer. There is no presentation title
- * (it would add a header block). Stock renders a `text` block as a mrkdwn section
- * without `verbatim`, so every model field is neutralized above: no auto-linking,
- * mention parsing or emphasis survives. The hint is a `context` block.
+ * The same split as the first post, for a message-tool `edit`. The tool accepts only `message`
+ * text and a portable `presentation`, never raw blocks
+ * (extensions/slack/src/message-action-dispatch.ts:218-257), so the Title and the buttons go
+ * through the stock presentation renderer (top-level blocks) and the coloured part travels as
+ * raw `attachments` in the separate `livexAttachments` param, which
+ * patch-slack-attachments.mjs forwards to chat.update (the tool's own `attachments` param is
+ * the media pipeline). There is no presentation title (it would add a header block). Stock
+ * renders a `text` block as a mrkdwn section without `verbatim`, so every model field is
+ * neutralized above: no auto-linking, mention parsing or emphasis survives.
  */
 export function renderPresentation(card, controls) {
   return {
-    blocks: [
-      ...sectionTexts(card).map((text) => ({ type: "text", text })),
-      { type: "context", text: FULL_EVIDENCE_HINT },
-      ...(controls?.length
-        ? [
-            {
-              type: "buttons",
-              buttons: controls.map((control) => ({
-                label: control.label,
-                action: { type: "callback", value: control.value },
-                ...(control.choice === "resolved" ? { style: "primary" } : {}),
-              })),
-            },
-          ]
-        : []),
-    ],
+    presentation: {
+      blocks: [
+        { type: "text", text: sectionTexts(card)[0] },
+        ...(controls?.length
+          ? [
+              {
+                type: "buttons",
+                buttons: controls.map((control) => ({
+                  label: control.label,
+                  action: { type: "callback", value: control.value },
+                  ...(control.choice === "resolved" ? { style: "primary" } : {}),
+                })),
+              },
+            ]
+          : []),
+      ],
+    },
+    livexAttachments: renderBlocks(card, undefined).attachments,
   };
 }
 
@@ -421,6 +467,11 @@ export function decodeState(token, bind, key) {
     if (![0, 1].includes(provisional) || ![0, 1].includes(resolved)) {
       return undefined;
     }
+    // A token minted before the evidence guard may carry a link the guard now drops.
+    const evidenceHref = href === null ? null : readEvidenceHref(href);
+    if (evidenceHref === undefined) {
+      return undefined;
+    }
     const card = {
       priority,
       provisional: provisional === 1,
@@ -430,7 +481,7 @@ export function decodeState(token, bind, key) {
       nextAction,
       owner,
       checkedWindow,
-      evidenceHref: href,
+      evidenceHref,
     };
     return validCard(card) ? card : undefined;
   } catch {
@@ -662,7 +713,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         pending.delete(pending.keys().next().value);
       }
       return {
-        payload: { ...route, channelData: { slack: { blocks: renderBlocks(card, controls) } } },
+        payload: { ...route, channelData: { slack: renderBlocks(card, controls) } },
       };
     } catch {
       // Never let a rendering fault pass the marked JSON and evidence through.
@@ -801,7 +852,7 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
           messageId,
           message_id: messageId,
           message: headlineOf(card),
-          presentation: renderPresentation(card, controls),
+          ...renderPresentation(card, controls),
         },
       };
     } catch {
@@ -854,10 +905,8 @@ export function createPlugin(rawConfig, { now = Date.now, key, warn = () => {} }
         return refuse("invalid, expired or foreign token");
       }
       const next = applyChoice(card, choice);
-      await ctx.respond.editMessage({
-        text: headlineOf(next),
-        blocks: renderBlocks(next, controlsFor(next, bind)),
-      });
+      const { blocks, attachments } = renderBlocks(next, controlsFor(next, bind));
+      await ctx.respond.editMessage({ text: headlineOf(next), blocks, attachments });
       const cardKey = `${channelId}:${interaction.messageTs}`;
       overrides.delete(cardKey);
       overrides.set(cardKey, {

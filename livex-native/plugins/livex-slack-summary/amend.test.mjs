@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, postCard, summary } from "./test-helpers.mjs";
+import { CARD_TS, CHANNEL, SENDER, SESSION, THREAD, baseConfig, buttonsOf, envelope, fakeClick, load, flat, postCard, summary } from "./test-helpers.mjs";
 
 const OTHER_THREAD = "1768990000.000009";
 const OTHER_SESSION = `agent:debugger:slack:channel:${CHANNEL.toLowerCase()}:thread:${OTHER_THREAD}`;
@@ -18,6 +18,14 @@ function ready(config = baseConfig) {
   return loaded;
 }
 
+// The five card sections of an amendment in display order: Title from the presentation,
+// the rest from the colour-bar attachment.
+const sectionsOf = (params) => [
+  params.presentation.blocks[0].text,
+  ...params.livexAttachments[0].blocks.slice(0, 4).map((block) => block.text.text),
+];
+const buttonsBlockOf = (params) => params.presentation.blocks[1];
+
 test("an amendment of the agent's own card in its own thread is allowed and re-rendered as the same card", () => {
   const loaded = ready();
   const result = guard(loaded, edit());
@@ -28,20 +36,23 @@ test("an amendment of the agent's own card in its own thread is allowed and re-r
   assert.equal(params.message, "\u{1F534} checkout-api upstream timeouts");
   const { presentation } = params;
   assert.equal("title" in presentation, false);
-  assert.deepEqual(
-    presentation.blocks.slice(0, 6).map((block) => [block.type, block.text]),
-    [
-      ["text", "*Title:* checkout-api upstream timeouts"],
-      ["text", "*Priority:* \u{1F534} High"],
-      ["text", `*Next action:* ${summary.nextAction} (Owner: Unassigned)`],
-      ["text", `*Summary:* ${summary.summary}`],
-      ["text", "*Evidence:* <https://console.cloud.google.com/logs/query?window=short&amp;level=error|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC"],
-      ["context", "Mention this bot in the thread for full evidence."],
-    ],
-  );
+  // Title and buttons are the presentation; the rest is the coloured attachment (the first post's split).
+  assert.deepEqual(presentation.blocks.map((block) => block.type), ["text", "buttons"]);
+  assert.deepEqual(sectionsOf(params), [
+    "*Title:* checkout-api upstream timeouts",
+    "*Priority:* \u{1F534} High",
+    `*Next action:* ${summary.nextAction} (Owner: Unassigned)`,
+    `*Summary:* ${summary.summary}`,
+    "*Evidence:* <https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC",
+  ]);
+  assert.equal(params.livexAttachments.length, 1);
+  assert.equal(params.livexAttachments[0].color, "#D92D20");
+  assert.deepEqual(params.livexAttachments[0].blocks.at(-1), { type: "context", elements: [{ type: "plain_text", text: "Mention this bot in the thread for full evidence." }] });
+  // The tool's own `attachments` param is the media pipeline and is never set.
+  assert.equal("attachments" in params, false);
   // The full report, JSON line and marker never reach the edit.
   assert.doesNotMatch(JSON.stringify(params), /private IDs|LIVEX_ALERT_SUMMARY_V/u);
-  const buttons = presentation.blocks[6].buttons;
+  const buttons = buttonsBlockOf(params).buttons;
   assert.deepEqual(buttons.map((button) => button.label), ["Medium", "Low", "Resolved"]);
   for (const button of buttons) {
     assert.equal(button.action.type, "callback");
@@ -52,38 +63,38 @@ test("an amendment of the agent's own card in its own thread is allowed and re-r
 test("an amended card's buttons are accepted by the click handler (same value as the stock callback path)", async () => {
   const loaded = ready();
   const { params } = guard(loaded, edit());
-  const resolve = params.presentation.blocks[6].buttons.find((button) => button.label === "Resolved");
+  const resolve = buttonsBlockOf(params).buttons.find((button) => button.label === "Resolved");
   // The stock renderer sends a callback button's value unchanged as the interaction data.
   const click = fakeClick({ value: resolve.action.value });
   await loaded.interactive.handler(click.ctx);
-  assert.equal(click.calls.edits[0].blocks[1].text.text, "*Priority:* \u{1F7E2} Resolved · was High");
+  assert.equal(flat(click.calls.edits[0])[1].text.text, "*Priority:* \u{1F7E2} Resolved · was High");
   assert.deepEqual(click.calls.replies, []);
 });
 
 test("model text in an amendment is inert: no mentions, links, channel refs or emphasis", () => {
   const loaded = ready();
   const body = "Ping <!channel> and <@U123> or <https://evil.example|click> & more.";
-  const first = guard(loaded, edit({ message: envelope({ ...summary, summary: body }) })).params.presentation;
-  assert.equal(first.blocks[3].type, "text");
-  assert.equal(first.blocks[3].text, "*Summary:* Ping &lt;!channel&gt; and &lt;@\u200DU123&gt; or &lt;https:\u200D//evil.example|click&gt; &amp; more.");
+  const first = sectionsOf(guard(loaded, edit({ message: envelope({ ...summary, summary: body }) })).params);
+  assert.equal(first[3], "*Summary:* Ping &lt;!channel&gt; and &lt;@\u200DU123&gt; or &lt;https:\u200D//evil.example|click&gt; &amp; more.");
 
   const hostile = "see https://evil.example/login @here #general *bold*";
   const more = `${hostile} _it_ ~s~ \`c\``;
-  const { presentation } = guard(loaded, edit({ message: envelope({ ...summary, title: hostile, summary: more, nextAction: hostile, owner: "@here", checkedWindow: hostile }) })).params;
-  const modelBlocks = [0, 2, 3, 4].map((index) => presentation.blocks[index]);
+  const hostileParams = guard(loaded, edit({ message: envelope({ ...summary, title: hostile, summary: more, nextAction: hostile, owner: "@here", checkedWindow: hostile }) })).params;
+  const sections = sectionsOf(hostileParams);
+  const modelBlocks = [0, 2, 3, 4].map((index) => ({ text: sections[index] }));
   // Strip the card's own label and the evidence link, leaving only model text.
   const text = modelBlocks
     .map((block) => block.text.replace(/^\*[^:]+:\* /u, "").replace(/<https:\/\/console\.cloud\.google\.com[^>]*>/u, ""))
     .join("\n");
-  assert.ok(modelBlocks.every((block) => block.type === "text"));
+  assert.equal(hostileParams.presentation.blocks[0].type, "text");
   assert.doesNotMatch(text, /:\/\//u);
   for (const char of ["@", "#", "*", "_", "~", "`"]) {
     [...text].forEach((c, i) => c === char && assert.equal(text[i + 1], "\u200D", `${char} at ${i}`));
   }
   // The only live link is the evidence field's allowlisted one.
-  const links = JSON.stringify(presentation).match(/<https?:[^>]*>/gu) ?? [];
-  assert.deepEqual(links.map((link) => link.replace(/\|.*$/u, "")), ["<https://console.cloud.google.com/logs/query?window=short&amp;level=error"]);
-  const dropped = guard(loaded, edit({ message: envelope({ ...summary, evidenceUrl: "https://evil.example/login" }) })).params.presentation;
+  const links = JSON.stringify(hostileParams).match(/<https?:[^>]*>/gu) ?? [];
+  assert.deepEqual(links.map((link) => link.replace(/\|.*$/u, "")), ["<https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22"]);
+  const dropped = guard(loaded, edit({ message: envelope({ ...summary, evidenceUrl: "https://evil.example/login" }) })).params;
   assert.doesNotMatch(JSON.stringify(dropped), /<https?:/u);
   // The fallback text is neutralized too.
   assert.equal(guard(loaded, edit({ message: envelope({ ...summary, title: "@here <!channel>" }) })).params.message, "\u{1F7E1} @\u200Dhere &lt;!channel&gt;");
@@ -92,7 +103,8 @@ test("model text in an amendment is inert: no mentions, links, channel refs or e
 test("an amendment carries no buttons when buttons are not configured, but is still allowed", () => {
   const loaded = ready(null);
   const result = guard(loaded, edit());
-  assert.equal(result.params.presentation.blocks.length, 6);
+  assert.deepEqual(result.params.presentation.blocks.map((block) => block.type), ["text"]);
+  assert.equal(result.params.livexAttachments[0].blocks.length, 5);
 });
 
 test("message target forms for the current channel are accepted", () => {
@@ -219,19 +231,19 @@ test("an amendment must use the same summary envelope; anything else is blocked 
   }
   // The agent can mark the report resolved through the envelope.
   const resolved = guard(loaded, edit({ message: envelope({ ...summary, resolved: true }) }));
-  assert.equal(resolved.params.presentation.blocks[1].text, "*Priority:* \u{1F7E2} Resolved · was Medium (provisional)");
+  assert.equal(sectionsOf(resolved.params)[1], "*Priority:* \u{1F7E2} Resolved · was Medium (provisional)");
   assert.equal(resolved.params.message, "\u{1F7E2} checkout-api upstream timeouts");
 });
 
 test("a person's button choice outranks the agent's later re-assessment of the same card", async () => {
   const loaded = ready();
   const first = guard(loaded, edit({ message: envelope({ ...summary, priority: "high", provisional: false }) }));
-  const click = fakeClick({ value: first.params.presentation.blocks[6].buttons.find((b) => b.label === "Low").action.value });
+  const click = fakeClick({ value: buttonsBlockOf(first.params).buttons.find((b) => b.label === "Low").action.value });
   await loaded.interactive.handler(click.ctx);
-  assert.equal(click.calls.edits[0].blocks[1].text.text, "*Priority:* ⚪ Low");
+  assert.equal(flat(click.calls.edits[0])[1].text.text, "*Priority:* ⚪ Low");
   const second = guard(loaded, edit({ message: envelope({ ...summary, priority: "critical", provisional: false, summary: "New evidence: errors continue." }) }));
-  assert.equal(second.params.presentation.blocks[1].text, "*Priority:* ⚪ Low");
-  assert.equal(second.params.presentation.blocks[3].text, "*Summary:* New evidence: errors continue.");
+  assert.equal(sectionsOf(second.params)[1], "*Priority:* ⚪ Low");
+  assert.equal(sectionsOf(second.params)[3], "*Summary:* New evidence: errors continue.");
 });
 
 test("everything that is not a debugger-thread message edit is left alone", () => {

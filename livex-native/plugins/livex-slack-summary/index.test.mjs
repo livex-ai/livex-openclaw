@@ -49,11 +49,13 @@ const summary = {
   nextAction: "Confirm whether later requests needed retries.",
   owner: "Unassigned",
   checkedWindow: "2026-01-21 12:20–12:25 UTC",
-  evidenceUrl: "https://console.cloud.google.com/logs/query?window=short&level=error",
+  evidenceUrl: "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22",
 };
 const evidence = "The complete report includes private correlation IDs and diagnostics.";
 const mark = "LIVEX_ALERT_SUMMARY_V2";
 const HINT = "Mention this bot in the thread for full evidence.";
+const EVIDENCE_LINK = "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22";
+const flat = (slack) => [slack.blocks[0], ...slack.attachments[0].blocks, ...slack.blocks.slice(1)];
 const mrkdwn = (text) => ({ type: "section", text: { type: "mrkdwn", text, verbatim: true } });
 const envelope = (fields, full = evidence) => `${mark}\n${JSON.stringify(fields)}\n\n${full}`;
 const route = { replyToId: "1768996800.000001", replyToTag: true, replyToCurrent: false };
@@ -77,15 +79,26 @@ test("registered hook emits only a compact card and preserves the original evide
     ...route,
     channelData: {
       slack: {
-        blocks: [
-          mrkdwn("*Title:* checkout-api upstream timeouts"),
-          mrkdwn("*Priority:* \u{1F7E1} Medium (provisional)"),
-          mrkdwn(`*Next action:* ${summary.nextAction} (Owner: Unassigned)`),
-          mrkdwn(`*Summary:* ${summary.summary}`),
-          mrkdwn(
-            "*Evidence:* <https://console.cloud.google.com/logs/query?window=short&amp;level=error|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC",
-          ),
-          { type: "context", elements: [{ type: "plain_text", text: HINT }] },
+        // The Title alone is top-level (buttons would follow it); the rest is one coloured attachment.
+        blocks: [mrkdwn("*Title:* checkout-api upstream timeouts")],
+        attachments: [
+          {
+            color: "#D99A00",
+            fallback: [
+              "*Title:* checkout-api upstream timeouts",
+              "*Priority:* \u{1F7E1} Medium (provisional)",
+              `*Next action:* ${summary.nextAction} (Owner: Unassigned)`,
+              `*Summary:* ${summary.summary}`,
+              "*Evidence:* Logs · Checked window: 2026-01-21 12:20–12:25 UTC",
+            ].join("\n"),
+            blocks: [
+              mrkdwn("*Priority:* \u{1F7E1} Medium (provisional)"),
+              mrkdwn(`*Next action:* ${summary.nextAction} (Owner: Unassigned)`),
+              mrkdwn(`*Summary:* ${summary.summary}`),
+              mrkdwn(`*Evidence:* <${EVIDENCE_LINK}|Logs> · Checked window: 2026-01-21 12:20–12:25 UTC`),
+              { type: "context", elements: [{ type: "plain_text", text: HINT }] },
+            ],
+          },
         ],
       },
     },
@@ -104,7 +117,7 @@ test("renders model fields as literal text and supports unknown priority without
     "\n",
     "\r\n",
   );
-  const { blocks } = render({ ...event, payload: { text } }).payload.channelData.slack;
+  const blocks = flat(render({ ...event, payload: { text } }).payload.channelData.slack);
   assert.equal(blocks[1].text.text, "*Priority:* \u26AA Unknown");
   assert.equal(
     blocks[3].text.text,
@@ -115,7 +128,7 @@ test("renders model fields as literal text and supports unknown priority without
   // An absent evidenceUrl is the same as null.
   const { evidenceUrl: _drop, ...noUrl } = summary;
   assert.equal(
-    render({ ...event, payload: { text: envelope(noUrl) } }).payload.channelData.slack.blocks[4].text.text.startsWith(
+    flat(render({ ...event, payload: { text: envelope(noUrl) } }).payload.channelData.slack)[4].text.text.startsWith(
       "*Evidence:* No verified evidence link",
     ),
     true,
@@ -179,17 +192,18 @@ test("drops evidence links outside the Logs Explorer host but still posts the ca
     "https://sub.console.cloud.google.com/logs",
   ];
   for (const evidenceUrl of dropped) {
-    const { blocks } = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl }) } })
+    const slack = render({ ...event, payload: { ...route, text: envelope({ ...summary, evidenceUrl }) } })
       .payload.channelData.slack;
+    const blocks = flat(slack);
     assert.equal(blocks.length, 6);
     assert.match(blocks[4].text.text, /^\*Evidence:\* No verified evidence link · Checked window: /u);
     assert.doesNotMatch(JSON.stringify(blocks), /<https?:/u);
   }
-  const allowed = render({
+  const allowed = flat(render({
     ...event,
-    payload: { ...route, text: envelope({ ...summary, evidenceUrl: "https://console.cloud.google.com:443/logs/query" }) },
-  }).payload.channelData.slack.blocks[4];
-  assert.match(allowed.text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\|Logs> · Checked window: /u);
+    payload: { ...route, text: envelope({ ...summary, evidenceUrl: `${EVIDENCE_LINK.replaceAll("&amp;", "&").replace("https://console.cloud.google.com", "https://console.cloud.google.com:443")}` }) },
+  }).payload.channelData.slack)[4];
+  assert.match(allowed.text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?project=livex-copilot-prd&amp;query=insertId%3D%22abc123%22\|Logs> · Checked window: /u);
 });
 
 test("renders the card for team-qualified Slack thread sessions", () => {
@@ -229,8 +243,8 @@ test("leaves other channels, agents, unmarked replies, and progress alone", () =
 });
 
 const priorityOf = (fields) =>
-  render({ ...event, payload: { ...route, text: envelope(fields) } }).payload.channelData.slack
-    .blocks[1].text.text;
+  flat(render({ ...event, payload: { ...route, text: envelope(fields) } }).payload.channelData.slack)[1]
+    .text.text;
 
 test("priority marker and written word render for every priority", () => {
   const expected = {
@@ -266,7 +280,7 @@ test("resolved badge overrides the marker, keeps the written priority, and is op
 });
 
 test("a card has no header or plain-text section, only mrkdwn sections in the PR 1 order", () => {
-  const { blocks } = render({ ...event, payload: { text: envelope({ ...summary, resolved: true }) } }).payload.channelData.slack;
+  const blocks = flat(render({ ...event, payload: { text: envelope({ ...summary, resolved: true }) } }).payload.channelData.slack);
   assert.deepEqual(
     blocks.map((block) => block.type),
     ["section", "section", "section", "section", "section", "context"],

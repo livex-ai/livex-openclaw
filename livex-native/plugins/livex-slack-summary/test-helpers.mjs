@@ -34,7 +34,7 @@ export const summary = {
   nextAction: "Confirm whether later requests needed retries.",
   owner: "Unassigned",
   checkedWindow: "2026-01-21 12:20–12:25 UTC",
-  evidenceUrl: "https://console.cloud.google.com/logs/query?window=short&level=error",
+  evidenceUrl: "https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22",
 };
 export const envelope = (fields = summary, full = "Full report with private IDs.") =>
   `${MARK}\n${JSON.stringify(fields)}\n\n${full}`;
@@ -108,3 +108,6 @@ export function fakeClick({ value, sender = SENDER, conversationId = CHANNEL, me
 export const buttonsOf = (blocks) =>
   blocks.find((block) => block.type === "actions")?.elements ?? [];
 export const labelsOf = (blocks) => buttonsOf(blocks).map((button) => button.text.text);
+
+/** The card's slack channelData in the legacy flat order: Title, attachment blocks, then the rest (buttons). */
+export const flat = (slack) => [slack.blocks[0], ...(slack.attachments?.[0]?.blocks ?? []), ...slack.blocks.slice(1)];

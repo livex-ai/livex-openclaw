@@ -105,28 +105,97 @@ test("reply_payload_sending runs first (priority 100), the store is never opened
   assert.equal(opened.length, 0, "openKeyedStoreV2 throws during register(); it must be opened lazily");
 });
 
-test("envelope auto-record through the entry, store failures reach api.logger", async () => {
+// The entry logs to the process console (container stdout), not api.logger.
+function captureConsole() {
   const lines = [];
-  const logger = { warn: (m) => lines.push(["warn", m]), info: (m) => lines.push(["info", m]) };
-  const store = memoryStore();
-  const { handlers } = register({ store }, { logger });
-  const ctx = { channelId: "slack", sessionKey: SESSION, agentId: "debugger", senderId: SENDER, runId: "r" };
-  await handlers.get("before_prompt_build")({ prompt: "x" }, ctx);
-  const payload = {
-    text: `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ title: "T", signature: "checkout-api | create order | upstream timeout", priority: "high", provisional: false, summary: "Provider timed out.", nextAction: "Page owner.", owner: "payments", checkedWindow: "30m" })}\n\nfull`,
-  };
-  const out = handlers.get("reply_payload_sending")({ kind: "final", channel: "slack", sessionKey: SESSION, runId: "r", payload }, ctx);
-  assert.equal(out, undefined);
-  await handlers.get("message_sent")({ success: true, sessionKey: SESSION, messageId: "1768996900.000200" }, { channelId: "slack", sessionKey: SESSION });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(store.rows.size, 1);
-  assert.ok(lines.some(([l, m]) => l === "info" && /case committed sig=[0-9a-f]{8} occurrences=1/u.test(m)));
+  const saved = { info: console.info, warn: console.warn };
+  console.info = (m) => lines.push(["info", String(m)]);
+  console.warn = (m) => lines.push(["warn", String(m)]);
+  return { lines, restore: () => Object.assign(console, saved) };
+}
 
-  const broken = [];
-  const bad = register(
-    { store: { lookup: async () => { throw new Error("nope"); }, register: async () => {}, entries: async () => { throw new Error("nope"); } } },
-    { logger: { warn: (m) => broken.push(m), info() {} } },
-  );
-  await bad.handlers.get("before_prompt_build")({ prompt: "checkout api create order upstream timeout" }, ctx);
-  assert.deepEqual(broken, ["[livex-investigations-lite] store read failed: nope"]);
+const envelopeText = (over = {}) =>
+  `LIVEX_ALERT_SUMMARY_V2\n${JSON.stringify({ title: "T", signature: "checkout-api | create order | upstream timeout", priority: "high", provisional: false, summary: "Provider timed out.", nextAction: "Page owner.", owner: "payments", checkedWindow: "30m", ...over })}\n\nfull`;
+
+test("real Codex + Slack event shapes: auto-record commits and every decision is logged to the console", async () => {
+  const cap = captureConsole();
+  try {
+    const store = memoryStore();
+    const { handlers } = register({ store });
+    // Codex app-server before_prompt_build ctx (buildAgentHookContext: runId, agentId,
+    // sessionKey, channelId, senderId for trigger "user"); its runId is the Codex run's.
+    const codexCtx = { runId: "codex-run-1", agentId: "debugger", sessionKey: SESSION, channelId: "slack", senderId: SENDER, trigger: "user" };
+    await handlers.get("before_prompt_build")({ prompt: "alert text", currentUserMessage: "alert text", messages: [] }, codexCtx);
+    // Slack reply path (deliver-hooks.ts): ctx = toPluginMessageContext (no agentId), runId from
+    // the dispatcher run state, which may name the run differently than the harness did.
+    const payload = { text: envelopeText() };
+    const before = JSON.stringify(payload);
+    const out = handlers.get("reply_payload_sending")(
+      { payload, kind: "final", channel: "slack", sessionKey: SESSION, runId: "dispatch-run-9" },
+      { channelId: "slack", accountId: "default", conversationId: "channel:C0ALERTS1", sessionKey: SESSION, senderId: SENDER, runId: "dispatch-run-9" },
+    );
+    assert.equal(out, undefined);
+    assert.equal(JSON.stringify(payload), before);
+    // Slack message_sent (message-hook-mappers.ts): sessionKey on the event, no runId, no senderId.
+    await handlers.get("message_sent")(
+      { to: "channel:C0ALERTS1", content: "card", success: true, messageId: "1768996900.000200", sessionKey: SESSION },
+      { channelId: "slack", accountId: "default", conversationId: "channel:C0ALERTS1", sessionKey: SESSION },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(store.rows.size, 1);
+    const text = cap.lines.map(([, m]) => m).join("\n");
+    for (const expected of [/record staged: source=envelope/u, /reply tagged: records=1/u, /case committed sig=[0-9a-f]{8} occurrences=1/u]) {
+      assert.match(text, expected);
+    }
+    assert.ok(cap.lines.every(([, m]) => m.startsWith("[livex-investigations-lite] ")));
+    assert.ok(!/checkout|Provider timed out|payments/u.test(text), "no content in any log line");
+  } finally {
+    cap.restore();
+  }
+});
+
+test("drops are logged with a reason: sender-gate, no-run-id, send-failed, expired", async () => {
+  const cap = captureConsole();
+  try {
+    const store = memoryStore();
+    const { handlers } = register({ store });
+    const reply = (ctx, runId = "r") =>
+      handlers.get("reply_payload_sending")(
+        { payload: { text: envelopeText() }, kind: "final", channel: "slack", sessionKey: SESSION, runId },
+        { channelId: "slack", sessionKey: SESSION, ...ctx },
+      );
+    const sentOk = (success = true) =>
+      handlers.get("message_sent")({ success, sessionKey: SESSION, messageId: "1768996900.000200" }, { channelId: "slack", sessionKey: SESSION });
+    reply({ senderId: "U0OTHER" });
+    reply({ senderId: SENDER }, undefined);
+    handlers.get("reply_payload_sending")(
+      { payload: { text: envelopeText() }, kind: "final", channel: "slack", sessionKey: SESSION },
+      { channelId: "slack", sessionKey: SESSION, senderId: SENDER },
+    );
+    reply({ senderId: SENDER });
+    await sentOk(false);
+    await sentOk(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(store.rows.size, 0);
+    const text = cap.lines.map(([, m]) => m).join("\n");
+    for (const expected of [/dropped: sender-gate/u, /dropped: no-run-id/u, /dropped: send-failed/u, /message_sent ignored: nothing pending/u]) {
+      assert.match(text, expected);
+    }
+  } finally {
+    cap.restore();
+  }
+});
+
+test("store failures reach the console as warnings", async () => {
+  const cap = captureConsole();
+  try {
+    const ctx = { channelId: "slack", sessionKey: SESSION, agentId: "debugger", senderId: SENDER, runId: "r" };
+    const bad = register({
+      store: { lookup: async () => { throw new Error("nope"); }, register: async () => {}, entries: async () => { throw new Error("nope"); } },
+    });
+    await bad.handlers.get("before_prompt_build")({ prompt: "checkout api create order upstream timeout" }, ctx);
+    assert.deepEqual(cap.lines.filter(([l]) => l === "warn").map(([, m]) => m), ["[livex-investigations-lite] store read failed: nope"]);
+  } finally {
+    cap.restore();
+  }
 });

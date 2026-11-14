@@ -188,14 +188,25 @@ test("M1: a stale untagged entry is never adopted by a different turn's reply", 
   await sent(env);
   assert.equal(env.store.rows.size, 0);
 
-  // Even without a before_prompt_build in between, tag refuses a different run.
+  // A different run id on the final with no newer prompt build observed is bound by
+  // session and time window (the prompt-build and reply paths may name a run
+  // differently); once a newer prompt build is observed the old entry is gone (above).
   const env2 = setup();
   await startTurn(env2, SESSION, "run-A");
   await createRecordTool(config, toolContext(), env2.memory).execute("t", params());
   sendFinal(env2, { runId: "run-B", senderId: SENDER });
-  assert.equal(env2.memory.pending.size, 0, "stale entry dropped by a different run's final");
+  assert.equal(env2.memory.pending.get(SESSION).tagged, true, "bound by session and time window");
   await sent(env2);
-  assert.equal(env2.store.rows.size, 0);
+  assert.equal(env2.store.rows.size, 1);
+  // Outside the window the entry is dropped, never adopted.
+  let clock = Date.parse("2026-11-10T12:00:00Z");
+  const env2b = setup({ now: () => clock });
+  await startTurn(env2b, SESSION, "run-A");
+  await createRecordTool(config, toolContext(), env2b.memory).execute("t", params());
+  clock += config.pendingTtlMs + 1;
+  sendFinal(env2b, { runId: "run-B", senderId: SENDER });
+  await sent(env2b);
+  assert.equal(env2b.store.rows.size, 0);
 
   // reply_payload_sending ctx from another sender is ignored (entry stays untagged).
   const env3 = setup();
@@ -670,10 +681,10 @@ test("envelope auto-record: staged on send, committed only after delivery, paylo
   assert.equal(value.occurrences[0].resolved, false);
   assert.equal(value.occurrences[0].finding, "Payment provider timed out for 4 minutes.");
   assert.deepEqual(value.notes, []);
-  const info = env.lines.filter(([l]) => l === "info");
+  const info = env.lines.filter(([l, m]) => l === "info" && /case committed/u.test(m));
   assert.equal(info.length, 1);
   assert.match(info[0][1], /case committed sig=[0-9a-f]{8} occurrences=1$/u);
-  assert.ok(!info[0][1].includes("checkout"));
+  assert.ok(!env.lines.some(([, m]) => /checkout|Payment provider/u.test(m)), "no content in any log line");
 });
 
 test("envelope resolved:true maps directly", async () => {
@@ -818,5 +829,35 @@ test("rejected V2 envelopes log only a reason, never content", async () => {
   await startTurn(env, SESSION, "run-1");
   sendFinal(env, { payload: { text: envelope(summary(), "LIVEX_ALERT_SUMMARY_V1") } });
   sendFinal(env, { payload: { text: "plain" } });
-  assert.equal(env.lines.length, 0);
+  assert.deepEqual(env.lines.filter(([l]) => l === "warn"), []);
+});
+
+test("decision points are logged once each: staged, tagged, committed, and drops with a reason", async () => {
+  const env = loggerEnv();
+  const text = () => env.lines.map(([, m]) => m).join("\n");
+  // tool staged under the prompt-build run, final carries another id: bound by window
+  await startTurn(env, SESSION, "codex-run");
+  await createRecordTool(config, toolContext(), env.memory).execute("t", params());
+  sendFinal(env, { runId: "dispatch-run", payload: { text: envelope(summary({ signature: "other-svc | sync | disk full" })) } });
+  await sent(env);
+  assert.match(text(), /record staged: source=tool pending=1/u);
+  assert.match(text(), /record staged: source=envelope pending=2/u);
+  assert.match(text(), /bound by session and time window/u);
+  assert.match(text(), /reply tagged: records=2/u);
+  assert.equal(env.store.rows.size, 2);
+  assert.equal(env.lines.filter(([, m]) => /case committed/u.test(m)).length, 2);
+
+  // a newer run supersedes an undelivered entry
+  const env2 = loggerEnv();
+  const log2 = (e) => e.lines.map(([, m]) => m).join("\n");
+  await startTurn(env2, SESSION, "run-A");
+  sendFinal(env2, { runId: "run-A", payload: { text: envelope() } });
+  await startTurn(env2, SESSION, "run-B");
+  assert.match(log2(env2), /record dropped: superseded by a newer run/u);
+  // no envelope and nothing staged
+  const env3 = loggerEnv();
+  await startTurn(env3, SESSION, "run-1");
+  sendFinal(env3, { runId: "run-1", payload: { text: "plain" } });
+  assert.match(log2(env3), /final reply has no V2 envelope \(text present\)/u);
+  assert.match(log2(env3), /reply not tagged: nothing staged/u);
 });

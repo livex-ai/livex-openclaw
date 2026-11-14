@@ -7,12 +7,21 @@ deploys the live, Slack-serving Gateway on that VM.
 
 **What is and is not modified.** This repo changes no OpenClaw core source. The
 image is the official one (digest-pinned) plus the Google Cloud CLI and
-`livex-native`. There is one build-time patch to a plugin package:
-`patch-slack-navigation.mjs` edits the official `@openclaw/slack` monitor bundle
-so passive URL buttons are not enqueued as block actions (PR #34's guard). It
-refuses to run unless the bundle's sha256 matches the verified
-`@openclaw/slack@2026.10.5` file, so a version bump breaks the build until the
-patch is re-verified against the new bundle (or removed if upstream has the fix).
+`livex-native`. There are two build-time patches to the `@openclaw/slack`
+plugin package (run in this order by the `Dockerfile`, each followed by
+`node --check` of every file it touched):
+
+| Patch | Files in `dist/.setup/` | What it does |
+| --- | --- | --- |
+| `patch-slack-navigation.mjs` | `monitor-CNECe8FK.mjs` | Passive URL buttons are not enqueued as block actions (PR #34's guard). |
+| `patch-slack-attachments.mjs` | `send-CyRH2z7u.mjs`, `replies-BNr7i3d0.mjs`, `outbound-adapter-CEh2K9pB.mjs` (reply path to chat.postMessage), `monitor-CNECe8FK.mjs` (button `editMessage` to chat.update), `channel-C6Y0ZA9K.mjs`, `action-runtime-DtOIVezL.mjs`, `actions-Ch4O8XbW.mjs` (message-tool `edit` to chat.update) | Forwards one validated colour-bar attachment (`color` #RRGGBB, `blocks` 1-10, `fallback`) next to blocks, and makes an edit with blocks always send `attachments` (the guard's `livexAttachments`, else `[]`) so Slack never keeps a stale attachment. |
+
+Both refuse to run unless each bundle's sha256 matches the verified
+`@openclaw/slack@2026.10.5` file (the monitor bundle is accepted stock or after
+the navigation patch), and the attachments patch also fails on a missing or
+ambiguous anchor or an already patched file. A version bump therefore breaks the
+build until **both** patches are re-verified against the new bundles (or removed
+if upstream has the fix). Tests: `LIVEX_SLACK_PACKAGE_DIR=<extracted stock package> node --test deploy/test_patch_slack_attachments.mjs`.
 
 ## Stage on the existing DEV VM
 
@@ -234,7 +243,7 @@ That serves the pre-adoption state, so sessions since the adoption are not in it
 | `deploy.sh` | operator Mac | Checks the script is committed and the sha is HEAD, `git archive`s it, uploads it over IAP, runs `remote.sh` under a lock. `--dry-run` prints the gcloud commands and runs none |
 | `deploy_dev.sh` | operator Mac | `make deploy_dev`: checks a clean `livex-native/` and a pushed HEAD, then runs `deploy.sh` with `LIVEX_DEV_LIVE=1` |
 | `remote.sh` | VM, as root | Builds the image, snapshots state, applies config in the new image, cuts over, gates on `/readyz`, rolls back on failure |
-| `Dockerfile` | VM build | Official OpenClaw image (digest-pinned) + Google Cloud CLI + `livex-native` + the Slack plugin tarball, patched by `patch-slack-navigation.mjs` |
+| `Dockerfile` | VM build | Official OpenClaw image (digest-pinned) + Google Cloud CLI + `livex-native` + the Slack plugin tarball, patched by `patch-slack-navigation.mjs` and `patch-slack-attachments.mjs` |
 | `versions.env` | VM build | Pinned image digests, Slack plugin version and sha512 |
 | `verify-tarball.mjs` | VM build | Fails the build if the Slack tarball's sha512 differs from the pin |
 | `compose.yaml` | VM | `gateway` (loopback-only port) and `cli` (profile `tools`) |
@@ -380,9 +389,11 @@ channel and its skills fails the deploy.
 - **Slack** ships as a separate package (`bundledDist: false`). The build verifies
   the pinned npm archive against its registry SHA512 in `versions.env`, then
   backports PR #34's passive URL-button guard to the exact monitor bundle
-  (`patch-slack-navigation.mjs`; this is the one patch to a plugin package).
-  Re-verify it on every Slack plugin version bump: it fails the build unless the
-  bundle's sha256 matches the verified file name and digest.
+  (`patch-slack-navigation.mjs`) and applies the single-attachment patch
+  (`patch-slack-attachments.mjs`, seven bundles; see the table above). These are
+  the two patches to a plugin package. Re-verify both on every Slack plugin
+  version bump: they fail the build unless each bundle's sha256 matches the
+  verified file name and digest.
   Apply compares the release archive's SHA512 with the managed install record
   and installs the local archive when they differ, including stock installations
   at the same version. Apply verifies the installed version, integrity, and

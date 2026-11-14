@@ -210,7 +210,7 @@ Unknown keys invalidate the card.
 
 ```text
 LIVEX_ALERT_SUMMARY_V2
-{"title":"checkout-api upstream timeouts","signature":"checkout-api | create order | upstream timeout","priority":"high","provisional":false,"resolved":false,"summary":"Order creation failed with upstream timeouts for about six minutes; retries recovered most requests and a small number of customers saw errors.","nextAction":"Confirm the payments gateway latency fix is deployed and watch the next window.","owner":"Payments on-call","checkedWindow":"2026-11-14 09:10–09:25 UTC (fresh)","evidenceUrl":"https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22?project=livex-dev"}
+{"title":"checkout-api upstream timeouts","signature":"checkout-api | create order | upstream timeout","priority":"high","provisional":false,"resolved":false,"summary":"Order creation failed with upstream timeouts for about six minutes; retries recovered most requests and a small number of customers saw errors.","nextAction":"Confirm the payments gateway latency fix is deployed and watch the next window.","owner":"Payments on-call","checkedWindow":"2026-11-14 09:10–09:25 UTC (fresh)","evidenceUrl":"https://console.cloud.google.com/logs/query?project=livex-copilot-prd&query=insertId%3D%22abc123%22%20AND%20timestamp%3E%3D%222026-11-14T09%3A12%3A04Z%22%20AND%20timestamp%3C%3D%222026-11-14T09%3A12%3A06Z%22"}
 
 Full evidence report goes here.
 ```
@@ -236,9 +236,11 @@ Fields (single-line plain strings; maximum lengths are in characters):
 - `nextAction` (1-300): one concrete next check or action.
 - `owner` (1-80): `Unassigned` when ownership is unverified.
 - `checkedWindow` (1-80): UTC bounds and whether the evidence is fresh or saved.
-- `evidenceUrl` (optional): only a Logs Explorer link (`console.cloud.google.com`)
-  returned by the evidence tool; omit it or use null otherwise. The Gateway drops any
-  other host from the card.
+- `evidenceUrl` (optional): copy verbatim the `entryUrl` of the most representative
+  error entry you cite in the report. If no cited entry has one, copy the read's
+  `logsExplorerUrl` verbatim. If neither exists, omit it or use null. Never construct,
+  shorten or edit a link, and never reuse the example above. The Gateway drops other
+  hosts and any link without an insertId or explicit timestamp bounds.
 
 The card shows, in order: Title, Priority (red for critical/high, yellow for medium,
 white for low/unknown, green when resolved), Next action with the owner, Summary, and

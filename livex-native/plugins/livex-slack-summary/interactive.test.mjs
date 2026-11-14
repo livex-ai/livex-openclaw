@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { deflateRawSync } from "node:zlib";
 import { loadSigningKey } from "./core.mjs";
-import { CHANNEL, SENDER, THREAD, baseConfig, buttonsOf, fakeClick, labelsOf, load, newStateDir, postCard, summary } from "./test-helpers.mjs";
+import { CHANNEL, SENDER, THREAD, baseConfig, buttonsOf, fakeClick, labelsOf, load, newStateDir, flat, postCard, summary } from "./test-helpers.mjs";
 
-const blocksOf = (result) => result.payload.channelData.slack.blocks;
+const blocksOf = (result) => flat(result.payload.channelData.slack);
 const pick = (blocks, label) => buttonsOf(blocks).find((button) => button.text.text === label).value;
 const tokenOf = (value) => value.split(":").slice(2).join(":");
 const priorityOf = (blocks) => blocks[1].text.text;
@@ -79,17 +79,17 @@ test("a priority click edits the card in place with the new priority and refresh
   assert.equal(click.calls.edits.length, 1);
   const edited = click.calls.edits[0];
   assert.equal(edited.text, "\u{1F534} checkout-api upstream timeouts");
-  assert.equal(priorityOf(edited.blocks), "*Priority:* \u{1F534} High");
+  assert.equal(priorityOf(flat(edited)), "*Priority:* \u{1F534} High");
   // Everything but the priority line and the buttons is untouched.
-  assert.deepEqual(edited.blocks.slice(2, 6), blocks.slice(2, 6));
-  assert.deepEqual(edited.blocks[0], blocks[0]);
-  assert.deepEqual(labelsOf(edited.blocks), ["Medium", "Low", "Resolved"]);
+  assert.deepEqual(flat(edited).slice(2, 6), blocks.slice(2, 6));
+  assert.deepEqual(flat(edited)[0], blocks[0]);
+  assert.deepEqual(labelsOf(flat(edited)), ["Medium", "Low", "Resolved"]);
   assert.deepEqual(loaded.warnings, []);
 
   // The refreshed buttons carry the new state: a second click works from the edit.
-  const second = fakeClick({ value: pick(edited.blocks, "Low") });
+  const second = fakeClick({ value: pick(flat(edited), "Low") });
   await loaded.interactive.handler(second.ctx);
-  assert.equal(priorityOf(second.calls.edits[0].blocks), "*Priority:* ⚪ Low");
+  assert.equal(priorityOf(flat(second.calls.edits[0])), "*Priority:* ⚪ Low");
 });
 
 test("Resolved closes the card, keeps the priority it had, and a priority click reopens it", async () => {
@@ -99,13 +99,13 @@ test("Resolved closes the card, keeps the priority it had, and a priority click 
   const click = fakeClick({ value: pick(blocks, "Resolved") });
   await loaded.interactive.handler(click.ctx);
   const resolved = click.calls.edits[0];
-  assert.equal(priorityOf(resolved.blocks), "*Priority:* \u{1F7E2} Resolved · was High");
+  assert.equal(priorityOf(flat(resolved)), "*Priority:* \u{1F7E2} Resolved · was High");
   assert.equal(resolved.text, "\u{1F7E2} checkout-api upstream timeouts");
-  assert.deepEqual(labelsOf(resolved.blocks), ["High", "Medium", "Low"]);
+  assert.deepEqual(labelsOf(flat(resolved)), ["High", "Medium", "Low"]);
 
-  const reopen = fakeClick({ value: pick(resolved.blocks, "Medium") });
+  const reopen = fakeClick({ value: pick(flat(resolved), "Medium") });
   await loaded.interactive.handler(reopen.ctx);
-  assert.equal(priorityOf(reopen.calls.edits[0].blocks), "*Priority:* \u{1F7E1} Medium");
+  assert.equal(priorityOf(flat(reopen.calls.edits[0])), "*Priority:* \u{1F7E1} Medium");
 });
 
 test("a tampered, malformed or oversized value is refused with no respond call", async () => {
@@ -170,7 +170,7 @@ const maximalFields = (noise) => ({
   nextAction: noise.slice(720, 1020),
   owner: noise.slice(1020, 1100),
   checkedWindow: noise.slice(1100, 1180),
-  evidenceUrl: `https://console.cloud.google.com/logs/query;query=${noise.slice(1180, 2680)}`,
+  evidenceUrl: `https://console.cloud.google.com/logs/query?query=insertId%3D${noise.slice(1180, 2650)}`,
 });
 
 test("a card too large for a button value renders without buttons and logs", () => {
@@ -178,7 +178,7 @@ test("a card too large for a button value renders without buttons and logs", () 
   const blocks = blocksOf(postCard(loaded, { fields: maximalFields(noiseOf("seed", 2700)) }));
   assert.deepEqual(buttonsOf(blocks), []);
   assert.equal(blocks.length, 6);
-  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query;query=/u);
+  assert.match(blocks[4].text.text, /^\*Evidence:\* <https:\/\/console\.cloud\.google\.com\/logs\/query\?query=insertId%3D/u);
   assert.equal(loaded.warnings.length, 1);
   assert.match(loaded.warnings[0], /too large/u);
   // A card whose state does fit keeps its buttons.

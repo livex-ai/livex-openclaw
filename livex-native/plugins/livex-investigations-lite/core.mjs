@@ -336,8 +336,11 @@ export function readSummaryEnvelope(raw) {
   // ignored, the JSON line is at most 4096 characters, and evidenceUrl is absent, null
   // or a parseable https URL. A case is recorded only for a summary that renders a card.
   const text = typeof raw === "string" ? raw.trimStart() : raw;
-  if (typeof text !== "string" || !text.startsWith(`${SUMMARY_MARKER_V2}\n`) && !text.startsWith(`${SUMMARY_MARKER_V2}\r\n`)) {
-    return {};
+  if (typeof text !== "string") return {};
+  if (!text.startsWith(`${SUMMARY_MARKER_V2}\n`) && !text.startsWith(`${SUMMARY_MARKER_V2}\r\n`)) {
+    return text.includes(SUMMARY_MARKER_V2)
+      ? { reason: "invalid envelope: marker not on the first line" }
+      : {};
   }
   const match = /^([^\r\n]+)\r?\n([^\r\n]{1,4096})\r?\n\r?\n(?=\s*\S)/u.exec(text);
   if (!match || match[1] !== SUMMARY_MARKER_V2) return { reason: "invalid envelope: bad layout" };
@@ -395,6 +398,10 @@ export function createLog(logger, pluginId = "livex-investigations-lite") {
       const text = sanitizeLine(error instanceof Error ? error.message : error, 200);
       call("warn", `[${pluginId}] store ${operation} failed: ${text || "unknown error"}`);
     },
+    fault(where, error) {
+      const text = sanitizeLine(error instanceof Error ? error.message : error, 200);
+      call("warn", `[${pluginId}] ${where} failed: ${text || "unknown error"}`);
+    },
     // A fixed reason string only; callers must never pass content.
     reject(reason) {
       call("warn", `[${pluginId}] summary envelope not recorded: ${reason}`);
@@ -405,7 +412,7 @@ export function createLog(logger, pluginId = "livex-investigations-lite") {
   };
 }
 
-const NOOP_LOG = { warn() {}, info() {}, reject() {} };
+const NOOP_LOG = { warn() {}, info() {}, reject() {}, fault() {} };
 
 function markLogged(error) {
   const wrapped = error instanceof Error ? error : new Error(String(error));
@@ -585,9 +592,31 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
   const runs = new Map();
   let queue = Promise.resolve();
 
+  // Every decision is logged once, with a fixed reason and no content.
+  const drop = (reason) => log.info(`record dropped: ${reason}`);
   const live = (entry) => entry && now() - entry.stagedAt <= config.pendingTtlMs;
   const sweep = () => {
-    for (const [key, entry] of pending) if (!live(entry)) pending.delete(key);
+    for (const [key, entry] of pending) {
+      if (live(entry)) continue;
+      pending.delete(key);
+      drop(entry.tagged ? "no-message_sent" : "expired");
+    }
+  };
+  const newEntry = (sessionKey, stagedRunId) => {
+    if (pending.size >= MAX_PENDING_SESSIONS) pending.delete(pending.keys().next().value);
+    const entry = { records: new Map(), stagedAt: now(), tagged: false, stagedRunId };
+    pending.set(sessionKey, entry);
+    return entry;
+  };
+  const addRecord = (entry, record, { keepExisting, source }) => {
+    const key = signatureKey(record.signature);
+    if (!entry.records.has(key) && entry.records.size >= MAX_STAGED_PER_TURN) {
+      throw new Error(`At most ${MAX_STAGED_PER_TURN} investigations can be recorded per reply`);
+    }
+    // A tool record for the same case wins over an envelope-derived one.
+    if (!(keepExisting && entry.records.has(key))) entry.records.set(key, record);
+    entry.stagedAt = now();
+    log.info(`record staged: source=${source} pending=${entry.records.size}`);
   };
 
   return {
@@ -604,32 +633,56 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
     observeRun(sessionKey, runId) {
       if (typeof runId !== "string" || runId.length === 0) return;
       const entry = pending.get(sessionKey);
-      if (entry && entry.stagedRunId !== runId) pending.delete(sessionKey);
+      if (entry && entry.stagedRunId !== runId) {
+        pending.delete(sessionKey);
+        drop("superseded by a newer run");
+      }
       runs.delete(sessionKey);
       runs.set(sessionKey, runId);
       if (runs.size > MAX_PENDING_SESSIONS) runs.delete(runs.keys().next().value);
     },
 
-    stage(sessionKey, record, { keepExisting = false } = {}) {
+    /** Tool staging: bound to the run the last prompt build observed. */
+    stage(sessionKey, record, { keepExisting = false, source = "tool" } = {}) {
       sweep();
       const runId = runs.get(sessionKey);
       let entry = pending.get(sessionKey);
       if (entry && entry.stagedRunId !== runId) {
         pending.delete(sessionKey);
+        drop("run-mismatch");
         entry = undefined;
       }
-      if (!entry) {
-        if (pending.size >= MAX_PENDING_SESSIONS) pending.delete(pending.keys().next().value);
-        entry = { records: new Map(), stagedAt: now(), tagged: false, stagedRunId: runId };
-        pending.set(sessionKey, entry);
+      entry ??= newEntry(sessionKey, runId);
+      addRecord(entry, record, { keepExisting, source });
+    },
+
+    /**
+     * Envelope staging, done by the reply that is about to be delivered, so the
+     * record is bound to that reply's `runId` by construction. An entry staged
+     * earlier by a tool under a different id is adopted only when no newer
+     * prompt build was observed since (same session, inside the pending
+     * window): the prompt-build and reply paths may name a run differently.
+     */
+    stageFromEnvelope(sessionKey, record, runId) {
+      sweep();
+      if (typeof runId !== "string" || runId.length === 0) {
+        drop("no-run-id");
+        return false;
       }
-      const key = signatureKey(record.signature);
-      if (!entry.records.has(key) && entry.records.size >= MAX_STAGED_PER_TURN) {
-        throw new Error(`At most ${MAX_STAGED_PER_TURN} investigations can be recorded per reply`);
+      let entry = pending.get(sessionKey);
+      if (entry && entry.stagedRunId !== runId) {
+        if (entry.stagedRunId === runs.get(sessionKey)) {
+          entry.stagedRunId = runId;
+          log.info("run id differs between prompt build and reply; bound by session and time window");
+        } else {
+          pending.delete(sessionKey);
+          drop("run-mismatch");
+          entry = undefined;
+        }
       }
-      // A tool record for the same case wins over an envelope-derived one.
-      if (!(keepExisting && entry.records.has(key))) entry.records.set(key, record);
-      entry.stagedAt = now();
+      entry ??= newEntry(sessionKey, runId);
+      addRecord(entry, record, { keepExisting: true, source: "envelope" });
+      return true;
     },
 
     discard(sessionKey) {
@@ -638,30 +691,66 @@ export function createMemory(config, { openStore, now = Date.now, log = NOOP_LOG
 
     /**
      * A final reply for `runId` is about to be delivered. Only the run that
-     * staged the entry may tag it; any other run's reply drops it as stale.
+     * staged the entry may tag it (see stageFromEnvelope for the one tolerated
+     * id difference); any other run's reply drops it as stale.
      */
     tag(sessionKey, runId) {
       const entry = pending.get(sessionKey);
-      if (!entry) return;
-      // A missing runId proves nothing: it must never match an entry staged without one.
-    if (!live(entry) || typeof runId !== "string" || runId.length === 0 || runId !== entry.stagedRunId) {
+      if (!entry) {
+        log.info("reply not tagged: nothing staged");
+        return false;
+      }
+      if (!live(entry)) {
         pending.delete(sessionKey);
-        return;
+        drop("expired");
+        return false;
+      }
+      // A missing runId proves nothing: it must never match an entry staged without one.
+      if (typeof runId !== "string" || runId.length === 0) {
+        pending.delete(sessionKey);
+        drop("no-run-id");
+        return false;
+      }
+      if (runId !== entry.stagedRunId) {
+        if (entry.stagedRunId === runs.get(sessionKey)) {
+          entry.stagedRunId = runId;
+          log.info("run id differs between prompt build and reply; bound by session and time window");
+        } else {
+          pending.delete(sessionKey);
+          drop("run-mismatch");
+          return false;
+        }
       }
       entry.tagged = true;
+      log.info(`reply tagged: records=${entry.records.size}`);
+      return true;
     },
 
     /** Delivery outcome. Resolves after the commit settles (hooks may ignore it). */
     async delivered(sessionKey, { success, messageId, runId }) {
       const entry = pending.get(sessionKey);
-      if (!live(entry)) {
-        pending.delete(sessionKey);
+      if (!entry) {
+        log.info("message_sent ignored: nothing pending");
         return false;
       }
-      if (!entry.tagged) return false;
-      if (runId !== undefined && entry.stagedRunId !== undefined && runId !== entry.stagedRunId) return false;
+      if (!live(entry)) {
+        pending.delete(sessionKey);
+        drop("expired");
+        return false;
+      }
+      if (!entry.tagged) {
+        log.info("message_sent ignored: pending record not tagged by a final reply yet");
+        return false;
+      }
+      if (runId !== undefined && entry.stagedRunId !== undefined && runId !== entry.stagedRunId) {
+        log.info("message_sent ignored: run-mismatch");
+        return false;
+      }
       pending.delete(sessionKey); // a failed final is dropped, not kept for retry
-      if (!success) return false;
+      if (!success) {
+        drop("send-failed");
+        return false;
+      }
       const replyTs = typeof messageId === "string" && SLACK_TS.test(messageId) ? messageId : undefined;
       const records = [...entry.records.values()];
       const run = queue.then(async () => {
@@ -797,6 +886,16 @@ export function createLookupTool(config, context, openStore, log = NOOP_LOG) {
 
 // ----------------------------------------------------------------- hooks
 
+/** Why a hook context is refused (fixed reason, no content), or null when allowed. */
+function gateRefusal(config, sessionKey, ctx) {
+  const session = parseSession(sessionKey, config.agents);
+  if (!session) return "session-gate";
+  if (!channelAllowed(config, session.channel)) return "channel-gate";
+  if (ctx?.agentId !== undefined && ctx.agentId !== session.agentId) return "agent-gate";
+  if (ctx?.senderId !== undefined && ctx.senderId !== config.allowedSenderId) return "sender-gate";
+  return null;
+}
+
 /** Hook handlers; every one swallows its own failures so replies are never affected. */
 export function createHooks(config, memory, openStore, log = NOOP_LOG) {
   return {
@@ -831,7 +930,8 @@ export function createHooks(config, memory, openStore, log = NOOP_LOG) {
           maxChars: config.seenBeforeMaxChars,
         });
         return block ? { prependContext: block } : undefined;
-      } catch {
+      } catch (error) {
+        log.fault("before_prompt_build hook", error);
         return undefined;
       }
     },
@@ -839,32 +939,52 @@ export function createHooks(config, memory, openStore, log = NOOP_LOG) {
     replyPayloadSending(event, ctx) {
       try {
         const payload = event?.payload;
-        let session;
+        // Only a final, non-status reply in an enabled agent's thread can be recorded.
         if (
           event?.kind !== "final" ||
-          event.channel !== "slack" ||
-          !(session = authorizeHookContext(config, event.sessionKey, ctx)) ||
           payload?.isReasoning ||
           payload?.isCommentary ||
-          payload?.isStatusNotice
+          payload?.isStatusNotice ||
+          !parseSession(event.sessionKey, config.agents)
         ) {
           return undefined;
         }
+        if (event.channel !== "slack") {
+          log.info("reply ignored: channel is not slack");
+          return undefined;
+        }
+        const refusal = gateRefusal(config, event.sessionKey, ctx);
+        if (refusal) {
+          log.info(`record dropped: ${refusal}`);
+          return undefined;
+        }
+        const session = parseSession(event.sessionKey, config.agents);
+        const runId = event.runId ?? ctx?.runId;
         // Stage from the V2 summary envelope first. This hook runs before the
         // card hook rewrites the payload and never touches the payload itself.
         const envelope = readSummaryEnvelope(payload?.text);
         if (envelope.reason) log.reject(envelope.reason);
-        if (envelope.record) {
+        else if (!envelope.record) {
+          log.info(`final reply has no V2 envelope (text ${typeof payload?.text === "string" && payload.text ? "present" : "absent"})`);
+        } else {
+          let staged;
           try {
-            memory.stage(event.sessionKey, buildStagedRecord(envelope.record, session), { keepExisting: true });
+            staged = buildStagedRecord(envelope.record, session);
           } catch (error) {
-            // An unusable envelope records nothing; tool records are unaffected.
             log.reject(/too generic/u.test(error?.message) ? "signature too generic" : "record rejected");
           }
+          if (staged) {
+            try {
+              memory.stageFromEnvelope(event.sessionKey, staged, runId);
+            } catch (error) {
+              log.reject(/At most/u.test(error?.message) ? "too many records in one reply" : "record rejected");
+            }
+          }
         }
-        memory.tag(event.sessionKey, event.runId ?? ctx?.runId);
-      } catch {
-        // Memory is best-effort; never alter or block the reply.
+        memory.tag(event.sessionKey, runId);
+      } catch (error) {
+        // Memory is best-effort; never alter or block the reply, but say why.
+        log.fault("reply_payload_sending hook", error);
       }
       return undefined;
     },
@@ -872,7 +992,12 @@ export function createHooks(config, memory, openStore, log = NOOP_LOG) {
     async messageSent(event, ctx) {
       try {
         const sessionKey = event?.sessionKey ?? ctx?.sessionKey;
-        if (!authorizeHookContext(config, sessionKey, ctx)) return;
+        if (!parseSession(sessionKey, config.agents)) return;
+        const refusal = gateRefusal(config, sessionKey, ctx);
+        if (refusal) {
+          log.info(`message_sent ignored: ${refusal}`);
+          return;
+        }
         await memory.delivered(sessionKey, {
           success: event.success === true,
           messageId: event.messageId,
@@ -880,7 +1005,7 @@ export function createHooks(config, memory, openStore, log = NOOP_LOG) {
         });
       } catch (error) {
         // A failed save is invisible to the reply by design, but never silent.
-        if (!error?.livexLogged) log.warn("commit", error);
+        if (!error?.livexLogged) log.fault("message_sent hook", error);
       }
     },
   };

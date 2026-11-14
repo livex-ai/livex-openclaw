@@ -307,3 +307,29 @@ unchanged by `index.test.mjs`; the new files cover buttons, the sender and chann
 priority and Resolved re-renders, tampered and oversized values, the shared key file
 (two instances, restart, corrupt, concurrent creation, mode 0600), no `respond` call on any refusal, allowed and blocked amendments, a human choice outranking a later amendment, and
 that no hook throws.
+
+
+## Attachment layout (PR #1 parity)
+
+- First reply: `channelData.slack = { blocks: [Title, actions], attachments: [{ color, fallback,
+  blocks: [Priority, Next action, Summary, Evidence, context] }] }`. Forwarded by
+  `deploy/patch-slack-attachments.mjs`, which patches `send` (chat.postMessage payload),
+  `replies` (`deliverReplies`, the live Slack monitor path), `outbound-adapter` (`sendPayload`)
+  and `monitor` (`updateSlackInteractionMessage`, the plugin `respond.editMessage` ->
+  chat.update). Attachments are validated right before the Slack call (one attachment; only
+  `color` #RRGGBB, `blocks` 1-10, `fallback`) and ride only on the first block message.
+- Button click: `respond.editMessage({ text, blocks, attachments })`.
+- Amendment (message tool `edit`): the guard rewrites params to `{ messageId, message_id,
+  message, presentation: { blocks: [text(Title), buttons] }, livexAttachments }`. Chain
+  (patched by `patch-slack-attachments.mjs`): `before_tool_call` params are shallow-merged over
+  the original (`agent-tools.before-tool-call.approval.ts:81-90`) -> `handleSlackMessageAction`
+  `edit` (`message-action-dispatch.ts:218-257`, channel bundle) renders the presentation and
+  passes `attachments: actionParams.livexAttachments` -> action-runtime `editMessage` ->
+  `editSlackMessage` -> `editSlackRenderedMessage`, which sanitizes it and always sends
+  `attachments` with blocks (`[]` when absent or invalid). Slack keeps old attachments on
+  `chat.update` if the field is omitted, hence the `[]`. This applies to every Slack edit with
+  blocks, not only cards; text-only edits are unchanged. Unverified live: that core passes the
+  extra `livexAttachments` param through to the Slack action unchanged.
+- Streaming previews are off for this plugin (a `reply_payload_sending` hook disables them,
+  `pipeline.runtime`: `allowPreHookProviderStreaming`), so the preview-finalize edit, which would
+  also drop attachments, is not reachable.

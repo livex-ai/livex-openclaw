@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 git \
 COPY --from=sdk /usr/lib/google-cloud-sdk /opt/google-cloud-sdk
 COPY livex-native /opt/livex-native
 # Bake the Slack plugin at build time. npm pack downloads the exact version; the
-# build verifies the pinned dist.integrity before backporting PR #34. Apply
+# build verifies the pinned dist.integrity before backporting PR #34 and the
+# single-attachment patch (patch-slack-attachments.mjs). Apply
 # installs the resulting local tarball (npm-pack:).
 RUN set -eu; test -n "$SLACK_PLUGIN_SPEC" && test -n "$SLACK_PLUGIN_INTEGRITY"; \
     mkdir -p /opt/livex-plugins && cd /opt/livex-plugins \
@@ -30,7 +31,14 @@ RUN set -eu; test -n "$SLACK_PLUGIN_SPEC" && test -n "$SLACK_PLUGIN_INTEGRITY"; 
     && work=$(mktemp -d) \
     && tar -xzf slack.tgz -C "$work" \
     && node /opt/livex-native/deploy/patch-slack-navigation.mjs "$work/package" \
+    && node /opt/livex-native/deploy/patch-slack-attachments.mjs "$work/package" \
     && node --check "$work/package/dist/.setup/monitor-CNECe8FK.mjs" \
+    && node --check "$work/package/dist/.setup/send-CyRH2z7u.mjs" \
+    && node --check "$work/package/dist/.setup/replies-BNr7i3d0.mjs" \
+    && node --check "$work/package/dist/.setup/outbound-adapter-CEh2K9pB.mjs" \
+    && node --check "$work/package/dist/.setup/channel-C6Y0ZA9K.mjs" \
+    && node --check "$work/package/dist/.setup/action-runtime-DtOIVezL.mjs" \
+    && node --check "$work/package/dist/.setup/actions-Ch4O8XbW.mjs" \
     && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf slack.tgz -C "$work" package \
     && rm -rf "$work" \
     && chmod -R a+rX /opt/livex-plugins

@@ -91,13 +91,32 @@ Records already staged by `investigation_record` in the same run are kept; on a
 shared signature the tool's record wins. The usual tag-and-commit-on-`message_sent`
 flow then saves it.
 
+## Diagnosing a silent run
+
+Log lines go to the process console (`console.info`/`console.warn`, so they reach
+container stdout), each prefixed `[livex-investigations-lite]`, one per decision and
+never with content: `record staged: source=envelope|tool`, `reply tagged`, `case
+committed`, `message_sent ignored: <reason>`, and `record dropped: <reason>` with
+reason one of `sender-gate`, `channel-gate`, `agent-gate`, `no-run-id`,
+`run-mismatch`, `superseded by a newer run`, `send-failed`, `expired`,
+`no-message_sent`. `final reply has no V2 envelope` means the final text did not
+carry the marker. The plugin does not use `api.logger` because the host's subsystem
+logger filters by console level; the gateway's own lines come from the same console.
+
+Run binding trade-off: the prompt-build `runId` (Codex harness) and the reply
+`runId` (dispatcher) are separate sources that may name a run differently. An
+envelope record is bound to the reply's own `runId` by construction. A tool-staged
+entry whose `runId` differs from the reply's is still adopted when no newer prompt
+build has been observed for the session and the entry is inside `pendingTtlMinutes`;
+a newer prompt build, an expiry, or a missing `runId` on the reply drops it.
+
 ## Failure visibility
 
 A V2-marked envelope that cannot be recorded logs one warning with only a fixed
 reason (`summary envelope not recorded: invalid envelope: missing key`, `...: signature too generic`, and so on; field names at most, never values). Text without the V2 marker stays silent.
 
-Every store open, read or commit failure is logged with `api.logger.warn`
-(`console.warn` if the host gives no logger): `[livex-investigations-lite] store
+Every store open, read or commit failure is logged with `console.warn`
+(see above for why not `api.logger`): `[livex-investigations-lite] store
 <open|read|commit> failed: <error message>`, no stored content. A commit logs at
 info: `case committed sig=<8 hex> occurrences=<n>`. Hooks still never throw into a
 reply.

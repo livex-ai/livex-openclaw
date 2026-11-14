@@ -27,7 +27,9 @@ export default definePluginEntry({
     // The store is opened lazily (hooks and tools), never here: during register()
     // the plugin record is not yet active, so openKeyedStoreV2 would throw
     // (src/plugins/registry-runtime.ts:114-124). Failures are logged, not hidden.
-    const log = createLog(api.logger);
+    // Written to the process console (container stdout) with the plugin prefix, like
+    // the gateway's other lines: the host's subsystem logger can filter by level.
+    const log = createLog();
     const memory = createMemory(config, { openStore, log });
     const hooks = createHooks(config, memory, openStore, log);
 

@@ -216,7 +216,9 @@ triage questions, including the first reply to an alert. Use fresh scoped reads
 if needed, then answer in two to four sentences of ordinary thread text. Lead
 with whether immediate action is indicated, then give the evidence, material
 uncertainty and next action when one is warranted. Link verified evidence when
-available. An error count alone does not establish customer impact.
+available: copy `evidenceUrl` verbatim from the `entryUrl` of the most representative
+error entry you cite, else the read's `logsExplorerUrl`, else omit it; never construct,
+shorten or edit a link (the Gateway drops links without an insertId or explicit timestamp bounds). An error count alone does not establish customer impact.
 
 For “summarize errors”, “what is happening?” on an aggregate alert, or an expanded
 search window, load `debug` and its `references/error-summary.md` using the skill's
